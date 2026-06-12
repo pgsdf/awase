@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
  * audiofs F.2 events-ring layout.
  *
@@ -15,7 +15,7 @@
  * Lock-free single-producer (audiofs) / multi-consumer ring,
  * mirroring shared/INPUT_EVENTS.md. Physics-only per ADR 0007.
  *
- * Copyright (c) 2026 PGSDF
+ * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
  */
 
 #ifndef _AUDIOFS_EVENTS_H_

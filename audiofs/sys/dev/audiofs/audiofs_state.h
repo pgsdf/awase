@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
  * audiofs F.1 state-region layout.
  *
@@ -15,7 +15,7 @@
  * Physics-only per ADR 0007: this region carries what the
  * hardware can do and is currently doing, not policy.
  *
- * Copyright (c) 2026 PGSDF
+ * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
  */
 
 #ifndef _AUDIOFS_STATE_H_

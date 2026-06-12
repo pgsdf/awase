@@ -1,7 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
- * Copyright (c) 2026 Pacific Grove Software Distribution Foundation.
+ * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation.
  * All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for any

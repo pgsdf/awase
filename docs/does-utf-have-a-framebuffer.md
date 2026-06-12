@@ -275,6 +275,6 @@ possible in the first place.
 
 ---
 
-*UTF is BSD-2-licensed and developed at the Pacific Grove Software
-Distribution Foundation. See https://github.com/pgsdf/UTF for
-sources.*
+*Awase (formerly UTF) is MIT-licensed and developed at the Pacific
+Geoscience Systems Development Foundation. See
+https://github.com/pgsdf/UTF for sources.*

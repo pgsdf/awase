@@ -13,7 +13,7 @@ Awase is built for PGSD on FreeBSD; it no longer targets GhostBSD. Earlier work 
 
 ---
 
-## Current state (2026-06-10)
+## Current state (2026-06-12)
 
 What is built and verified:
 
@@ -632,7 +632,7 @@ and no working drm-kmod port.
 | semasound | Complete (F.5, ADRs 0021/0024-0028): mixing, format adaptation and election, named targets, Phase 12 policy parity with reference-counted ducking, state publication, s6 supervision. Boot-started. Predecessor semaaud retired (F.6, ADR 0029). |
 | semainput | `semainputd` daemon retired 2026-05-08 (AD-2a Phase 3). Only `libsemainput` remains, used by semadrawd. The Stage E cutover is done (see the inputfs row). |
 | inputfs | Complete and in production (Stages A through E; AD-2 closed 2026-05-17; parser hardened by AD-9). The sole input path; no evdev in the tree. |
-| audiofs | Stage F complete (F.0 through F.6, ADRs 0001-0029): class-matched PCI HDA driver, full output bring-up, data path, kernel clock writer, format negotiation. snd(4) removed in full (Option A). F.3.f (HDMI) deferred behind a Awase display capability. Complete and maintained under ADR 0030 (change classes K/B/P/T/R; production suite mode). |
+| audiofs | Stage F complete (F.0 through F.6, ADRs 0001-0029): class-matched PCI HDA driver, full output bring-up, data path, kernel clock writer, format negotiation. snd(4) removed in full (Option A). F.3.f (HDMI) deferred behind an Awase display capability. Complete and maintained under ADR 0030 (change classes K/B/P/T/R; production suite mode). |
 | shared/ | Protocol constants, generator, event schema, session identity, clock interface: all complete. |
 | chronofs | Complete. Audio-driven frame scheduler operational. |
 
@@ -648,6 +648,10 @@ the next frontier, by choice of priority.
 
 ## License
 
-BSD 2-Clause. See `LICENSE`.
+MIT License. See `LICENSE`.
 
 Copyright (c) 2026 Pacific Geoscience Systems Development Foundation.
+
+Vendored third-party code under `inputfs/test/fuzz/vendored/`
+(NetBSD-derived HID parsing used by the fuzzing harness) retains its
+original BSD-2-Clause license and copyright headers.

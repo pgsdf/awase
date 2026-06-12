@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
  * drawfs_drm.c: DRM/KMS display backend for drawfs (DF-3)
  *

@@ -599,11 +599,11 @@ This demo showcases SemaDraw's immediate-mode graphics API including:
 
 ## License
 
-BSD 2-Clause License
+MIT License (relicensed from BSD 2-Clause, 2026-06-12)
 
-Copyright (c) 2025, Pacific Grove Software Distribution Foundation
+Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
 
 ## Author
 
-Vester "Vic" Thacker, Principal Scientist, Pacific Grove Software Distribution Foundation
+Vester "Vic" Thacker, Principal Scientist, Pacific Geoscience Systems Development Foundation
 

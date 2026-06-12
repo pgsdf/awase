@@ -1,9 +1,9 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
  * audiofs: UTF kernel audio substrate (Option A, PCI driver)
  *
- * Copyright (c) 2026 PGSDF
+ * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
  *
  * EXPERIMENTAL, NOT CANONICAL.
  *

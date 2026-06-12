@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
  * clock_dump: read and decode /var/run/sema/clock (the audio
  * clock region, ADR 0003 / shared/CLOCK.md). Bench-safety and
@@ -20,7 +20,7 @@
  * same shape the production reader uses, so a live sample is not
  * torn by a concurrent writer.
  *
- * Copyright (c) 2026 PGSDF
+ * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
  */
 
 #include <sys/types.h>

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: MIT
  *
  * setfmt: F.3.e (ADR 0019) format-ioctl exerciser.
  *
@@ -39,7 +39,7 @@
  * bits, then channels (single-shot mode), or the rate sequence
  * (after --seq).
  *
- * Copyright (c) 2026 PGSDF
+ * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
  */
 
 #include <sys/types.h>
