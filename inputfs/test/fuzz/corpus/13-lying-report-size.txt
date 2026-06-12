@@ -1,0 +1,14 @@
+13-lying-report-size.bin
+
+CATEGORY: 4, lying descriptor
+TARGETS: hid_get_data on a 32-bit field (size > what fits
+  in the int32_t result of hid_get_data without
+  sign-loss surprises).
+INPUT: X axis declared as a single 32-bit field.
+EXPECTED BEHAVIOR: locate finds X with size=32; extract
+  reads the full 32 bits and casts to int32_t (the cast in
+  inputfs_extract_pointer is documented as accepting
+  truncation).
+EXPECTED FAILURE MODE IF BROKEN: hid_get_data reads past
+  the report buffer when the report does not actually
+  contain 32 bits at the expected position.

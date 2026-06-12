@@ -1,0 +1,9 @@
+15-report-empty.bin
+
+CATEGORY: 5, pathological report
+TARGETS: extract phase early-return on len == 0.
+INPUT: valid boot-mouse descriptor; zero-length report.
+EXPECTED BEHAVIOR: extract functions return 0 immediately
+  via the (len == 0) guard.
+EXPECTED FAILURE MODE IF BROKEN: extract proceeds with
+  len=0 and hid_get_data reads buf[-1] or similar.

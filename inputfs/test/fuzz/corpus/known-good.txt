@@ -1,0 +1,11 @@
+known-good.bin
+
+CATEGORY: baseline
+TARGETS: all four parser functions on a real, valid input.
+INPUT: USB HID 1.11 boot protocol mouse descriptor (50 bytes,
+  Appendix B.2) plus a 3-byte all-zero report (no buttons,
+  no movement).
+EXPECTED BEHAVIOR: parsers find pointer locations, extract
+  zero values from the report, exit 0 with no ASan faults.
+EXPECTED FAILURE MODE IF BROKEN: any non-zero exit indicates
+  a regression in the most basic supported path.

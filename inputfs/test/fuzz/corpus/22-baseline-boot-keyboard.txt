@@ -1,0 +1,13 @@
+22-baseline-boot-keyboard.bin
+
+CATEGORY: baseline
+TARGETS: keyboard locate + extract on a real, valid input.
+INPUT: USB HID 1.11 boot keyboard descriptor (63 bytes,
+  Appendix B.1) plus an 8-byte report representing left
+  shift held with the "a" key (HID usage 0x04) pressed.
+EXPECTED BEHAVIOR: keyboard_locate populates loc_modifiers
+  and loc_keys; extract returns out_modifiers=0x02 (left
+  shift) and out_keys[0]=0x04.
+EXPECTED FAILURE MODE IF BROKEN: same as known-good but for
+  the keyboard side of the parser; non-zero exit indicates
+  regression.

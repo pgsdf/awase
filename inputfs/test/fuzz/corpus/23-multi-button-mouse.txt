@@ -1,0 +1,16 @@
+23-multi-button-mouse.bin
+
+CATEGORY: regression test (AD-9.4)
+TARGETS: button-bitmap extraction width. Without the AD-9.4
+  fix, only the low bit of out_buttons would ever set,
+  silently dropping mouse buttons 2-5 from every report.
+INPUT: 5-button mouse descriptor (Report Count 5, Report
+  Size 1 for the button block); 3-byte report with all
+  five button bits set (0x1F) and zero motion.
+EXPECTED BEHAVIOR: pointer_locations_valid=1, button_count=5,
+  extract_pointer_rc=1, out_buttons=0x0000001F (all five
+  bits set in the bitmap), out_dx=0, out_dy=0.
+EXPECTED FAILURE MODE IF BROKEN: out_buttons=0x00000001
+  (only button 1 reported, buttons 2-5 silently dropped).
+  This is the bug AD-9.4 found and fixed in
+  inputfs_extract_pointer's button-extraction path.

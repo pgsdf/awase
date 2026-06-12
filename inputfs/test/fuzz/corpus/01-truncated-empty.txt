@@ -1,0 +1,9 @@
+01-truncated-empty.bin
+
+CATEGORY: 1, truncated descriptor
+TARGETS: locate functions' early-return on rdesc_len == 0.
+INPUT: zero-length descriptor, zero-length report.
+EXPECTED BEHAVIOR: locate functions return immediately with
+  *_locations_valid = 0; extract functions are skipped.
+EXPECTED FAILURE MODE IF BROKEN: NULL deref or out-of-bounds
+  read on the rdesc pointer.

@@ -1,0 +1,79 @@
+#!/bin/sh
+# AD-20: s6 run script for semadrawd.
+#
+# The AD-20 service pattern, plus framebuffer
+# resolution detection (originally lived in the rc.d wrapper as
+# semadraw_detect_resolution; preserved here verbatim per AD-15.1
+# / AD-17).
+#
+# AD-15.1 (originally) / AD-17 (since 2026-05-05): two layers of
+# framebuffer-geometry detection, both reading the same drawfs
+# sysctls, agreeing by construction.
+#
+# Primary: AD-17 — semadrawd's drawfs backend implements
+# getDetectedDisplaySize in its vtable and reports
+# efifb_width × efifb_height to the compositor's initOutput.
+# The compositor uses the backend-reported size when available
+# and falls back to the -r WxH flag (or its compile-time default
+# of 1920x1080) when not.
+#
+# Defense in depth: this run-script-side detection runs before
+# semadrawd starts and passes -r WxH based on the same sysctls.
+# If semadrawd's backend detection fails for any reason (drawfs
+# not loaded yet at exec time, sysctl read race, unexpected
+# error path), the run-script-passed flag still sets the right
+# configured value. Both paths read hw.drawfs.efifb.{width,height}
+# so they agree by construction.
+
+set -e
+
+exec 2>&1
+
+# AD-20.3: see the AD-20 run-script pattern (marker guard).
+SVCDIR="$(dirname "$0")"
+if [ -d "${SVCDIR}/supervise" ]; then
+    echo "$(date +%s)" > "${SVCDIR}/supervise/utf_run_started" 2>/dev/null || true
+fi
+
+semadraw_flags="-b drawfs"
+
+# Read drawfs efifb sysctls. -n gets value-only (no key= prefix).
+# 2>/dev/null swallows the error if the sysctl is absent.
+fb_w=$(sysctl -n hw.drawfs.efifb.width 2>/dev/null || echo 0)
+fb_h=$(sysctl -n hw.drawfs.efifb.height 2>/dev/null || echo 0)
+
+# Both must be present and non-zero. drawfs publishes both
+# atomically at module load; partial publication is treated as
+# unreliable (drawfs version mismatch) and we fall through to
+# semadrawd's default rather than guess.
+res_flag=""
+if [ "${fb_w}" -gt 0 ] && [ "${fb_h}" -gt 0 ]; then
+    res_flag="-r ${fb_w}x${fb_h}"
+fi
+
+# AD-31.1: discover the _semadraw uid/gid for semadrawd's
+# privilege-drop step. semadrawd reads SEMADRAW_RUN_UID and
+# SEMADRAW_RUN_GID from its environment after Daemon.initCompositor
+# completes, then setgid()/setuid()s before entering the accept loop.
+# See semadraw/docs/adr/0006-multi-user-refactor.md §1.
+#
+# id(1) returns numeric ids; if the _semadraw user does not exist,
+# id exits non-zero, the env vars stay unset, and semadrawd's
+# privilege-drop logic refuses to start (since we are running as
+# root under s6). install.sh creates the user; this script only
+# discovers the values.
+SEMADRAW_RUN_UID="$(id -u _semadraw 2>/dev/null || echo "")"
+SEMADRAW_RUN_GID="$(id -g _semadraw 2>/dev/null || echo "")"
+export SEMADRAW_RUN_UID SEMADRAW_RUN_GID
+
+# The AD-43 instrument flags (UTF_PUMP_INSTRUMENT,
+# UTF_COMPOSITE_GATE_INSTRUMENT) were exported here from the
+# AD-43.2 bench until the family closed on 2026-06-06. They
+# earned their keep: the gate census characterised the frozen
+# pacing clock (AD-43.3a fix c), and the per-iteration emission
+# rate itself exposed the AD-32/AD-37 poll spin. They also cut
+# log retention to minutes (about 240 lines/s even on the fixed
+# loop), so they leave with the closure. Re-export ad hoc for
+# future gate work; the daemon-side hooks remain.
+
+exec /usr/local/bin/semadrawd ${semadraw_flags} ${res_flag}

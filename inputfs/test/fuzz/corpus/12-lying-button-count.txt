@@ -1,0 +1,13 @@
+12-lying-button-count.bin
+
+CATEGORY: 4, lying descriptor
+TARGETS: button-count walk in inputfs_pointer_locate when
+  the descriptor declares 255 buttons (inputfs caps at 32).
+INPUT: descriptor with 255 button declarations in a single
+  Input item.
+EXPECTED BEHAVIOR: button_count saturates at 32 (the cap is
+  explicit in inputfs_pointer_locate); pointer_locations_valid
+  becomes 1 because Button 1 was located.
+EXPECTED FAILURE MODE IF BROKEN: button_count exceeds 32
+  (cap not enforced); wire-format byte for buttons truncates
+  silently downstream.

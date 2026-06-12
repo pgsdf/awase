@@ -1,0 +1,12 @@
+07-collection-overpop.bin
+
+CATEGORY: 2, recursive/unbalanced collections
+TARGETS: parser pop logic when End Collection appears with
+  no matching open.
+INPUT: eight End Collection items in a row, no opens.
+EXPECTED BEHAVIOR: hid_get_item logs "invalid end collection"
+  via DPRINTFN and continues; parser terminates without
+  underflow.
+EXPECTED FAILURE MODE IF BROKEN: pushlevel/collevel
+  decrement past zero (signed underflow), array index
+  underflow on s->cur[s->pushlevel].

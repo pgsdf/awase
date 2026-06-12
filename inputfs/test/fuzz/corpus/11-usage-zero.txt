@@ -1,0 +1,12 @@
+11-usage-zero.bin
+
+CATEGORY: 3, out-of-range usages
+TARGETS: usage 0 (undefined) handling. The HID spec reserves
+  usage 0; some devices in the wild emit it.
+INPUT: GenericDesktop page with usage 0 and an empty
+  application collection.
+EXPECTED BEHAVIOR: hid_locate skips the undefined usage,
+  locate functions return with no usages found.
+EXPECTED FAILURE MODE IF BROKEN: misclassification (usage
+  0 might unexpectedly satisfy HID_USAGE2(HUP_X) if
+  comparison logic is broken).

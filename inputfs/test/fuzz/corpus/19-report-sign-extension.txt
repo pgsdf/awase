@@ -1,0 +1,15 @@
+19-report-sign-extension.bin
+
+CATEGORY: 5, pathological report
+TARGETS: signed-integer interpretation of pointer deltas.
+  X and Y are declared signed (Logical Min -127); 0xFF
+  should be -1 after sign extension.
+INPUT: boot mouse descriptor; report with no buttons,
+  X=0xFF, Y=0xFF.
+EXPECTED BEHAVIOR: hid_get_data returns -1 (sign-extended
+  from int8); inputfs_extract_pointer's (int32_t) cast
+  preserves the sign so out_dx = -1, out_dy = -1.
+EXPECTED FAILURE MODE IF BROKEN: missing sign extension
+  yields out_dx = 255, out_dy = 255 (wrong direction). Not
+  an ASan-detectable bug, but worth keeping in the corpus
+  as a regression catch should the cast change.

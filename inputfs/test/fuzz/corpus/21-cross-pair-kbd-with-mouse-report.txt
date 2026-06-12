@@ -1,0 +1,13 @@
+21-cross-pair-kbd-with-mouse-report.bin
+
+CATEGORY: 6, cross-paired
+TARGETS: keyboard extract when the report is too short to
+  contain the modifier byte + 6 keys (boot keyboard expects
+  8 bytes; here we give 3).
+INPUT: boot keyboard descriptor; 3-byte report shaped like a
+  boot mouse (button-bits + X + Y).
+EXPECTED BEHAVIOR: extract reads modifier byte from byte 0;
+  attempts to read 6 keys starting at byte 2; only 1 byte
+  is available there. hid_get_data must clamp gracefully.
+EXPECTED FAILURE MODE IF BROKEN: 5-byte OOB read across
+  the keys array slots.

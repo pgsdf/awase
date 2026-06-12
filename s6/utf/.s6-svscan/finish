@@ -1,0 +1,21 @@
+#!/bin/sh
+# AD-20: s6-svscan finish script.
+#
+# Per s6-svscan(8): when s6-svscan is told to exit (via SIGTERM or
+# s6-svscanctl -t), it stops all supervised services, waits for
+# the supervision tree to drain, and then execs into this script
+# (./s6-svscan/finish) before exiting itself.
+#
+# UTF's supervision tree is per-instance (one s6-svscan per
+# UTF install, started by /usr/local/etc/rc.d/utf-supervisor),
+# not system-wide. We don't need the cleanup hooks that a
+# distro's pid-1 s6-svscan would have. Just a clean exit so the
+# rc.d wrapper sees a normal stop.
+#
+# AD-20.3: do NOT use /bin/true here. FreeBSD's /bin does not
+# include `true` — it ships only as a shell builtin. The original
+# `exec /bin/true` failed with "exec: /bin/true: not found" in
+# /var/log/utf/svscan.log. `exit 0` accomplishes the same thing
+# without depending on any external binary.
+
+exit 0

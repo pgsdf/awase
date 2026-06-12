@@ -1,0 +1,12 @@
+02-truncated-1-byte.bin
+
+CATEGORY: 1, truncated descriptor
+TARGETS: hid_get_byte's bounds check when an item header
+  promises bSize bytes but the buffer ends.
+INPUT: a single 0x05 byte (start of a Usage Page item that
+  needs a 1-byte payload, but the payload is missing).
+EXPECTED BEHAVIOR: hid_get_byte sees s->p == s->end on the
+  next read and returns 0; hid_get_item terminates the parse
+  loop. locate functions report no usages found.
+EXPECTED FAILURE MODE IF BROKEN: hid_get_byte reads past
+  s->end (one-byte OOB read).

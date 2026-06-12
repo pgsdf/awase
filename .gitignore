@@ -1,0 +1,23 @@
+# Build logs
+build-*.log
+build-latest.log
+
+# Local build configuration
+.config
+
+# Zig build artifacts
+zig-out/
+.zig-cache/
+
+# FreeBSD kernel module build artifacts
+.depend.*
+*.ko
+*.o
+machine
+x86
+i386
+export_syms
+opt_global.h
+ad21-diagnose.sh
+ad22-diagnose.sh
+*.orig

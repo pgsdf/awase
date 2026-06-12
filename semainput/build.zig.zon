@@ -1,0 +1,8 @@
+.{
+    .name = .semainput,
+    .version = "0.1.0",
+    .fingerprint = 0x80ef71718f61ddac,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "README.md", "Progress.md", "src", "docs" },
+}

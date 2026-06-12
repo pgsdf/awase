@@ -1,0 +1,129 @@
+#!/bin/sh
+# AD-20 finish script (flap protection), copied into each
+# /var/service/utf/<name>/finish during install.sh.
+#
+# Invocation: s6-supervise runs this script after ./run exits.
+# Args (per s6 docs):
+#   $1 = exit code from ./run (256 if signaled)
+#   $2 = signal number that killed ./run (undefined if not signaled)
+# (The original header also claimed $3 = service dir and $4 = pgid;
+# s6-supervise passes exactly the two arguments above. The bogus $3
+# claim fed the bug fixed below.)
+#
+# Exit semantics (per s6-supervise docs):
+#   exit 125 → s6-supervise marks the service down and does NOT
+#              restart it. Operator must `s6-svc -u` to resume.
+#   any other exit code → s6-supervise restarts ./run after this
+#              ./finish exits.
+#
+# Policy: if the service died <FAST_CRASH_LIFETIME_S after starting,
+# count it as a fast crash. If ≥FAST_CRASH_THRESHOLD fast crashes
+# occurred within the last FAST_CRASH_WINDOW_S seconds, exit 125 to
+# tell s6-supervise to give up.
+#
+# State storage: a flat file at <servicedir>/supervise/utf_crash_log
+# with one Unix timestamp per line. Read on entry, prune entries
+# older than FAST_CRASH_WINDOW_S, append today's timestamp if this
+# was a fast crash, exit 125 if the count is above threshold.
+#
+# Tunables (override via environment in run script if needed):
+#   FAST_CRASH_LIFETIME_S: what counts as "died too fast" (default 10)
+#   FAST_CRASH_WINDOW_S:   sliding window for the count (default 45)
+#   FAST_CRASH_THRESHOLD:  count that triggers giveup (default 5)
+
+set -eu
+
+EXIT_CODE="${1:-0}"
+SIGNAL_NUM="${2:-0}"
+# AD-20 correction (2026-06-07): the original line read
+# SVCDIR="${3:-$(pwd)}". Bench evidence says $3 arrives SET, to a
+# value that is not the service directory, so the bad expansion
+# won and the pwd fallback never engaged (the working directory
+# for finish IS the service dir on this system). Consequence:
+# supervise/ appeared "missing" on EVERY invocation, flap
+# accounting was skipped EVERY time, and flap protection never
+# functioned from the day AD-20 shipped; the lifetime always read
+# 0 for the same reason. Derive the service dir from $0 resolved
+# absolute: correct under any working directory and any argument
+# convention, and yielding a real name for basename.
+SVCDIR="$(cd "$(dirname "$0")" && pwd)"
+
+FAST_CRASH_LIFETIME_S="${FAST_CRASH_LIFETIME_S:-10}"
+FAST_CRASH_WINDOW_S="${FAST_CRASH_WINDOW_S:-45}"
+FAST_CRASH_THRESHOLD="${FAST_CRASH_THRESHOLD:-5}"
+
+CRASH_LOG="${SVCDIR}/supervise/utf_crash_log"
+
+# We need the service's start time to know if this was a "fast"
+# crash. s6-svstat prints uptime in seconds as part of its output;
+# the format is documented. Example: "up (pid 12345) 42 seconds".
+# But s6-svstat reports the CURRENT state: by the time finish
+# runs, the run script is already dead, so s6-svstat will say
+# "down" and "0 seconds". That doesn't help.
+#
+# Instead: write a marker file when run starts, with the start
+# timestamp. finish reads it to compute lifetime. The run script
+# wrapper writes <svcdir>/supervise/utf_run_started.
+START_MARKER="${SVCDIR}/supervise/utf_run_started"
+
+now=$(date +%s)
+
+# Compute lifetime if marker present; else assume fast crash.
+if [ -r "${START_MARKER}" ]; then
+    started=$(cat "${START_MARKER}" 2>/dev/null || echo "${now}")
+    lifetime=$((now - started))
+else
+    lifetime=0
+fi
+
+svc_name=$(basename "${SVCDIR}")
+
+# AD-49 correction (2026-06-06): log to STDOUT, which s6 connects
+# to the service's logger, so death records land in
+# /var/log/utf/<name>/ where operators actually look. The first
+# version wrote to stderr, which in a finish script goes to the
+# supervisor's console; every exit code AD-20 ever recorded went
+# somewhere nobody reads, and the AD-49 incident cost an hour
+# that one visible exit code would have saved.
+echo "${svc_name}: finish: exit=${EXIT_CODE} signal=${SIGNAL_NUM} lifetime=${lifetime}s"
+
+# AD-20.3: if supervise/ doesn't exist (very early boot, before
+# s6-supervise has finished setting up), skip flap-protection
+# bookkeeping for this invocation. The next run will have supervise/
+# created. Without this guard, every cold-boot prints
+# "cannot create utf_crash_log: No such file or directory" because
+# the directory we want to write to literally doesn't exist yet.
+if [ ! -d "${SVCDIR}/supervise" ]; then
+    echo "${svc_name}: supervise/ missing on this finish invocation; skipping flap accounting"
+    exit 0
+fi
+
+# Only count as a fast crash if lifetime was below threshold.
+if [ "${lifetime}" -lt "${FAST_CRASH_LIFETIME_S}" ]; then
+    # Append timestamp to crash log.
+    echo "${now}" >> "${CRASH_LOG}"
+
+    # Prune entries older than the window.
+    cutoff=$((now - FAST_CRASH_WINDOW_S))
+    if [ -r "${CRASH_LOG}" ]; then
+        awk -v c="${cutoff}" '$1 >= c' "${CRASH_LOG}" > "${CRASH_LOG}.new" || true
+        mv "${CRASH_LOG}.new" "${CRASH_LOG}"
+    fi
+
+    # Count remaining entries.
+    count=$(wc -l < "${CRASH_LOG}" 2>/dev/null | tr -d ' ' || echo 0)
+
+    echo "${svc_name}: fast crash ${count}/${FAST_CRASH_THRESHOLD} in last ${FAST_CRASH_WINDOW_S}s"
+
+    if [ "${count}" -ge "${FAST_CRASH_THRESHOLD}" ]; then
+        echo "${svc_name}: flap threshold breached; giving up (exit 125)"
+        exit 125
+    fi
+else
+    # Service ran for a reasonable time; reset the crash log so
+    # transient post-runtime crashes don't accumulate.
+    : > "${CRASH_LOG}" 2>/dev/null || true
+fi
+
+# Default: let s6-supervise restart.
+exit 0

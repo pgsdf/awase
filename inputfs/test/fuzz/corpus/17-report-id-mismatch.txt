@@ -1,0 +1,13 @@
+17-report-id-mismatch.bin
+
+CATEGORY: 5, pathological report
+TARGETS: inputfs_report_id_matches when the descriptor uses
+  Report ID 1 but the report claims ID 2.
+INPUT: descriptor declaring Report ID 1; report whose first
+  byte is 2.
+EXPECTED BEHAVIOR: inputfs_report_id_matches returns 0;
+  extract skips the X and Y locations; out_dx / out_dy
+  remain at their caller-supplied zero defaults.
+EXPECTED FAILURE MODE IF BROKEN: parser proceeds and reads
+  X/Y from offsets relative to a non-matching report ID,
+  yielding garbage values or worse.

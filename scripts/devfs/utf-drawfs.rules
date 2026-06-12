@@ -1,0 +1,18 @@
+#
+# devfs rules for UTF / drawfs.
+#
+# /dev/draw is created root:wheel 0600 by default. This rule grants the
+# 'utf' group read/write access so semadrawd can be run without being
+# root in the ordinary case. Create the group with:
+#
+#   pw groupadd utf
+#   pw groupmod utf -m <user>
+#
+# And enable this ruleset in /etc/rc.conf:
+#
+#   devfs_system_ruleset="utf-drawfs"
+#
+# Then: service devfs restart
+
+[utf-drawfs=10]
+add path 'draw' mode 0660 group utf

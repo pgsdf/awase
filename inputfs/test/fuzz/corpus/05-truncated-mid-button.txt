@@ -1,0 +1,14 @@
+05-truncated-mid-button.bin
+
+CATEGORY: 1, truncated descriptor
+TARGETS: locate phase walking partial button declarations.
+INPUT: first 30 bytes of boot mouse, cut mid-button-block
+  (Usage Page Button + Usage Min/Max declared, but not all
+  of the Logical Min/Max + Report Count + Size + Input).
+EXPECTED BEHAVIOR: hid_locate finds Button 1 location with
+  partial information; button_count walk terminates without
+  finding a complete Input item; pointer_locations_valid
+  may still be 0 or 1 depending on which sub-fields parsed.
+EXPECTED FAILURE MODE IF BROKEN: button_count walk runs
+  past s->end; flags/id outputs uninitialised on hid_locate
+  return.

@@ -1,0 +1,275 @@
+diff --git a/inputfs/docs/B5_VERIFICATION.md b/inputfs/docs/B5_VERIFICATION.md
+index b0d7cf5..d0990ae 100644
+--- a/inputfs/docs/B5_VERIFICATION.md
++++ b/inputfs/docs/B5_VERIFICATION.md
+@@ -21,12 +21,18 @@ passes are recorded as passing.
+ 4. A USB mouse and a USB keyboard are available. They do not need
+    to be the same physical devices across passes.
+ 
+-## Pass 1 — GhostBSD on Oracle VirtualBox
++## Pass 1: GhostBSD on Oracle VirtualBox
+ 
+ Host: GhostBSD bare-metal computer running VirtualBox.
+ Guest: GhostBSD VM with USB pass-through to the guest.
+ 
+-### Signal 1.1 — mouse classifies as pointer
++The VM pass exercises three signals: mouse classification (1.1),
++mouse motion / B.4 unbroken (1.2), and clean unload (1.3). The
++keyboard-classification signal that exists in the bare-metal pass
++(2.3) is deliberately not run on the VM. See Signal 1.3 below for
++the rationale.
++
++### Signal 1.1: mouse classifies as pointer
+ 
+ **Steps:**
+ 
+@@ -42,7 +48,7 @@ Guest: GhostBSD VM with USB pass-through to the guest.
+ 5. `sudo dmesg | grep inputfs | tail -20`.
+ 
+ **Expected output (the kind line will say `mouse` or `pointer`
+-depending on which Generic Desktop usage the device reports — both
++depending on which Generic Desktop usage the device reports; both
+ match `INPUTFS_ROLE_POINTER`):**
+ 
+ ```
+@@ -57,7 +63,7 @@ inputfs0: inputfs: roles=pointer
+ 
+ (The Stage B.5 banner line is the `printf` in `inputfs_modevent`. If
+ the patch did not update that string, the line will still say
+-"Stage B.4 loaded" — that is acceptable for B.5 verification but
++"Stage B.4 loaded"; that is acceptable for B.5 verification but
+ should be tracked as a follow-up. The signal under test is the
+ final `roles=pointer` line.)
+ 
+@@ -66,10 +72,10 @@ final `roles=pointer` line.)
+ - [ ] The `roles=pointer` line is present.
+ - [ ] The `roles=` line appears after all B.2/B.3/B.4 attach lines,
+       not before.
+-- [ ] The format is exactly `roles=pointer` — no quotes, no
++- [ ] The format is exactly `roles=pointer`: no quotes, no
+       trailing punctuation, no other role names.
+ 
+-### Signal 1.2 — mouse motion still produces raw reports (B.4 unbroken)
++### Signal 1.2: mouse motion still produces raw reports (B.4 unbroken)
+ 
+ **Steps:**
+ 
+@@ -96,41 +102,29 @@ inputfs0: inputfs: report id=0x00 len=8 data=00 01 00 00 01 00 00 00
+ - [ ] No errors, warnings, or panics interleaved with the report
+       stream.
+ 
+-### Signal 1.3 — keyboard classifies as keyboard
+-
+-**Steps:**
+-
+-1. `sudo kldunload inputfs`.
+-2. Detach the mouse from the VM, pass the USB keyboard through.
+-3. `sudo kldload inputfs`.
+-4. `sudo devctl rescan usbhid1 2>/dev/null || sudo devctl rescan
+-   hidbus1 2>/dev/null`.
+-5. `sudo dmesg | grep inputfs | tail -20`.
+-
+-**Expected output (descriptor size and item counts will differ from
+-the mouse — different device, different descriptor):**
+-
+-```
+-inputfs0: inputfs: attached HID keyboard (vendor=0x...., product=0x....)
+-inputfs0: inputfs: descriptor <N> bytes, <I> input items, <O> output, <F> feature, depth=<D>
+-inputfs0: inputfs: report buffer <K> bytes (report_id=0x00), registering interrupt
+-inputfs0: inputfs: calling hid_intr_start
+-inputfs0: inputfs: hid_intr_start returned 0
+-inputfs0: inputfs: roles=keyboard
+-```
+-
+-**Acceptance:**
+-
+-- [ ] The attach-line `kind` says `keyboard`.
+-- [ ] The `roles=keyboard` line is present.
+-- [ ] The format is exactly `roles=keyboard`.
+-
+-### Signal 1.4 — clean unload
++### Signal 1.3: clean unload
++
++The keyboard-classification signal that originally lived at this
++position has been moved to the bare-metal pass (Signal 2.3). The
++reason is procedural, not technical: the script flow for that
++signal requires unloading inputfs while the mouse is still the
++only working input device, then asking the operator to detach the
++mouse and attach a keyboard via VirtualBox's host-side menu. With
++inputfs unloaded, the VM has no working USB input, so the operator
++cannot respond to the script's prompts to continue. Bare metal
++does not have this problem because plug/unplug is a host action
++and the bare-metal box has separate console input paths
++unaffected by the unload.
++
++The keyboard classifier code is identical regardless of venue.
++Verification on bare metal alone is sufficient evidence that
++`HUG_KEYBOARD` produces `roles=keyboard`; the VM cannot add
++diagnostic value to that specific check.
+ 
+ **Steps:**
+ 
+-1. With the keyboard attached and inputfs loaded from Signal 1.3,
+-   `sudo kldunload inputfs`.
++1. With the mouse still attached and inputfs still loaded from
++   Signal 1.2, `sudo kldunload inputfs`.
+ 2. `sudo dmesg | grep inputfs | tail -5`.
+ 3. `kldstat | grep inputfs`.
+ 
+@@ -149,7 +143,7 @@ inputfs: unloaded
+ - [ ] No warnings, witness complaints, or use-after-free messages
+       anywhere in the post-unload dmesg tail.
+ 
+-## Pass 2 — bare-metal GhostBSD
++## Pass 2: bare-metal GhostBSD
+ 
+ Same four signals on a bare-metal GhostBSD machine. No
+ VirtualBox layer; USB devices plug directly into the host. All
+@@ -165,19 +159,19 @@ expected and not a failure mode. The signal under test is always
+ the `roles=` line and its consistency with the table in ADR 0010
+ § Decision 2.
+ 
+-### Signal 2.1 — mouse classifies as pointer
++### Signal 2.1: mouse classifies as pointer
+ 
+ [ ] checklist as in 1.1
+ 
+-### Signal 2.2 — mouse motion still produces raw reports
++### Signal 2.2: mouse motion still produces raw reports
+ 
+ [ ] checklist as in 1.2
+ 
+-### Signal 2.3 — keyboard classifies as keyboard
++### Signal 2.3: keyboard classifies as keyboard
+ 
+ [ ] checklist as in 1.3
+ 
+-### Signal 2.4 — clean unload
++### Signal 2.4: clean unload
+ 
+ [ ] checklist as in 1.4
+ 
+@@ -216,7 +210,7 @@ The verification deliberately exercises one mouse and one keyboard.
+ ADR 0010 § Stage B.5 Scope limits the classifier to those two
+ producer roles via `HUG_KEYBOARD`, `HUG_MOUSE`, and `HUG_POINTER`.
+ Touch, pen, gamepad, and lighting devices are out of scope and
+-should not be tested against this verification — the empty-role
++should not be tested against this verification. The empty-role
+ state (`roles=<none>`) those devices would produce is correct
+ behavior under ADR 0010 but does not exercise any code that B.5
+ added that this test doesn't already cover.
+diff --git a/inputfs/test/b5/b5-verify-vm.sh b/inputfs/test/b5/b5-verify-vm.sh
+index 1f4543c..d308b20 100644
+--- a/inputfs/test/b5/b5-verify-vm.sh
++++ b/inputfs/test/b5/b5-verify-vm.sh
+@@ -1,14 +1,22 @@
+ #!/bin/sh
+ # b5-verify-vm.sh: B.5 verification, VM pass.
+ #
+-# Runs the four signals from B5_VERIFICATION.md inside a GhostBSD VM
+-# with USB pass-through. The script orchestrates build, install,
+-# load/unload, dmesg capture, and per-signal acceptance checks. The
+-# human handles VirtualBox USB pass-through actions when prompted.
++# Runs the mouse-path signals from B5_VERIFICATION.md inside a
++# GhostBSD VM with USB pass-through. The keyboard-path signal
++# (1.3) cannot run in a VM that is driven via USB pass-through:
++# unloading inputfs leaves the VM with no working USB input, so
++# the operator cannot interact with the script to attach a
++# different USB device. The keyboard path is verified on
++# bare metal instead.
++#
++# Signals exercised here:
++#   1.1 mouse classifies as pointer
++#   1.2 mouse motion still produces raw reports
++#   1.3 clean unload (keyboard signal moved to bare-metal pass)
+ #
+ # Usage:   ./b5-verify-vm.sh
+ # Output:  b5-pass1-vm.log and per-signal b5-1.N.log files in $PWD.
+-# Exit:    0 if all four signals passed, 1 if any failed, 2 if a
++# Exit:    0 if all signals passed, 1 if any failed, 2 if a
+ #          precondition failed, 3 if user aborted.
+ 
+ set -u
+@@ -66,7 +74,7 @@ b5_dmesg_clear
+ b5_pause "Move the mouse for at least 5 seconds: in different directions, click a button at least once, scroll the wheel if it has one." || exit 3
+ 
+ b5_dmesg_capture "${B5_LOGDIR}/b5-1.2.log"
+-report_count=$(grep -c 'report id=0x' "${B5_LOGDIR}/b5-1.2.log" || true)
++report_count=$(grep -c 'report id=0x' "${B5_LOGDIR}/b5-1.2.log" 2>/dev/null; true)
+ b5_say "Captured ${report_count} report lines."
+ 
+ if b5_check_report_lines "${B5_LOGDIR}/b5-1.2.log" 10; then
+@@ -76,54 +84,30 @@ else
+     result=1
+ fi
+ 
+-# --- Signal 1.3 ------------------------------------------------------
+-
+-b5_step "Signal 1.3: keyboard classifies as keyboard"
+-
+-b5_unload || { result=1; }
+-
+-b5_pause "Detach the mouse from the VM (VirtualBox Devices > USB, uncheck the mouse). Pass the USB keyboard through (Devices > USB, check the keyboard)." || exit 3
++# --- Signal 1.3 (clean unload) --------------------------------------
++#
++# In the VM script this is the clean-unload check. It runs with the
++# mouse still attached from signals 1.1 and 1.2, so the unload has
++# a real softc to detach. The "keyboard classifies as keyboard"
++# signal that lives at this position in the bare-metal script is
++# deliberately absent here; see header comment for rationale.
+ 
+-if command -v usbconfig >/dev/null 2>&1; then
+-    b5_say "usbconfig output:"
+-    usbconfig | grep -i keyboard || b5_warn "No keyboard seen in usbconfig. Continuing anyway."
+-fi
++b5_step "Signal 1.3: clean unload"
+ 
+ b5_dmesg_clear
+-b5_load || { result=1; }
+-b5_rescan
+-sleep 1
++b5_unload || { result=1; }
+ b5_dmesg_capture "${B5_LOGDIR}/b5-1.3.log"
+ 
+ b5_say "Captured log b5-1.3.log:"
+ cat "${B5_LOGDIR}/b5-1.3.log"
+ 
+-if b5_check_attach_sequence "${B5_LOGDIR}/b5-1.3.log" \
+-   && b5_check_roles_line "${B5_LOGDIR}/b5-1.3.log" keyboard; then
+-    b5_pass "Signal 1.3: roles=keyboard present."
++if b5_check_clean_unload "${B5_LOGDIR}/b5-1.3.log"; then
++    b5_pass "Signal 1.3: clean unload verified."
+ else
+     b5_fail "Signal 1.3 failed. See b5-1.3.log"
+     result=1
+ fi
+ 
+-# --- Signal 1.4 ------------------------------------------------------
+-
+-b5_step "Signal 1.4: clean unload"
+-
+-b5_dmesg_clear
+-b5_unload || { result=1; }
+-b5_dmesg_capture "${B5_LOGDIR}/b5-1.4.log"
+-
+-b5_say "Captured log b5-1.4.log:"
+-cat "${B5_LOGDIR}/b5-1.4.log"
+-
+-if b5_check_clean_unload "${B5_LOGDIR}/b5-1.4.log"; then
+-    b5_pass "Signal 1.4: clean unload verified."
+-else
+-    b5_fail "Signal 1.4 failed. See b5-1.4.log"
+-    result=1
+-fi
+-
+ # --- Restore competing drivers if we unloaded them ------------------
+ 
+ b5_reload_competing_drivers
+@@ -133,7 +117,6 @@ b5_reload_competing_drivers
+ cat "${B5_LOGDIR}/b5-1.1.log" \
+     "${B5_LOGDIR}/b5-1.2.log" \
+     "${B5_LOGDIR}/b5-1.3.log" \
+-    "${B5_LOGDIR}/b5-1.4.log" \
+     > "${B5_LOGDIR}/b5-pass1-vm.log"
+ b5_say "Combined transcript: b5-pass1-vm.log"
+ 

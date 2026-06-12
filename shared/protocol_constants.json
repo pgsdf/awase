@@ -1,0 +1,473 @@
+{
+    "_comment": "Protocol Constants Specification - Single source of truth for drawfs, semadraw IPC, and SDCS protocols",
+    "_version": "1.0",
+    "_generated_files": [
+        "drawfs/sys/dev/drawfs/drawfs_proto.h (enum drawfs_msg_type, enum drawfs_err_code)",
+        "semadraw/src/ipc/protocol.zig (MsgType, ErrorCode)",
+        "semadraw/src/sdcs.zig (Op)"
+    ],
+    "drawfs_protocol": {
+        "version": {
+            "major": 1,
+            "minor": 0,
+            "hex": "0x0100"
+        },
+        "magic": {
+            "value": "0x31575244",
+            "ascii": "DRW1"
+        },
+        "alignment": 4,
+        "message_types": {
+            "_convention": "Requests use 0x0xxx, Replies use 0x8xxx, Events use 0x9xxx",
+            "requests": {
+                "REQ_HELLO": {
+                    "value": "0x0001",
+                    "description": "Client handshake"
+                },
+                "REQ_DISPLAY_LIST": {
+                    "value": "0x0010",
+                    "description": "Enumerate displays"
+                },
+                "REQ_DISPLAY_OPEN": {
+                    "value": "0x0011",
+                    "description": "Open display"
+                },
+                "REQ_SURFACE_CREATE": {
+                    "value": "0x0020",
+                    "description": "Create surface"
+                },
+                "REQ_SURFACE_DESTROY": {
+                    "value": "0x0021",
+                    "description": "Destroy surface"
+                },
+                "REQ_SURFACE_PRESENT": {
+                    "value": "0x0022",
+                    "description": "Present surface"
+                },
+                "REQ_SURFACE_PRESENT_REGION": {
+                    "value": "0x0023",
+                    "description": "Present surface with damage rects"
+                }
+            },
+            "replies": {
+                "RPL_OK": {
+                    "value": "0x8000",
+                    "description": "Generic success"
+                },
+                "RPL_HELLO": {
+                    "value": "0x8001",
+                    "description": "Handshake response"
+                },
+                "RPL_DISPLAY_LIST": {
+                    "value": "0x8010",
+                    "description": "Display list response"
+                },
+                "RPL_DISPLAY_OPEN": {
+                    "value": "0x8011",
+                    "description": "Display open response"
+                },
+                "RPL_SURFACE_CREATE": {
+                    "value": "0x8020",
+                    "description": "Surface created"
+                },
+                "RPL_SURFACE_DESTROY": {
+                    "value": "0x8021",
+                    "description": "Surface destroyed"
+                },
+                "RPL_SURFACE_PRESENT": {
+                    "value": "0x8022",
+                    "description": "Present acknowledged"
+                },
+                "RPL_SURFACE_PRESENT_REGION": {
+                    "value": "0x8023",
+                    "description": "Regional present acknowledged"
+                },
+                "RPL_ERROR": {
+                    "value": "0x8FFF",
+                    "description": "Error response"
+                }
+            },
+            "events": {
+                "EVT_SURFACE_PRESENTED": {
+                    "value": "0x9002",
+                    "description": "Surface displayed"
+                },
+                "EVT_SURFACE_PRESENTED_REGION": {
+                    "value": "0x9003",
+                    "description": "Surface displayed with damage rects"
+                },
+                "EVT_KEY": {
+                    "value": "0x9010",
+                    "description": "Key press/release"
+                },
+                "EVT_POINTER": {
+                    "value": "0x9011",
+                    "description": "Pointer move and buttons"
+                },
+                "EVT_SCROLL": {
+                    "value": "0x9012",
+                    "description": "Scroll delta"
+                },
+                "EVT_TOUCH": {
+                    "value": "0x9013",
+                    "description": "Touch contact"
+                }
+            }
+        },
+        "error_codes": {
+            "ERR_OK": {
+                "value": 0,
+                "description": "Success"
+            },
+            "ERR_INVALID_FRAME": {
+                "value": 1,
+                "description": "Malformed frame"
+            },
+            "ERR_INVALID_MSG": {
+                "value": 2,
+                "description": "Malformed message"
+            },
+            "ERR_UNSUPPORTED_VERSION": {
+                "value": 3,
+                "description": "Version mismatch"
+            },
+            "ERR_UNSUPPORTED_CAP": {
+                "value": 4,
+                "description": "Unsupported capability"
+            },
+            "ERR_PERMISSION": {
+                "value": 5,
+                "description": "Permission denied"
+            },
+            "ERR_NOT_FOUND": {
+                "value": 6,
+                "description": "Resource not found"
+            },
+            "ERR_BUSY": {
+                "value": 7,
+                "description": "Resource busy"
+            },
+            "ERR_NO_MEMORY": {
+                "value": 8,
+                "description": "Out of memory"
+            },
+            "ERR_INVALID_HANDLE": {
+                "value": 9,
+                "description": "Invalid handle"
+            },
+            "ERR_INVALID_STATE": {
+                "value": 10,
+                "description": "Invalid state"
+            },
+            "ERR_INVALID_ARG": {
+                "value": 11,
+                "description": "Invalid argument"
+            },
+            "ERR_OVERFLOW": {
+                "value": 12,
+                "description": "Buffer overflow"
+            },
+            "ERR_IO": {
+                "value": 13,
+                "description": "I/O error"
+            },
+            "ERR_INTERNAL": {
+                "value": 14,
+                "description": "Internal error"
+            }
+        }
+    },
+    "semadraw_ipc": {
+        "version": {
+            "major": 0,
+            "minor": 1
+        },
+        "header_size": 8,
+        "alignment": 4,
+        "message_types": {
+            "_convention": "Requests use 0x0xxx, Replies use 0x8xxx, Events use 0x9xxx",
+            "requests": {
+                "HELLO": {
+                    "value": "0x0001",
+                    "description": "Client handshake"
+                },
+                "CREATE_SURFACE": {
+                    "value": "0x0010",
+                    "description": "Create surface"
+                },
+                "DESTROY_SURFACE": {
+                    "value": "0x0011",
+                    "description": "Destroy surface"
+                },
+                "ATTACH_BUFFER": {
+                    "value": "0x0020",
+                    "description": "Attach shm buffer"
+                },
+                "COMMIT": {
+                    "value": "0x0021",
+                    "description": "Commit surface"
+                },
+                "ATTACH_BUFFER_INLINE": {
+                    "value": "0x0022",
+                    "description": "Attach inline buffer (remote)"
+                },
+                "SET_VISIBLE": {
+                    "value": "0x0030",
+                    "description": "Set visibility"
+                },
+                "SET_Z_ORDER": {
+                    "value": "0x0031",
+                    "description": "Set stacking order"
+                },
+                "SET_POSITION": {
+                    "value": "0x0032",
+                    "description": "Set position"
+                },
+                "SET_CURSOR": {
+                    "value": "0x0033",
+                    "description": "Set cursor sprite + hotspot (focus-validated; AD-21 sub-item 7, ADR 0005 section 5)"
+                },
+                "IDLE_QUERY": {
+                    "value": "0x0037",
+                    "description": "Query last input timestamp for idle detection; reply is IDLE_REPLY (ADR 0013; 0x0034-0x0036 reserved for set_focus, session_lock, session_unlock)"
+                },
+                "SYNC": {
+                    "value": "0x0040",
+                    "description": "Sync barrier"
+                },
+                "CLIPBOARD_SET": {
+                    "value": "0x0050",
+                    "description": "Set clipboard"
+                },
+                "CLIPBOARD_REQUEST": {
+                    "value": "0x0051",
+                    "description": "Request clipboard"
+                },
+                "OUTPUT_INFO_REQUEST": {
+                    "value": "0x0060",
+                    "description": "Query output info (framebuffer size); reply is OUTPUT_INFO_REPLY"
+                },
+                "DISCONNECT": {
+                    "value": "0x00F0",
+                    "description": "Client disconnect"
+                }
+            },
+            "replies": {
+                "HELLO_REPLY": {
+                    "value": "0x8001",
+                    "description": "Handshake response"
+                },
+                "SURFACE_CREATED": {
+                    "value": "0x8010",
+                    "description": "Surface created"
+                },
+                "SURFACE_DESTROYED": {
+                    "value": "0x8011",
+                    "description": "Surface destroyed"
+                },
+                "BUFFER_RELEASED": {
+                    "value": "0x8020",
+                    "description": "Buffer released"
+                },
+                "FRAME_COMPLETE": {
+                    "value": "0x8021",
+                    "description": "Frame rendered"
+                },
+                "CURSOR_SET": {
+                    "value": "0x8033",
+                    "description": "Cursor sprite + hotspot accepted (AD-21 sub-item 7, ADR 0005 section 5)"
+                },
+                "IDLE_REPLY": {
+                    "value": "0x8037",
+                    "description": "Idle reply: last_input_ts_ns as u64 in chronofs ns (ADR 0013)"
+                },
+                "SYNC_DONE": {
+                    "value": "0x8040",
+                    "description": "Sync complete"
+                },
+                "OUTPUT_INFO_REPLY": {
+                    "value": "0x8060",
+                    "description": "Output info reply with output_id, width, height"
+                },
+                "ERROR_REPLY": {
+                    "value": "0x80F0",
+                    "description": "Error response"
+                }
+            },
+            "events": {
+                "KEY_PRESS": {
+                    "value": "0x9001",
+                    "description": "Keyboard event"
+                },
+                "MOUSE_EVENT": {
+                    "value": "0x9002",
+                    "description": "Mouse event"
+                },
+                "GESTURE_EVENT": {
+                    "value": "0x9030",
+                    "description": "Gesture event (interval-shaped, see ADR 0017-rev2)"
+                },
+                "CLIPBOARD_DATA": {
+                    "value": "0x9050",
+                    "description": "Clipboard data"
+                }
+            }
+        },
+        "error_codes": {
+            "NONE": {
+                "value": 0,
+                "description": "Success"
+            },
+            "INVALID_MESSAGE": {
+                "value": 1,
+                "description": "Invalid message format"
+            },
+            "INVALID_SURFACE": {
+                "value": 2,
+                "description": "Invalid surface ID"
+            },
+            "INVALID_BUFFER": {
+                "value": 3,
+                "description": "Invalid buffer"
+            },
+            "PERMISSION_DENIED": {
+                "value": 4,
+                "description": "Permission denied"
+            },
+            "RESOURCE_LIMIT": {
+                "value": 5,
+                "description": "Resource limit reached"
+            },
+            "PROTOCOL_ERROR": {
+                "value": 6,
+                "description": "Protocol violation"
+            },
+            "INTERNAL_ERROR": {
+                "value": 7,
+                "description": "Internal error"
+            },
+            "VALIDATION_FAILED": {
+                "value": 8,
+                "description": "Validation failed"
+            }
+        }
+    },
+    "sdcs": {
+        "version": {
+            "major": 0,
+            "minor": 1
+        },
+        "magic": {
+            "value": "SDCS0001",
+            "prefix": "SDCS"
+        },
+        "header_size": 64,
+        "alignment": 8,
+        "opcodes": {
+            "_convention": "State ops 0x0001-0x000F, Draw ops 0x0010-0x002F, Text 0x0030+, End 0x00F0",
+            "state": {
+                "RESET": {
+                    "value": "0x0001",
+                    "payload": 0,
+                    "description": "Reset state"
+                },
+                "SET_CLIP_RECTS": {
+                    "value": "0x0002",
+                    "payload": -1,
+                    "description": "Set clip rectangles"
+                },
+                "CLEAR_CLIP": {
+                    "value": "0x0003",
+                    "payload": 0,
+                    "description": "Clear clipping"
+                },
+                "SET_BLEND": {
+                    "value": "0x0004",
+                    "payload": 4,
+                    "description": "Set blend mode"
+                },
+                "SET_TRANSFORM_2D": {
+                    "value": "0x0005",
+                    "payload": 24,
+                    "description": "Set 2D transform"
+                },
+                "RESET_TRANSFORM": {
+                    "value": "0x0006",
+                    "payload": 0,
+                    "description": "Reset transform"
+                },
+                "SET_ANTIALIAS": {
+                    "value": "0x0007",
+                    "payload": 4,
+                    "description": "Set antialiasing"
+                }
+            },
+            "draw": {
+                "FILL_RECT": {
+                    "value": "0x0010",
+                    "payload": 32,
+                    "description": "Fill rectangle"
+                },
+                "STROKE_RECT": {
+                    "value": "0x0011",
+                    "payload": 36,
+                    "description": "Stroke rectangle"
+                },
+                "STROKE_LINE": {
+                    "value": "0x0012",
+                    "payload": 36,
+                    "description": "Stroke line"
+                },
+                "SET_STROKE_JOIN": {
+                    "value": "0x0013",
+                    "payload": 4,
+                    "description": "Set line join"
+                },
+                "SET_STROKE_CAP": {
+                    "value": "0x0014",
+                    "payload": 4,
+                    "description": "Set line cap"
+                },
+                "SET_MITER_LIMIT": {
+                    "value": "0x0015",
+                    "payload": 4,
+                    "description": "Set miter limit"
+                },
+                "STROKE_QUAD_BEZIER": {
+                    "value": "0x0016",
+                    "payload": 44,
+                    "description": "Stroke quadratic bezier"
+                },
+                "STROKE_CUBIC_BEZIER": {
+                    "value": "0x0017",
+                    "payload": 60,
+                    "description": "Stroke cubic bezier"
+                },
+                "STROKE_PATH": {
+                    "value": "0x0018",
+                    "payload": -1,
+                    "description": "Stroke path"
+                },
+                "BLIT_IMAGE": {
+                    "value": "0x0020",
+                    "payload": -1,
+                    "description": "Blit image"
+                }
+            },
+            "text": {
+                "DRAW_GLYPH_RUN": {
+                    "value": "0x0030",
+                    "payload": -1,
+                    "description": "Draw glyph run"
+                }
+            },
+            "control": {
+                "END": {
+                    "value": "0x00F0",
+                    "payload": 0,
+                    "description": "End of stream"
+                }
+            }
+        }
+    }
+}

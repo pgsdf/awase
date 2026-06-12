@@ -1,0 +1,42 @@
+#!/bin/sh
+# Stage 9 (SM-1.9): s6 run script for pgsd-sessiond.
+#
+# Modeled on s6/utf/semadrawd/run, with three differences:
+#
+#   1. No backend flag (pgsd-sessiond doesn't have backend
+#      selection; it talks to semadrawd which has already picked
+#      one). semadrawd ran first per the rc.d REQUIRE chain.
+#
+#   2. No -r WxH framebuffer resolution detection. pgsd-sessiond
+#      queries the surface size from semadrawd via
+#      conn.queryOutputInfo at runtime, so no env-side detection
+#      is needed.
+#
+#   3. No SEMADRAW_RUN_UID / SEMADRAW_RUN_GID. pgsd-sessiond runs
+#      as root because it needs root for PAM session_open(),
+#      setusercontext(), and /var/run/pgsd/<uid>/ creation per
+#      ADR 0001 §Privilege model. Privilege drop happens
+#      per-session after auth, not for the daemon as a whole.
+#
+# Per s6/README.md: this script must NOT auto-background. The
+# `exec` line replaces the shell with pgsd-sessiond so s6-supervise
+# tracks pgsd-sessiond's pid directly. pgsd-sessiond's outer loop
+# runs forever (per Stage 8 session looping); SIGTERM from the
+# supervisor lands on our signal handler which sets shutdown_
+# requested, the inner loop polls the flag and exits cleanly with
+# EXIT_OK.
+
+set -e
+
+# Combine stderr with stdout so s6-log captures both.
+exec 2>&1
+
+# AD-20.3: write start-timestamp marker so finish can compute
+# lifetime for flap-protection accounting. Same pattern as the
+# other UTF services.
+SVCDIR="$(dirname "$0")"
+if [ -d "${SVCDIR}/supervise" ]; then
+    echo "$(date +%s)" > "${SVCDIR}/supervise/utf_run_started" 2>/dev/null || true
+fi
+
+exec /usr/local/bin/pgsd-sessiond --ui-only

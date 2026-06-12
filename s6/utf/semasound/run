@@ -1,0 +1,27 @@
+#!/bin/sh
+# F.5.f (ADR 0028): s6 run script for semasound, the AD-3 audio broker.
+#
+# The AD-20 run-script shape: foreground exec, stderr joined to
+# stdout for the log service, start marker for the flap-protection finish.
+#
+# The audiofs module is normally loaded by the audiofs rc.d service
+# (PROVIDE: audiofs_loaded) before utf-supervisor starts; the defensive
+# load below covers s6-svscan's auto-spawn racing rc order at boot. If
+# the load fails, the broker no longer exits (AD-47): it starts on the
+# null sink and its device layer reconnects once the module appears,
+# so clients stream silently instead of failing and audio resumes
+# without a restart.
+
+set -e
+
+exec 2>&1
+
+SVCDIR="$(dirname "$0")"
+if [ -d "${SVCDIR}/supervise" ]; then
+    echo "$(date +%s)" > "${SVCDIR}/supervise/utf_run_started" 2>/dev/null || true
+fi
+
+kldstat -q -n audiofs.ko || kldload audiofs 2>/dev/null || true
+install -d -m 0755 /var/run/sema /var/run/sema/audio
+
+exec /usr/local/bin/semasound

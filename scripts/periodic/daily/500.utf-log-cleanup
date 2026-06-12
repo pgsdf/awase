@@ -1,0 +1,22 @@
+#!/bin/sh
+# Periodic daily wrapper for utf-log-cleanup.
+#
+# Installed by install.sh to /usr/local/etc/periodic/daily/.
+# FreeBSD's periodic(8) runs every script in
+# /usr/local/etc/periodic/daily/ once per day, capturing
+# output to /var/log/daily.log (or mailing it to root,
+# depending on /etc/periodic.conf).
+#
+# The 500. prefix orders this within the daily batch:
+# 100-499 are FreeBSD baseline tasks; 500+ is the
+# conventional ports/local range.
+#
+# Mode: --trim only. Deletes archived s6-log files
+# (current is preserved, so recent activity stays
+# accessible). For more aggressive reclamation, operators
+# run utf-log-cleanup --purge --force by hand.
+#
+# Exit code is propagated to periodic(8) which logs
+# accordingly.
+
+exec /usr/local/bin/utf-log-cleanup --trim

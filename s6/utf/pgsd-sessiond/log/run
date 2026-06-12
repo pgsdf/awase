@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stage 9 (SM-1.9): s6-log run script for pgsd-sessiond.
+#
+# Mirrors s6/utf/semadrawd/log/run. See the AD-20 logging notes for the
+# flag documentation.
+#
+# pgsd-sessiond's log volume is much lower than semadrawd's
+# (no per-frame instrumentation), but using the same 10 MB
+# retention keeps log policy uniform across UTF daemons.
+
+exec s6-log -b n3 s10000000 /var/log/utf/pgsd-sessiond

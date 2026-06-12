@@ -1,0 +1,97 @@
+#
+# PGSD-DEBUG -- Debug variant of the PGSD kernel configuration.
+#
+# Derives from PGSD via include(5) to inherit every device, option,
+# and makeoption decision; adds the debug-kernel options block. Use
+# this kernconf during development of kernel-side PGSD components
+# (drawfs, inputfs, AD-28's planned inputfs_kbdmux bridge, etc.) so
+# that lock-order violations, mutex misuse, and uninitialized-lock
+# bugs are caught at the moment of occurrence with a backtrace
+# rather than silently corrupting state or deadlocking later.
+#
+# The runtime cost is significant: WITNESS in particular adds
+# overhead to every mutex acquire; the FreeBSD handbook quotes 5-10x
+# slowdown on lock-heavy workloads. PGSD-DEBUG is for development
+# only; production deployments use PGSD.
+#
+# Build procedure: see pgsd-kernel/README.md "Building a debug
+# kernel". The WITHOUT_MODULES list from PGSD's main build
+# procedure must be passed unchanged to keep ADR 0018 §3a's
+# "inputfs is the exclusive HID consumer" invariant intact;
+# PGSD-DEBUG does not relax which devices are absent from the
+# kernel, only which assertions and lock-tracking are present.
+#
+# Post-reboot verification:
+#   sysctl debug.witness.watch       (expect: 1)
+#   sysctl debug.witness.skipspin    (expect: 1)
+#   sysctl kern.conftxt | grep -E '^options (WITNESS|INVARIANTS|DDB)$'
+#   uname -i                         (expect: PGSD-DEBUG)
+#
+# To return to the production kernel:
+#   sudo nextboot -k kernel.PGSD     (if installed alongside)
+#   or boot via the loader prompt: boot kernel.PGSD/kernel
+#
+# Per docs/DF4_VERIFICATION.md, the debug kernel is also the
+# verification environment for drawfs's locking discipline (DF-4).
+# AD-28 (kbdmux bridge) extends the same justification: kernel
+# code that reaches into kbd.c (which is GIANT_REQUIRED almost
+# everywhere) is exactly the kind of integration where a
+# silent lock-order violation under stock PGSD becomes an obvious
+# WITNESS finding here.
+#
+
+include "PGSD"
+
+ident		PGSD-DEBUG
+
+# Interactive kernel debugger. PGSD already has KDB (the framework)
+# and KDB_TRACE (panic backtraces). DDB is the front-end that lets
+# you examine memory, set breakpoints, and run `bt` interactively
+# from a serial console after a panic or a manual `sysctl
+# debug.kdb.enter=1`. Without DDB, a panic just halts; with DDB,
+# the kernel drops into a prompt where the failure can be
+# investigated.
+options 	DDB
+
+# WITNESS — runtime lock-order tracking. Every mutex acquisition
+# is checked against an inferred global lock-order graph; cycles
+# (potential deadlocks) are reported with a backtrace at the
+# moment they're introduced, not when they actually deadlock.
+# This is the single most valuable debug option for kernel work
+# that crosses subsystem boundaries.
+options 	WITNESS
+
+# WITNESS_SKIPSPIN — exclude spin mutexes from WITNESS tracking.
+# Spin mutexes have stricter rules (no sleeping, no nested sleep
+# locks) but their lock-order graph is verified at compile time
+# in the scheduler core; tracking them at runtime adds large
+# overhead without finding new bugs. The standard recommendation
+# for development kernels.
+options 	WITNESS_SKIPSPIN
+
+# INVARIANTS / INVARIANT_SUPPORT — kernel-internal assertions.
+# Many subsystems wrap consistency checks in KASSERT() macros
+# that compile to nothing without these options. Enabling them
+# turns a class of "should never happen" bugs from silent
+# corruption into immediate panics with a clear message.
+# INVARIANT_SUPPORT is a prerequisite for INVARIANTS and for
+# certain third-party modules that test for it.
+options 	INVARIANTS
+options 	INVARIANT_SUPPORT
+
+# DEADLKRES — deadlock resolver. Periodically scans for threads
+# that have been blocked on the same lock for too long and
+# panics with the offending lock chain. Catches deadlocks that
+# WITNESS's static analysis misses (e.g. lock-order violations
+# in code paths the analysis didn't reach). Cheap; recommended
+# alongside WITNESS.
+options 	DEADLKRES
+
+# MALLOC_DEBUG_MAXZONES=8 — split the kernel malloc(9) zones into
+# 8 buckets to make use-after-free bugs more visible. Without
+# this, freed memory can be reallocated immediately and the
+# corruption is invisible; with this, freed memory is more
+# likely to remain in a state that triggers detectable
+# inconsistencies. The value 8 is the standard development
+# choice.
+options 	MALLOC_DEBUG_MAXZONES=8

@@ -1,0 +1,14 @@
+09-usage-page-reserved.bin
+
+CATEGORY: 3, out-of-range usages
+TARGETS: usage page comparison when the page is the maximum
+  uint32 value (well past any documented page).
+INPUT: a 4-byte Usage Page item with value 0xFFFFFFFF, a
+  usage, an empty collection.
+EXPECTED BEHAVIOR: hid_locate compares the assembled
+  full-usage uint32 against HID_USAGE2(HUP_*, ...) targets
+  and finds no match; locate functions return with no
+  pointer or keyboard usages found.
+EXPECTED FAILURE MODE IF BROKEN: signed overflow in usage
+  comparison; misclassification of the descriptor as a
+  pointer or keyboard.

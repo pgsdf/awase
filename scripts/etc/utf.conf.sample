@@ -1,0 +1,32 @@
+#
+# utf.conf.sample — UTF stack configuration
+#
+# Copy to /usr/local/etc/utf/utf.conf and edit as needed. Each daemon
+# reads its own section; keys not listed here fall back to compiled-in
+# defaults.
+#
+
+[chronofs]
+# Path to the shared clock publication segment (written by the
+# audiofs kernel module since F.4, ADR 0018).
+clock_path = /var/run/sema/clock
+
+# Ring buffer capacity, in events, per subscribed subsystem.
+ring_capacity = 65536
+
+# Audio: semasound (the AD-3 broker, ADR 0029) does not read utf.conf.
+# Its policy is per-target files at /usr/local/etc/semasound/<target>.policy
+# (grammar and surfaces: ADR 0026/0027; supervision: semasound/docs/
+# SUPERVISION.md).
+
+# Input: semainputd is retired (AD-2a Phase 3, 2026-05-08); the
+# gesture logic lives in libsemainput, configured by its consumer
+# (semadrawd), not by utf.conf.
+
+[semadrawd]
+# Backend preference order. First available wins.
+# Choices: drawfs, drm, vulkan, x11, wayland, software
+backends = drawfs, drm, software
+
+# Unix socket for client connections.
+socket = /var/run/sema/draw.sock

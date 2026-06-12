@@ -1,0 +1,11 @@
+16-report-truncated.bin
+
+CATEGORY: 5, pathological report
+TARGETS: hid_get_data when the located bit-position lies
+  beyond the report buffer's end.
+INPUT: boot mouse descriptor (which expects a 3-byte report);
+  1-byte report containing only the button-bits byte.
+EXPECTED BEHAVIOR: extract reads buttons from byte 0 (in
+  range), then attempts to read X from byte 1 (out of range).
+  hid_get_data must clamp/return 0 rather than read OOB.
+EXPECTED FAILURE MODE IF BROKEN: 1- to 7-byte OOB read.

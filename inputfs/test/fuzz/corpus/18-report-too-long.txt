@@ -1,0 +1,13 @@
+18-report-too-long.bin
+
+CATEGORY: 5, pathological report
+TARGETS: extract phase tolerance for reports larger than
+  the descriptor implies.
+INPUT: boot mouse descriptor; 1024-byte report of all 0xFF.
+EXPECTED BEHAVIOR: extract reads only the bytes the located
+  positions cover (3 bytes); the rest is ignored. No OOB
+  access either way.
+EXPECTED FAILURE MODE IF BROKEN: extract trusts the report
+  length and walks N=1024 bytes; ASan flags none, but a
+  downstream consumer might trust a wrong field. Test
+  exercises the harness handling, not a known bug.

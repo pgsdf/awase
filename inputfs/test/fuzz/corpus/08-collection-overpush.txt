@@ -1,0 +1,10 @@
+08-collection-overpush.bin
+
+CATEGORY: 2, recursive/unbalanced collections
+TARGETS: Push (0xA4) item driving pushlevel past MAXPUSH=4.
+INPUT: eight Push items in a row.
+EXPECTED BEHAVIOR: parser caps pushlevel at MAXPUSH-1, logs
+  "Cannot push item @ N" via DPRINTFN, continues without
+  writing past s->cur[].
+EXPECTED FAILURE MODE IF BROKEN: stack-buffer overflow
+  writing s->cur[5..7] when MAXPUSH=4.

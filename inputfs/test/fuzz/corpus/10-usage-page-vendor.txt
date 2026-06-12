@@ -1,0 +1,12 @@
+10-usage-page-vendor.bin
+
+CATEGORY: 3, out-of-range usages
+TARGETS: descriptors that are valid HID but contain no
+  usages inputfs cares about (vendor-defined HID device).
+INPUT: vendor-page descriptor declaring a 64-byte input
+  report with no GenericDesktop or Keyboard usages.
+EXPECTED BEHAVIOR: locate functions return with
+  pointer_locations_valid = 0 and keyboard_locations_valid
+  = 0; extract is skipped on a subsequent report.
+EXPECTED FAILURE MODE IF BROKEN: hid_locate stores garbage
+  in *flags/*id outputs and the locate function uses them.

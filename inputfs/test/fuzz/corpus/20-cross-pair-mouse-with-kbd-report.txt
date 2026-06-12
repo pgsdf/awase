@@ -1,0 +1,13 @@
+20-cross-pair-mouse-with-kbd-report.bin
+
+CATEGORY: 6, cross-paired
+TARGETS: extract robustness when the report shape doesn't
+  match the descriptor's declared format.
+INPUT: boot mouse descriptor; 8-byte report shaped like a
+  boot keyboard (modifier byte + reserved + 6 key slots).
+EXPECTED BEHAVIOR: pointer extract reads 3 bytes worth of
+  positioned fields, treats them as button-bits / X / Y;
+  values are nonsensical but no OOB occurs (8 bytes is
+  larger than 3 bytes).
+EXPECTED FAILURE MODE IF BROKEN: report-length validation
+  off; some other path reads beyond byte 3.

@@ -1,0 +1,13 @@
+06-collection-unclosed.bin
+
+CATEGORY: 2, recursive/unbalanced collections
+TARGETS: parser depth tracking when collections open without
+  matching close.
+INPUT: Usage Page (GenericDesktop), then six Collection
+  (Application) opens, no End Collection items.
+EXPECTED BEHAVIOR: parser tracks depth up to MAXPUSH=4 then
+  caps; further opens return without pushing; parse
+  terminates cleanly at end-of-buffer.
+EXPECTED FAILURE MODE IF BROKEN: hid_data->cur[] write
+  past index MAXPUSH-1 (stack-buffer overflow); collevel
+  counter overflow.

@@ -1,0 +1,34 @@
+#
+# devfs rules for UTF / inputfs.
+#
+# /dev/inputfs_notify is created by the inputfs kernel module
+# (AD-41.3 per inputfs/docs/adr/0021) with ownership and mode
+# taken from the hw.inputfs.dev_uid / dev_gid / dev_mode sysctls.
+# Those defaults are root:wheel 0600. Operators on multi-user
+# systems can raise dev_mode to 0640 and set dev_gid to a
+# deployment group (the existing tmpfs publication files at
+# /var/run/sema/input/{state,events,...} already pick up the
+# same sysctls per ADR 0013).
+#
+# This file is a fallback for sites that prefer a devfs ruleset
+# over loader.conf sysctl tuning. Either approach works; do not
+# use both, as they will race at module load and the result
+# depends on the load order.
+#
+# To use this ruleset:
+#
+#   pw groupadd utf
+#   pw groupmod utf -m <user>
+#
+# Add to /etc/rc.conf:
+#
+#   devfs_system_ruleset="utf-inputfs"
+#
+# Then: service devfs restart
+#
+# Note: there is only one devfs_system_ruleset setting. If you
+# also use utf-drawfs.rules, merge the two rulesets into a
+# combined ruleset rather than alternating between them.
+
+[utf-inputfs=11]
+add path 'inputfs_notify' mode 0660 group utf

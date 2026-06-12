@@ -1,0 +1,23 @@
+#!/bin/sh
+# AD-20: s6-log run script for semadrawd. See the AD-20 logging notes for
+# the documented logging-script flags.
+#
+# s1000000 was bumped to s10000000 on 2026-05-12 (AD-32 surfacing,
+# AD-25 Round 1 bench-collection) so high-frequency env-var-gated
+# diagnostic events (UTF_PUMP_INSTRUMENT, UTF_COMPOSITOR_INSTRUMENT,
+# future loop and composite instrumentation) capture more than the
+# original ~210 ms of activity before s6-log rotates them off. The
+# 10 MB-per-file retention with n3 archives gives ~40 MB total
+# footprint per daemon, which is bounded by s6-log itself; no
+# external cleanup needed for the retention cap to hold.
+#
+# The cap is enforced by s6-log's own rotation; the
+# scripts/utf-log-cleanup tool and its periodic daily wrapper
+# (installed by install.sh to /usr/local/etc/periodic/daily/) are
+# for operators who want to reclaim space below the cap on a
+# scheduled basis.
+#
+# Revisit this value if/when AD-25 closes and the instrumentation
+# is removed; 10 MB is sized for diagnostic-mode use and is larger
+# than the steady-state log needs.
+exec s6-log -b n3 s10000000 /var/log/utf/semadrawd

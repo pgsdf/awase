@@ -1,0 +1,470 @@
+#
+# PGSD -- Kernel configuration for the PGSD distribution
+#
+# This is a derivative of FreeBSD GENERIC at the time of PGSD's
+# creation; see /usr/src/sys/amd64/conf/GENERIC for upstream and
+# config(5) for the file format. Re-merge with upstream GENERIC
+# when tracking new FreeBSD releases.
+#
+# PGSD owns the input layer through inputfs (per AD-1 in the
+# project BACKLOG.md and the inputfs ADR series at
+# inputfs/docs/adr/). To give inputfs uncontested ownership of HID
+# devices, drivers that would otherwise claim USB HID children at
+# boot are removed from the kernel image AND from the modules
+# build. Removing the device line from this config keeps the
+# driver out of the static kernel image; that is the kernel-side
+# half. The other half is suppressing the .ko files at modules
+# build time, which is done by passing WITHOUT_MODULES on the
+# command line to make buildkernel and make installkernel.
+# pgsd-kernel/README.md documents the procedure.
+#
+# A makeoptions WITHOUT_MODULES=... directive in this config
+# would NOT reliably suppress the modules. The kernel-config
+# makeoptions reach the kernel-link step but the modules tree is
+# invoked from /usr/src/Makefile.inc1 via a separate make that
+# does not always inherit them. The supported and reliable path
+# is the command-line argument; the README is the single source
+# of truth for that procedure.
+#
+# Removed devices (compete with inputfs for HID ownership):
+#   - hkbd    HID keyboard driver, claims hidbus children
+#   - ukbd    USB keyboard driver, claims USB devices before
+#             hidbus sees them
+#
+# Devices retained that inputfs depends on:
+#   - hid     generic HID layer, parser, descriptor handling
+#   - hidbus  HID bus driver; inputfs attaches here per ADR 0007
+#   - usbhid  USB-to-HID transport, required by hidbus over USB
+#
+# Anticipatory module suppressions (drivers named in ADR 0007 that
+# may appear in a future GENERIC or be loaded on demand even when
+# absent from the static kernel; the README's WITHOUT_MODULES list
+# excludes them at build time):
+#   hms hgame hcons hsctrl hpen hmt hconf
+#     HID class drivers superseded by inputfs
+#   hidmap
+#     HID-to-evdev mapping framework; PGSD/UTF excludes evdev as
+#     a structural commitment, see ADR 0001
+#
+# Out of scope for this config (deliberate):
+#   evdev, uinput, EVDEV_SUPPORT remain enabled. Removing the
+#   evdev userland contract is a separate architectural decision
+#   with broader consequences for userland compatibility during
+#   the PGSD transition period; tracked separately, not folded
+#   into AD-8.
+#
+# For more on the FreeBSD kernel config grammar see config(5)
+# and /usr/src/sys/conf/NOTES.
+#
+
+cpu		HAMMER
+ident		PGSD
+
+makeoptions	DEBUG=-g		# Build kernel with gdb(1) debug symbols
+makeoptions	WITH_CTF=1		# Run ctfconvert(1) for DTrace support
+
+options 	SCHED_ULE		# ULE scheduler
+options 	NUMA			# Non-Uniform Memory Architecture support
+options 	PREEMPTION		# Enable kernel thread preemption
+options 	EXTERR_STRINGS
+options 	VIMAGE			# Subsystem virtualization, e.g. VNET
+options 	INET			# InterNETworking
+options 	INET6			# IPv6 communications protocols
+options 	IPSEC_SUPPORT		# Allow kldload of ipsec and tcpmd5
+options 	IPSEC_OFFLOAD		# Inline ipsec offload infra
+options 	ROUTE_MPATH		# Multipath routing support
+options 	FIB_ALGO		# Modular fib lookups
+options 	TCP_OFFLOAD		# TCP offload
+options 	TCP_BLACKBOX		# Enhanced TCP event logging
+options 	TCP_HHOOK		# hhook(9) framework for TCP
+options 	TCP_RFC7413		# TCP Fast Open
+options 	SCTP_SUPPORT		# Allow kldload of SCTP
+options 	KERN_TLS		# TLS transmit & receive offload
+options 	FFS			# Berkeley Fast Filesystem
+options 	SOFTUPDATES		# Enable FFS soft updates support
+options 	UFS_ACL			# Support for access control lists
+options 	UFS_DIRHASH		# Improve performance on big directories
+options 	UFS_GJOURNAL		# Enable gjournal-based UFS journaling
+options 	QUOTA			# Enable disk quotas for UFS
+options 	MD_ROOT			# MD is a potential root device
+options 	NFSCL			# Network Filesystem Client
+options 	NFSD			# Network Filesystem Server
+options 	NFSLOCKD		# Network Lock Manager
+options 	NFS_ROOT		# NFS usable as /, requires NFSCL
+options 	MSDOSFS			# MSDOS Filesystem
+options 	CD9660			# ISO 9660 Filesystem
+options 	PROCFS			# Process filesystem (requires PSEUDOFS)
+options 	PSEUDOFS		# Pseudo-filesystem framework
+options 	TMPFS			# Efficient memory filesystem
+options 	GEOM_RAID		# Soft RAID functionality.
+options 	GEOM_LABEL		# Provides labelization
+options 	EFIRT			# EFI Runtime Services support
+options 	COMPAT_FREEBSD32	# Compatible with i386 binaries
+options 	COMPAT_FREEBSD4		# Compatible with FreeBSD4
+options 	COMPAT_FREEBSD5		# Compatible with FreeBSD5
+options 	COMPAT_FREEBSD6		# Compatible with FreeBSD6
+options 	COMPAT_FREEBSD7		# Compatible with FreeBSD7
+options 	COMPAT_FREEBSD9		# Compatible with FreeBSD9
+options 	COMPAT_FREEBSD10	# Compatible with FreeBSD10
+options 	COMPAT_FREEBSD11	# Compatible with FreeBSD11
+options 	COMPAT_FREEBSD12	# Compatible with FreeBSD12
+options 	COMPAT_FREEBSD13	# Compatible with FreeBSD13
+options 	COMPAT_FREEBSD14	# Compatible with FreeBSD14
+options 	SCSI_DELAY=5000		# Delay (in ms) before probing SCSI
+options 	KTRACE			# ktrace(1) support
+options 	STACK			# stack(9) support
+options 	SYSVSHM			# SYSV-style shared memory
+options 	SYSVMSG			# SYSV-style message queues
+options 	SYSVSEM			# SYSV-style semaphores
+options 	_KPOSIX_PRIORITY_SCHEDULING # POSIX P1003_1B real-time extensions
+options 	PRINTF_BUFR_SIZE=128	# Prevent printf output being interspersed.
+options 	KBD_INSTALL_CDEV	# install a CDEV entry in /dev
+options 	HWPMC_HOOKS		# Necessary kernel hooks for hwpmc(4)
+options 	AUDIT			# Security event auditing
+options 	CAPABILITY_MODE		# Capsicum capability mode
+options 	CAPABILITIES		# Capsicum capabilities
+options 	MAC			# TrustedBSD MAC Framework
+options 	KDTRACE_FRAME		# Ensure frames are compiled in
+options 	KDTRACE_HOOKS		# Kernel DTrace hooks
+options 	DDB_CTF			# Kernel ELF linker loads CTF data
+options 	INCLUDE_CONFIG_FILE	# Include this file in kernel
+options 	RACCT			# Resource accounting framework
+options 	RACCT_DEFAULT_TO_DISABLED # Set kern.racct.enable=0 by default
+options 	RCTL			# Resource limits
+
+# Debugging support.  Always need this:
+options 	KDB			# Enable kernel debugger support.
+options 	KDB_TRACE		# Print a stack trace for a panic.
+
+# Kernel dump features.
+options 	EKCD			# Support for encrypted kernel dumps
+options 	GZIO			# gzip-compressed kernel and user dumps
+options 	ZSTDIO			# zstd-compressed kernel and user dumps
+options 	DEBUGNET		# debugnet networking
+options 	NETDUMP			# netdump(4) client support
+options 	NETGDB			# netgdb(4) client support
+
+# Make an SMP-capable kernel by default
+options 	SMP			# Symmetric MultiProcessor Kernel
+
+# CPU frequency control
+device		cpufreq
+
+# Bus support.
+device		acpi
+device		smbios
+options 	IOMMU
+device		pci
+options 	PCI_HP			# PCI-Express native HotPlug
+options 	PCI_IOV			# PCI SR-IOV support
+
+options 	COMPAT_LINUXKPI
+
+# Enable support for the kernel PLL to use an external PPS signal,
+# under supervision of [x]ntpd(8)
+# More info in ntpd documentation: http://www.eecis.udel.edu/~ntp
+
+options 	PPS_SYNC
+
+# Floppy drives
+device		fdc
+
+# ATA controllers
+device		ahci			# AHCI-compatible SATA controllers
+device		ata			# Legacy ATA/SATA controllers
+device		mvs			# Marvell 88SX50XX/88SX60XX/88SX70XX/SoC SATA
+device		siis			# SiliconImage SiI3124/SiI3132/SiI3531 SATA
+
+# SCSI Controllers
+device		ahc			# AHA2940 and onboard AIC7xxx devices
+device		ahd			# AHA39320/29320 and onboard AIC79xx devices
+device		hptiop			# Highpoint RocketRaid 3xxx series
+device		isp			# Qlogic family
+#device		ispfw			# Firmware for QLogic HBAs- normally a module
+device		mpt			# LSI-Logic MPT-Fusion
+device		mps			# LSI-Logic MPT-Fusion 2
+device		mpr			# LSI-Logic MPT-Fusion 3
+device		mpi3mr			# LSI-Logic MPT-Fusion 4
+device		sym			# NCR/Symbios Logic
+device		isci			# Intel C600 SAS controller
+device		ocs_fc			# Emulex FC adapters
+device		pvscsi			# VMware PVSCSI
+
+# ATA/SCSI peripherals
+device		scbus			# SCSI bus (required for ATA/SCSI)
+device		ch			# SCSI media changers
+device		da			# Direct Access (disks)
+device		sa			# Sequential Access (tape etc)
+device		cd			# CD
+device		pass			# Passthrough device (direct ATA/SCSI access)
+device		ses			# Enclosure Services (SES and SAF-TE)
+#device		ctl			# CAM Target Layer
+
+# RAID controllers interfaced to the SCSI subsystem
+device		arcmsr			# Areca SATA II RAID
+device		ciss			# Compaq Smart RAID 5*
+device		ips			# IBM (Adaptec) ServeRAID
+device		smartpqi		# Microsemi smartpqi driver
+device		tws			# LSI 3ware 9750 SATA+SAS 6Gb/s RAID controller
+
+# RAID controllers
+device		aac			# Adaptec FSA RAID
+device		aacp			# SCSI passthrough for aac (requires CAM)
+device		aacraid			# Adaptec by PMC RAID
+device		ida			# Compaq Smart RAID
+device		mfi			# LSI MegaRAID SAS
+device		mlx			# Mylex DAC960 family
+device		mrsas			# LSI/Avago MegaRAID SAS/SATA, 6Gb/s and 12Gb/s
+#XXX pointer/int warnings
+#device		pst			# Promise Supertrak SX6000
+
+# NVM Express (NVMe) support
+device		nvme			# base NVMe driver
+device		nvd			# expose NVMe namespaces as disks, depends on nvme
+
+# Universal Flash Storage Host Controller Interface support
+device 		ufshci			# UFS host controller
+
+# Intel Volume Management Device (VMD) support
+device		vmd
+
+# atkbdc0 controls both the keyboard and the PS/2 mouse
+device		atkbdc			# AT keyboard controller
+device		atkbd			# AT keyboard
+device		psm			# PS/2 mouse
+
+device		kbdmux			# keyboard multiplexer
+
+# AD-39: in-tree console drivers and their framebuffer backends
+# are removed. drawfs has exclusive ownership of the EFI
+# framebuffer once drawfs.ko loads.
+#
+# Removed:
+#   sc, vga, splash, SC_PIXEL_MODE
+#       syscons legacy console driver and its VGA backend.
+#   vt, vt_vga, vt_efifb, vt_vbefb
+#       vt(4) default console driver and its framebuffer
+#       backends. vt(4) and drawfs were both writing to the
+#       same physical address 0xc0180000 in the 2026-05-13
+#       bench session, causing cursor sprites to be
+#       overwritten by vt(4) repaints.
+#
+# Consequence: no kernel-level console on the framebuffer.
+# Boot messages do not appear on the display; recovery from
+# kernel panic or boot failure requires SSH from another
+# machine on the network, serial console (uncommon on iMac
+# hardware), or boot from rescue media (FreeBSD installer
+# USB). Verify at least one recovery path BEFORE rebooting
+# into a PGSD kernel built from this config; pgsd-kernel-build.sh's
+# pre-flight phase (phase_check) enforces this by refusing
+# to build the kernel if sshd is not configured and running.
+# The check was previously a standalone pgsd-kernel-preflight.sh
+# script that no longer exists; functionality was consolidated
+# into the build script during AD-39's tooling work. See
+# BACKLOG.md AD-39 "Recovery-path check" for the full history.
+
+device		agp			# support several AGP chipsets
+
+# CardBus bridge support
+device		cbb			# CardBus (yenta) bridge
+device		cardbus			# CardBus (32-bit) bus
+
+# Serial (COM) ports
+device		uart			# Generic UART driver
+
+# Parallel port
+device		ppc
+device		ppbus			# Parallel port bus (required)
+device		lpt			# Printer
+device		ppi			# Parallel port interface device
+#device		vpo			# Requires scbus and da
+
+device		puc			# Multi I/O cards and multi-channel UARTs
+
+# PCI/PCI-X/PCIe Ethernet NICs that use iflib infrastructure
+device		iflib
+device		em			# Intel PRO/1000 Gigabit Ethernet Family
+device		igc			# Intel I225 2.5G Ethernet
+device		ix			# Intel PRO/10GbE PCIE PF Ethernet
+device		ixv			# Intel PRO/10GbE PCIE VF Ethernet
+device		ixl			# Intel 700 Series Physical Function
+device		iavf			# Intel Adaptive Virtual Function
+device		ice			# Intel 800 Series Physical Function
+device		vmx			# VMware VMXNET3 Ethernet
+device		axp			# AMD EPYC integrated NIC (requires miibus)
+
+# PCI Ethernet NICs.
+device		bxe			# Broadcom NetXtreme II BCM5771X/BCM578XX 10GbE
+device		le			# AMD Am7900 LANCE and Am79C9xx PCnet
+device		ti			# Alteon Networks Tigon I/II gigabit Ethernet
+
+# Nvidia/Mellanox Connect-X 4 and later, Ethernet only
+#  o requires COMPAT_LINUXKPI and xz(4)
+#  o mlx5ib requires ibcore infra and is not included by default
+device		mlx5			# Base driver
+device		mlxfw			# Firmware update
+device		mlx5en			# Ethernet driver
+
+# PCI Ethernet NICs that use the common MII bus controller code.
+# NOTE: Be sure to keep the 'device miibus' line in order to use these NICs!
+device		miibus			# MII bus support
+device		ae			# Attansic/Atheros L2 FastEthernet
+device		age			# Attansic/Atheros L1 Gigabit Ethernet
+device		alc			# Atheros AR8131/AR8132 Ethernet
+device		ale			# Atheros AR8121/AR8113/AR8114 Ethernet
+device		bce			# Broadcom BCM5706/BCM5708 Gigabit Ethernet
+device		bfe			# Broadcom BCM440x 10/100 Ethernet
+device		bge			# Broadcom BCM570xx Gigabit Ethernet
+device		cas			# Sun Cassini/Cassini+ and NS DP83065 Saturn
+device		dc			# DEC/Intel 21143 and various workalikes
+device		et			# Agere ET1310 10/100/Gigabit Ethernet
+device		fxp			# Intel EtherExpress PRO/100B (82557, 82558)
+device		gem			# Sun GEM/Sun ERI/Apple GMAC
+device		jme			# JMicron JMC250 Gigabit/JMC260 Fast Ethernet
+device		lge			# Level 1 LXT1001 gigabit Ethernet
+device		msk			# Marvell/SysKonnect Yukon II Gigabit Ethernet
+device		nfe			# nVidia nForce MCP on-board Ethernet
+device		nge			# NatSemi DP83820 gigabit Ethernet
+device		re			# RealTek 8139C+/8169/8169S/8110S
+device		rl			# RealTek 8129/8139
+device		sge			# Silicon Integrated Systems SiS190/191
+device		sis			# Silicon Integrated Systems SiS 900/SiS 7016
+device		sk			# SysKonnect SK-984x & SK-982x gigabit Ethernet
+device		ste			# Sundance ST201 (D-Link DFE-550TX)
+device		stge			# Sundance/Tamarack TC9021 gigabit Ethernet
+device		vge			# VIA VT612x gigabit Ethernet
+device		vr			# VIA Rhine, Rhine II
+device		xl			# 3Com 3c90x (``Boomerang'', ``Cyclone'')
+
+# Wireless NIC cards
+device		wlan			# 802.11 support
+options 	IEEE80211_DEBUG		# enable debug msgs
+options 	IEEE80211_SUPPORT_MESH	# enable 802.11s draft support
+device		wlan_wep		# 802.11 WEP support
+device		wlan_tkip		# 802.11 TKIP support
+device		wlan_ccmp		# 802.11 CCMP support
+device		wlan_gcmp		# 802.11 GCMP support
+device		wlan_amrr		# AMRR transmit rate control algorithm
+device		ath			# Atheros CardBus/PCI NICs
+device		ath_hal			# Atheros CardBus/PCI chip support
+options 	AH_AR5416_INTERRUPT_MITIGATION # AR5416 interrupt mitigation
+device		ath_rate_sample		# SampleRate tx rate control for ath
+options		BWN_GPL_PHY 	# Compile code that includes GPLv2.
+device		bwi			# Broadcom BCM430x/BCM431x wireless NICs.
+device		bwn			# Broadcom BCM43xx wireless NICs.
+device		ipw			# Intel 2100 wireless NICs.
+device		iwi			# Intel 2200BG/2225BG/2915ABG wireless NICs.
+device		iwn			# Intel 4965/1000/5000/6000 wireless NICs.
+device		malo			# Marvell Libertas wireless NICs.
+device		mwl			# Marvell 88W8363 802.11n wireless NICs.
+device		ral			# Ralink Technology RT2500 wireless NICs.
+device		wpi			# Intel 3945ABG wireless NICs.
+
+# Pseudo devices.
+device		crypto			# core crypto support
+device		aesni			# AES-NI OpenCrypto module
+device		loop			# Network loopback
+device		padlock_rng		# VIA Padlock RNG
+device		rdrand_rng		# Intel Bull Mountain RNG
+device		ether			# Ethernet support
+device		vlan			# 802.1Q VLAN support
+device		tuntap			# Packet tunnel.
+device		md			# Memory "disks"
+device		gif			# IPv6 and IPv4 tunneling
+device		firmware		# firmware assist module
+device		xz			# lzma decompression
+
+# The `bpf' device enables the Berkeley Packet Filter.
+# Be aware of the administrative consequences of enabling this!
+# Note that 'bpf' is required for DHCP.
+device		bpf			# Berkeley packet filter
+
+# USB support
+options 	USB_DEBUG		# enable debug msgs
+device		uhci			# UHCI PCI->USB interface
+device		ohci			# OHCI PCI->USB interface
+device		ehci			# EHCI PCI->USB interface (USB 2.0)
+device		xhci			# XHCI PCI->USB interface (USB 3.0)
+device		usb			# USB Bus (required)
+device		usbhid			# USB HID Transport
+# AD-8: hkbd and ukbd removed. Both compete with inputfs for HID
+# ownership; see the file header for the rationale and ADR 0007
+# for the full set. The .ko files are suppressed at build time
+# by passing WITHOUT_MODULES on the make buildkernel command line
+# (per pgsd-kernel/README.md); these device lines are absent
+# from the static kernel.
+device		umass			# Disks/Mass storage - Requires scbus and da
+
+# Sound support
+#
+# AD-3: the snd(4) framework is removed from PGSD in full.
+# PGSD's audiofs(4) substrate owns the PCI HDA controller
+# class (class MULTIMEDIA, subclass MULTIMEDIA_HDA per the
+# PCI spec) via direct PCI attachment per ADR 0006; the
+# match is vendor-agnostic and covers both analog and HDMI
+# HDA controllers. The other in-tree snd drivers (cmi, csa,
+# emu10kx, es137x, ich, via8233) target legacy / non-HDA
+# hardware that PGSD does not aim to support; they are
+# removed rather than left in-tree as latent dead code.
+# The generic `sound` shim is removed for the same reason
+# - with no driver registering into it, it provides nothing
+# at runtime, and keeping it would suggest an /dev/dsp*
+# fallback path that the AD-3 endpoint forecloses.
+#
+# Originally, snd_hda specifically was removed because it
+# would create hdacc children with a name-locked driver
+# binding, preventing audiofs from attaching at the codec
+# slot. With Option A (full snd(4) retirement) applied, the
+# wider rationale is "if PGSD does not target the hardware,
+# the kernel does not compile in the driver", consistent
+# with AD-8 (HID exclusions) and AD-39 (console drivers).
+#
+# As with the AD-8 HID exclusions, the .ko files are
+# suppressed at build time via the WITHOUT_MODULES list in
+# pgsd-kernel-build.sh; these device lines are absent from
+# the static kernel.
+
+# MMC/SD
+device		mmc			# MMC/SD bus
+device		mmcsd			# MMC/SD memory card
+device		sdhci			# Generic PCI SD Host Controller
+
+# VirtIO support
+device		virtio			# Generic VirtIO bus (required)
+device		virtio_pci		# VirtIO PCI device
+device		vtnet			# VirtIO Ethernet device
+device		virtio_blk		# VirtIO Block device
+device		virtio_scsi		# VirtIO SCSI device
+device		virtio_balloon		# VirtIO Memory Balloon device
+
+# Linux KVM paravirtualization support
+device		kvm_clock		# KVM paravirtual clock driver
+
+# HyperV drivers and enhancement support
+device		hyperv			# HyperV drivers
+
+# Xen HVM Guest Optimizations
+# NOTE: XENHVM depends on xenpci and xentimer.
+# They must be added or removed together.
+options 	XENHVM			# Xen HVM kernel infrastructure
+device		xenefi			# Xen EFI timer device
+device		xenpci			# Xen HVM Hypervisor services driver
+device		xentimer		# Xen x86 PV timer device
+
+# Netmap provides direct access to TX/RX rings on supported NICs
+device		netmap			# netmap(4) support
+
+# evdev interface
+options 	EVDEV_SUPPORT		# evdev support in legacy drivers
+device		evdev			# input event device support
+device		uinput			# install /dev/uinput cdev
+
+# HID support
+options 	HID_DEBUG		# enable debug msgs
+device		hid			# Generic HID support
+device		hidbus			# Generic HID Bus
+options 	IICHID_SAMPLING		# Workaround missing GPIO INTR support
+
+# EFI devices
+device		efidev			# EFI pseudo-device
+device		efirtc			# EFI RTC

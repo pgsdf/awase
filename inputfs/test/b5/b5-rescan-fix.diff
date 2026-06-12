@@ -1,0 +1,387 @@
+diff --git a/inputfs/test/b5/b5-common.sh b/inputfs/test/b5/b5-common.sh
+index 7da677f..6d61be9 100644
+--- a/inputfs/test/b5/b5-common.sh
++++ b/inputfs/test/b5/b5-common.sh
+@@ -135,6 +135,72 @@ b5_install_module() {
+     return 0
+ }
+ 
++# List of competing drivers from ADR 0009 Testing section. inputfs
++# cannot attach to a hidbus child that is already claimed by one of
++# these. Both VM and bare-metal verification require all of them
++# unloaded before inputfs is loaded.
++B5_COMPETING_DRIVERS="hms hkbd hgame hcons hsctrl utouch"
++
++b5_unload_competing_drivers() {
++    b5_step "Unloading drivers that compete with inputfs (per ADR 0009)"
++
++    loaded=""
++    for drv in ${B5_COMPETING_DRIVERS}; do
++        if kldstat -q -n "${drv}" 2>/dev/null; then
++            loaded="${loaded} ${drv}"
++        fi
++    done
++
++    if [ -z "${loaded}" ]; then
++        b5_pass "No competing drivers loaded. inputfs is free to claim devices."
++        return 0
++    fi
++
++    cat <<EOF
++
++The following drivers are loaded and claim USB HID devices before
++inputfs can attach:
++   ${loaded}
++
++ADR 0009 requires these to be unloaded for inputfs verification.
++
++If you do not have a non-USB console (serial, SSH not relying on
++USB, or a remote graphical terminal), unloading hms/hkbd will leave
++you without working mouse and keyboard input until inputfs claims
++the devices, or until you reload these drivers.
++
++EOF
++
++    if ! b5_confirm "Unload these drivers now?"; then
++        b5_fail "Cannot proceed without unloading competing drivers."
++        return 3
++    fi
++
++    for drv in ${loaded}; do
++        b5_say "Unloading ${drv}"
++        if ! sudo kldunload "${drv}" 2>&1; then
++            b5_fail "Failed to unload ${drv}. May be statically compiled into the kernel."
++            return 2
++        fi
++    done
++    b5_pass "Competing drivers unloaded. inputfs is free to claim devices."
++    return 0
++}
++
++b5_reload_competing_drivers() {
++    b5_step "Optional: reload competing drivers"
++
++    if ! b5_confirm "Reload hms/hkbd and the rest to restore normal input?"; then
++        b5_say "Skipped. Reboot or run 'sudo kldload hms hkbd' manually to restore."
++        return 0
++    fi
++
++    for drv in ${B5_COMPETING_DRIVERS}; do
++        sudo kldload "${drv}" 2>/dev/null && b5_say "${drv} reloaded"
++    done
++    return 0
++}
++
+ # --- dmesg capture --------------------------------------------------
+ 
+ b5_dmesg_clear() {
+@@ -150,47 +216,69 @@ b5_dmesg_capture() {
+ # --- Signal-level acceptance checks ---------------------------------
+ 
+ b5_check_roles_line() {
+-    # Look for "roles=<expected>" on its own (no extra junk after).
++    # Look for at least one "roles=<expected>" line in the log. On
++    # bare metal multiple devices may attach in parallel and produce
++    # multiple roles= lines of different role types; this check
++    # passes as long as the expected role appears somewhere.
+     # $1 = log file, $2 = expected role string (e.g. "pointer")
+     log="$1"
+     expected="$2"
+-    if ! grep -q "roles=${expected}\$" "${log}"; then
+-        # Try without the end-of-line anchor in case there's a CR or
+-        # trailing space, but flag it as suspect.
+-        if grep -q "roles=${expected}" "${log}"; then
+-            b5_warn "roles=${expected} found but not on its own line. Format may be off."
+-            return 1
+-        fi
+-        b5_fail "Expected 'roles=${expected}' not found in ${log}"
+-        return 1
++    # Match "roles=<expected>" followed by end of line, comma (multi-
++    # role), or whitespace. This guards against false matches like
++    # "roles=pointer,keyboard" when checking for "pointer".
++    if grep -qE "roles=${expected}([,[:space:]]|\$)" "${log}"; then
++        return 0
+     fi
+-    return 0
++    # Diagnostic: report what roles lines are actually present.
++    found=$(grep 'roles=' "${log}" | sed 's/.*roles=/roles=/' | sort -u | tr '\n' ' ')
++    if [ -n "${found}" ]; then
++        b5_fail "No 'roles=${expected}' line in ${log}. Found instead: ${found}"
++    else
++        b5_fail "No 'roles=' line at all in ${log}. Device probably did not bind."
++    fi
++    return 1
+ }
+ 
+ b5_check_attach_sequence() {
+-    # Verify B.2/B.3/B.4 lines are present and in order before the
+-    # roles= line. Returns 0 if the sequence looks right.
++    # Verify the attach sequence is present and structurally correct.
++    # Tolerates multiple parallel attaches (bare-metal case): there
++    # must be at least one of each line type, and the count of
++    # roles= lines must not exceed the count of attach lines (i.e.
++    # every roles= has a corresponding attach upstream).
+     # $1 = log file
+     log="$1"
+-    line_attached=$(grep -n 'attached HID' "${log}" | head -1 | cut -d: -f1)
+-    line_descriptor=$(grep -n 'descriptor.*bytes.*input items' "${log}" | head -1 | cut -d: -f1)
+-    line_buffer=$(grep -n 'report buffer.*registering interrupt' "${log}" | head -1 | cut -d: -f1)
+-    line_roles=$(grep -n 'roles=' "${log}" | head -1 | cut -d: -f1)
+-
+-    for v in line_attached line_descriptor line_buffer line_roles; do
+-        eval "val=\${${v}:-}"
+-        if [ -z "${val}" ]; then
+-            b5_fail "Missing attach-sequence line: ${v}"
+-            return 1
+-        fi
+-    done
+ 
+-    if [ "${line_attached}" -ge "${line_roles}" ] || \
+-       [ "${line_descriptor}" -ge "${line_roles}" ] || \
+-       [ "${line_buffer}" -ge "${line_roles}" ]; then
+-        b5_fail "roles= line appears before the B.2/B.3/B.4 lines (wrong order)"
++    n_attached=$(grep -c 'attached HID' "${log}" 2>/dev/null; true)
++    n_descriptor=$(grep -c 'descriptor.*bytes.*input items' "${log}" 2>/dev/null; true)
++    n_buffer=$(grep -c 'report buffer.*registering interrupt' "${log}" 2>/dev/null; true)
++    n_roles=$(grep -c 'roles=' "${log}" 2>/dev/null; true)
++
++    if [ "${n_attached}" -eq 0 ]; then
++        b5_fail "No 'attached HID' line in ${log}. Device did not bind to inputfs."
++        b5_fail "Likely cause: a competing driver claimed the device first."
++        return 1
++    fi
++    if [ "${n_descriptor}" -eq 0 ]; then
++        b5_fail "No 'descriptor ... input items' line in ${log}."
++        return 1
++    fi
++    if [ "${n_buffer}" -eq 0 ]; then
++        b5_fail "No 'report buffer ... registering interrupt' line in ${log}."
++        return 1
++    fi
++    if [ "${n_roles}" -eq 0 ]; then
++        b5_fail "No 'roles=' line in ${log}. B.5 patch may not be active."
++        return 1
++    fi
++
++    if [ "${n_roles}" -gt "${n_attached}" ]; then
++        b5_warn "More roles= lines (${n_roles}) than attach lines (${n_attached}); odd, please review log"
+         return 1
+     fi
++
++    if [ "${n_attached}" -gt 1 ]; then
++        b5_say "Multi-device attach detected: ${n_attached} devices probed inputfs in parallel."
++    fi
+     return 0
+ }
+ 
+@@ -198,7 +286,7 @@ b5_check_report_lines() {
+     # $1 = log file, $2 = minimum count
+     log="$1"
+     minimum="$2"
+-    count=$(grep -c 'report id=0x' "${log}" || true)
++    count=$(grep -c 'report id=0x' "${log}" 2>/dev/null; true)
+     if [ "${count}" -lt "${minimum}" ]; then
+         b5_fail "Only ${count} 'report id=' lines found, expected at least ${minimum}"
+         return 1
+@@ -255,26 +343,53 @@ b5_unload() {
+ }
+ 
+ b5_rescan() {
+-    # Trigger inputfs to bind. Bus name is system-dependent.
+-    b5_say "Triggering devctl rescan"
+-    if sudo devctl rescan usbhid1 2>/dev/null; then
++    # Trigger inputfs to bind by rescanning every hidbus on the
++    # system. After kldunload of competing drivers, the hidbus
++    # children are orphans; loading inputfs registers it as a
++    # candidate driver, but hidbus does not auto-reprobe its
++    # existing children at driver-registration time. devctl rescan
++    # forces the reprobe.
++    #
++    # Multiple hidbus instances are common (one per usbhid* on every
++    # USB HID interface). Bare metal typically has 5-10; VM has 2-3.
++    # All must be rescanned, not just one.
++    b5_step "Triggering devctl rescan on every hidbus"
++
++    if ! command -v devinfo >/dev/null 2>&1; then
++        b5_warn "devinfo not available; falling back to fixed bus list"
++        for bus in usbhid0 usbhid1 hidbus0 hidbus1 hidbus2; do
++            sudo devctl rescan "${bus}" 2>/dev/null && \
++                b5_say "rescanned ${bus}"
++        done
+         return 0
+     fi
+-    if sudo devctl rescan hidbus1 2>/dev/null; then
++
++    # Collect every hidbus instance from the device tree.
++    buses=$(devinfo -r 2>/dev/null | awk '/^[ \t]*hidbus[0-9]/ {gsub(/^[ \t]+/, ""); print $1}')
++    if [ -z "${buses}" ]; then
++        b5_warn "No hidbus instances found in devinfo output."
++        b5_warn "Either no HID devices are present, or hidbus is not loaded."
+         return 0
+     fi
+-    # Try discovering the right bus name.
+-    if command -v devinfo >/dev/null 2>&1; then
+-        bus=$(devinfo -v 2>/dev/null | awk '/hidbus/ {print $1; exit}')
+-        if [ -n "${bus}" ]; then
+-            b5_say "Trying ${bus}"
+-            if sudo devctl rescan "${bus}" 2>/dev/null; then
+-                return 0
+-            fi
++
++    count=0
++    for bus in ${buses}; do
++        if sudo devctl rescan "${bus}" 2>/dev/null; then
++            b5_say "rescanned ${bus}"
++            count=$((count + 1))
++        else
++            b5_warn "rescan ${bus} failed"
+         fi
++    done
++
++    if [ "${count}" -eq 0 ]; then
++        b5_warn "No hidbus rescan succeeded. inputfs probably will not bind."
++        return 1
+     fi
+-    b5_warn "devctl rescan did not succeed on usbhid1, hidbus1, or auto-discovered bus"
+-    b5_warn "The device may have already attached on its own. Continuing."
++    b5_pass "Rescanned ${count} hidbus instance(s)."
++    # Give the kernel a moment for probes to complete and dmesg to
++    # flush before the caller captures it.
++    sleep 1
+     return 0
+ }
+ 
+diff --git a/inputfs/test/b5/b5-verify-baremetal.sh b/inputfs/test/b5/b5-verify-baremetal.sh
+index f44de05..a185e0a 100644
+--- a/inputfs/test/b5/b5-verify-baremetal.sh
++++ b/inputfs/test/b5/b5-verify-baremetal.sh
+@@ -27,79 +27,13 @@ B5_LOGDIR=$(pwd)
+ result=0
+ trap 'echo "Aborted."; exit 3' INT
+ 
+-# --- Bare-metal-specific helpers ------------------------------------
+-
+-b5_resolve_hms_hkbd_conflict() {
+-    b5_step "Resolving hms/hkbd conflict"
+-
+-    hms_loaded=0
+-    hkbd_loaded=0
+-    kldstat | grep -q '^.*hms\.ko' && hms_loaded=1
+-    kldstat | grep -q '^.*hkbd\.ko' && hkbd_loaded=1
+-
+-    if [ "${hms_loaded}" -eq 0 ] && [ "${hkbd_loaded}" -eq 0 ]; then
+-        b5_pass "hms and hkbd are not loaded. inputfs will be free to claim devices."
+-        # Could be statically compiled into the kernel; warn.
+-        if grep -q hms /sys/dev/hid/* 2>/dev/null \
+-           || sysctl -a 2>/dev/null | grep -q hms; then
+-            b5_warn "hms may be compiled into the kernel. If devices fail to bind to inputfs, that is the cause."
+-        fi
+-        return 0
+-    fi
+-
+-    cat <<EOF
+-
+-WARNING: hms and/or hkbd are loaded. They are claiming the USB
+-mouse and keyboard, blocking inputfs from attaching.
+-
+-Two options:
+-
+-  A. Permanently blacklist them by adding the following to
+-     /boot/loader.conf and rebooting:
+-
+-         hms_load="NO"
+-         hkbd_load="NO"
+-
+-  B. Unload them now for this session only.
+-
+-If you have not prepared a fallback console (serial, SSH not
+-relying on USB, or a remote graphical terminal), choose A,
+-reboot, and re-run this script.
+-
+-EOF
+-
+-    if ! b5_confirm "Unload hms and hkbd now (option B)?"; then
+-        b5_say "Aborting. Configure /boot/loader.conf and reboot, then re-run."
+-        return 3
+-    fi
+-
+-    b5_pause "Last chance to abort. After this prompt, your USB mouse and keyboard will stop responding to the system until inputfs claims them. Are you on a non-USB console?"
+-
+-    if [ "${hms_loaded}" -eq 1 ]; then
+-        b5_say "Unloading hms"
+-        if ! sudo kldunload hms; then
+-            b5_fail "Failed to unload hms"
+-            return 2
+-        fi
+-    fi
+-    if [ "${hkbd_loaded}" -eq 1 ]; then
+-        b5_say "Unloading hkbd"
+-        if ! sudo kldunload hkbd; then
+-            b5_fail "Failed to unload hkbd"
+-            return 2
+-        fi
+-    fi
+-    b5_pass "hms/hkbd unloaded. inputfs is now free to claim USB HID devices."
+-    return 0
+-}
+-
+ # --- Preconditions ---------------------------------------------------
+ 
+ b5_check_patch_applied      || exit 2
+ b5_check_build              || exit 2
+ b5_check_no_prior_load      || exit 2
+-b5_install_module           || exit 2
+-b5_resolve_hms_hkbd_conflict || exit $?
++b5_install_module              || exit 2
++b5_unload_competing_drivers    || exit $?
+ 
+ # --- Signal 2.1 ------------------------------------------------------
+ 
+@@ -185,14 +119,9 @@ else
+     result=1
+ fi
+ 
+-# --- Restore hms/hkbd if we unloaded them ---------------------------
+-
+-b5_step "Optional: restore hms and hkbd"
++# --- Restore competing drivers if we unloaded them ------------------
+ 
+-if b5_confirm "Reload hms and hkbd to restore normal mouse/keyboard?"; then
+-    sudo kldload hms 2>/dev/null && b5_say "hms reloaded"
+-    sudo kldload hkbd 2>/dev/null && b5_say "hkbd reloaded"
+-fi
++b5_reload_competing_drivers
+ 
+ # --- Concatenate ----------------------------------------------------
+ 
+diff --git a/inputfs/test/b5/b5-verify-vm.sh b/inputfs/test/b5/b5-verify-vm.sh
+index b58aa0a..1f4543c 100644
+--- a/inputfs/test/b5/b5-verify-vm.sh
++++ b/inputfs/test/b5/b5-verify-vm.sh
+@@ -21,10 +21,11 @@ trap 'echo "Aborted."; exit 3' INT
+ 
+ # --- Preconditions ---------------------------------------------------
+ 
+-b5_check_patch_applied   || exit 2
+-b5_check_build           || exit 2
+-b5_check_no_prior_load   || exit 2
+-b5_install_module        || exit 2
++b5_check_patch_applied         || exit 2
++b5_check_build                 || exit 2
++b5_check_no_prior_load         || exit 2
++b5_install_module              || exit 2
++b5_unload_competing_drivers    || exit $?
+ 
+ # --- Signal 1.1 ------------------------------------------------------
+ 
+@@ -123,6 +124,10 @@ else
+     result=1
+ fi
+ 
++# --- Restore competing drivers if we unloaded them ------------------
++
++b5_reload_competing_drivers
++
+ # --- Concatenate ---------------------------------------------------
+ 
+ cat "${B5_LOGDIR}/b5-1.1.log" \

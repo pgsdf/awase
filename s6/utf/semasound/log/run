@@ -1,0 +1,6 @@
+#!/bin/sh
+# F.5.f (ADR 0028): s6-log run script for semasound. Same flags and
+# retention rationale as semaaud's (AD-20): blocking mode, 3 archives,
+# ~10 MB rotation; utf-log-cleanup handles scheduled reclamation.
+
+exec s6-log -b n3 s10000000 /var/log/utf/semasound

@@ -1,0 +1,13 @@
+04-truncated-mid-collection.bin
+
+CATEGORY: 1, truncated descriptor
+TARGETS: parser state at depth 1 with no matching End
+  Collection item.
+INPUT: first 6 bytes of boot mouse: an open Application
+  Collection that is never closed.
+EXPECTED BEHAVIOR: parse terminates at end-of-buffer with
+  collection depth still 1; no crash, no usages located
+  inside the unclosed collection.
+EXPECTED FAILURE MODE IF BROKEN: unbalanced state corrupts
+  the per-RID position table; pathological loop on
+  hid_switch_rid.

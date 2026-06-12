@@ -1,0 +1,11 @@
+03-truncated-mid-item.bin
+
+CATEGORY: 1, truncated descriptor
+TARGETS: hid_get_item state machine when an item with bSize > 1
+  is truncated mid-payload.
+INPUT: first 5 bytes of the boot mouse descriptor, ending at
+  0xA1 (the Collection item header that needs 1 payload byte).
+EXPECTED BEHAVIOR: graceful termination, no crash, no usages
+  located.
+EXPECTED FAILURE MODE IF BROKEN: read of unmapped memory if
+  the parser advances s->p past s->end.

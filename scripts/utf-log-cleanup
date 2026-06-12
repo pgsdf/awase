@@ -1,0 +1,290 @@
+#!/bin/sh
+# utf-log-cleanup: operator helper for compacting s6-log-managed
+# log directories.
+#
+# Surfaced 2026-05-12 alongside AD-32 (semadrawd busy-wait) and
+# AD-25 Round 1 findings. Bench rounds with env-var-gated
+# instrumentation can produce log volume that benefits from
+# scheduled cleanup, even though s6-log enforces its own retention
+# cap (currently ~40 MB per daemon, sized in the log/run scripts).
+#
+# This tool operates on any subdirectory of /var/log/ that
+# matches the s6-log shape:
+#
+#   <dir>/current      the live log file (s6-log holds an open fd)
+#   <dir>/@*.s         rotated archives
+#   <dir>/lock         s6-log lockfile (preserved)
+#   <dir>/state        s6-log internal state (preserved)
+#
+# Non-matching directories are skipped. The tool never touches
+# files outside /var/log/ and never touches anything that does
+# not look like an s6-log directory; it is conservative by
+# design.
+#
+# Modes:
+#
+#   utf-log-cleanup
+#       Read-only status. Lists every /var/log/*/ directory,
+#       shows whether it is s6-log-shaped, and reports total
+#       size and archived-file count.
+#
+#   utf-log-cleanup --trim
+#       Delete every @*.s archive in every s6-log-shaped
+#       directory. The current file is left untouched. Safe to
+#       run from cron / periodic; this is the recommended
+#       scheduled operation.
+#
+#   utf-log-cleanup --purge --force
+#       Trim plus truncate current to zero. Before truncating,
+#       sends s6-svc -t to the log supervisor so s6-log
+#       close-and-reopens the file cleanly; then truncates from
+#       outside. Loses recent log data; require --force as a
+#       guard rail because this is destructive.
+#
+#   utf-log-cleanup --dry-run [--trim | --purge --force]
+#       Show what would happen without doing it. Pairs with
+#       --trim or --purge.
+#
+# Exits non-zero on usage errors; emits warnings (but continues)
+# on per-directory failures (e.g. permission denied on one
+# directory while others succeed).
+
+set -e
+
+LOG_ROOT="/var/log"
+SERVICE_ROOT="/var/service"
+
+# ----------------------------------------------------------------------
+# Argument parsing
+# ----------------------------------------------------------------------
+
+MODE="status"
+DRY_RUN=0
+FORCE=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --trim)
+            MODE="trim"
+            ;;
+        --purge)
+            MODE="purge"
+            ;;
+        --force)
+            FORCE=1
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        -h|--help)
+            sed -n '2,/^set -e/p' "$0" | sed -e 's/^#//' -e 's/^ //'
+            exit 0
+            ;;
+        *)
+            echo "error: unknown argument: $1" >&2
+            echo "usage: utf-log-cleanup [--trim | --purge --force] [--dry-run]" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [ "$MODE" = "purge" ] && [ "$FORCE" -ne 1 ]; then
+    echo "error: --purge requires --force (truncates current; loses recent log data)" >&2
+    exit 2
+fi
+
+# ----------------------------------------------------------------------
+# Privilege check (purge / trim need root since current is
+# typically root:wheel; status is read-only and can run unprivileged)
+# ----------------------------------------------------------------------
+
+if [ "$MODE" != "status" ] && [ "$(id -u)" -ne 0 ]; then
+    echo "error: $MODE requires root (log files are root-owned)" >&2
+    exit 1
+fi
+
+# ----------------------------------------------------------------------
+# Detect s6-log-shaped directories under /var/log
+# ----------------------------------------------------------------------
+
+is_s6_log_dir() {
+    # Returns 0 iff $1 is a directory containing a 'current'
+    # file. This is the minimal s6-log signature; lock and state
+    # are not required (s6-log creates them on demand).
+    [ -d "$1" ] && [ -f "$1/current" ]
+}
+
+list_s6_log_dirs() {
+    # Walk subdirectories of LOG_ROOT to a reasonable depth and
+    # return those that look like s6-log dirs. Output is one
+    # path per line.
+    #
+    # maxdepth 3 covers both flat layouts (/var/log/<svc>/) and
+    # the project's namespaced layout (/var/log/utf/<svc>/),
+    # without descending arbitrarily into unrelated log trees.
+    # The original implementation walked only direct children
+    # of LOG_ROOT, which missed /var/log/utf/<svc>/ entirely;
+    # corrected 2026-05-12 after bench testing showed an empty
+    # status table on the production /var/log/utf/ layout.
+    if [ ! -d "$LOG_ROOT" ]; then
+        return 0
+    fi
+    find "$LOG_ROOT" -maxdepth 3 -type d 2>/dev/null | while read -r d; do
+        if is_s6_log_dir "$d"; then
+            printf '%s\n' "$d"
+        fi
+    done
+}
+
+dry_run_suffix() {
+    # Echo " (dry run)" iff DRY_RUN=1, empty otherwise. The
+    # original implementation used ${DRY_RUN:+ (dry run)},
+    # which expands when DRY_RUN is set to any non-empty value
+    # including "0" (the not-dry-run state). Corrected
+    # 2026-05-12: use an explicit numeric comparison.
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '%s' " (dry run)"
+    fi
+}
+
+# ----------------------------------------------------------------------
+# Status mode: list all s6-log dirs with size and archive count
+# ----------------------------------------------------------------------
+
+print_status() {
+    fmt="%-40s %10s %8s %s\n"
+    printf "$fmt" "directory" "total" "archives" "current"
+    printf "$fmt" "---------" "-----" "--------" "-------"
+    list_s6_log_dirs | while read -r dir; do
+        # du -k gives kilobytes; portable across BSD and GNU.
+        total_kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
+        total="${total_kb}K"
+        archive_count=$(find "$dir" -maxdepth 1 -name '@*.s' 2>/dev/null | wc -l | tr -d ' ')
+        if [ -f "$dir/current" ]; then
+            current_kb=$(du -k "$dir/current" 2>/dev/null | awk '{print $1}')
+            current="${current_kb}K"
+        else
+            current="-"
+        fi
+        printf "$fmt" "$dir" "$total" "$archive_count" "$current"
+    done
+}
+
+# ----------------------------------------------------------------------
+# Trim: delete @*.s archives, leave current alone
+# ----------------------------------------------------------------------
+
+trim_one() {
+    dir="$1"
+    archives=$(find "$dir" -maxdepth 1 -name '@*.s' 2>/dev/null)
+    if [ -z "$archives" ]; then
+        echo "  $dir: no archives to trim"
+        return 0
+    fi
+    count=$(printf '%s\n' "$archives" | wc -l | tr -d ' ')
+    size_kb=$(printf '%s\n' "$archives" | xargs du -ck 2>/dev/null | awk '/total$/ {print $1}')
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  $dir: would delete $count archive(s), ~${size_kb}K"
+        return 0
+    fi
+    printf '%s\n' "$archives" | while read -r a; do
+        rm -f "$a" || echo "  WARNING: failed to remove $a" >&2
+    done
+    echo "  $dir: deleted $count archive(s), ~${size_kb}K reclaimed"
+}
+
+do_trim() {
+    echo "Trimming s6-log archives under $LOG_ROOT/$(dry_run_suffix)"
+    list_s6_log_dirs | while read -r dir; do
+        trim_one "$dir"
+    done
+}
+
+# ----------------------------------------------------------------------
+# Purge: trim plus truncate current. Send s6-svc -t to the log
+# supervisor first so s6-log closes-and-reopens current; then
+# truncate from outside. The two-step is cleaner than truncating
+# while s6-log holds the fd because s6-log's next write goes to
+# the fresh file rather than offset 0 of the previously-truncated
+# one.
+# ----------------------------------------------------------------------
+
+log_supervisor_for() {
+    # Given /var/log/<svc>/, return /var/service/utf/<svc>/log if
+    # it exists, else empty string. The mapping assumes the
+    # convention that /var/log/utf/<svc>/ pairs with
+    # /var/service/utf/<svc>/log/. Other s6-log dirs may not have
+    # supervisors (or may live under different paths); the purge
+    # path handles "no supervisor found" by skipping the
+    # close-and-reopen step and falling back to a straight
+    # truncate.
+    dir="$1"
+    case "$dir" in
+        "$LOG_ROOT"/utf/*)
+            svc=$(basename "$dir")
+            sup="$SERVICE_ROOT/utf/$svc/log"
+            if [ -d "$sup" ]; then
+                printf '%s\n' "$sup"
+            fi
+            ;;
+    esac
+}
+
+purge_one() {
+    dir="$1"
+    trim_one "$dir"
+    if [ ! -f "$dir/current" ]; then
+        echo "  $dir: no current file to purge"
+        return 0
+    fi
+    cur_kb=$(du -k "$dir/current" 2>/dev/null | awk '{print $1}')
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "  $dir: would truncate current (~${cur_kb}K)"
+        return 0
+    fi
+    # Find supervisor and request log close-and-reopen if
+    # possible. Falls through to the plain truncate if no
+    # supervisor exists.
+    sup=$(log_supervisor_for "$dir")
+    if [ -n "$sup" ]; then
+        if s6-svc -t "$sup" 2>/dev/null; then
+            echo "  $dir: signalled log supervisor ($sup) to reopen"
+            # Give s6-log a moment to handle the signal and
+            # reopen. 100ms is generous.
+            sleep 0.1 2>/dev/null || sleep 1
+        else
+            echo "  WARNING: s6-svc -t $sup failed; truncating current directly" >&2
+        fi
+    fi
+    : > "$dir/current" 2>/dev/null || {
+        echo "  WARNING: failed to truncate $dir/current" >&2
+        return 1
+    }
+    echo "  $dir: truncated current (~${cur_kb}K reclaimed)"
+}
+
+do_purge() {
+    echo "Purging s6-log directories under $LOG_ROOT/$(dry_run_suffix)"
+    list_s6_log_dirs | while read -r dir; do
+        purge_one "$dir"
+    done
+}
+
+# ----------------------------------------------------------------------
+# Dispatch
+# ----------------------------------------------------------------------
+
+case "$MODE" in
+    status)
+        print_status
+        ;;
+    trim)
+        do_trim
+        ;;
+    purge)
+        do_purge
+        ;;
+esac
+
+exit 0

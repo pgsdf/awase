@@ -1,0 +1,14 @@
+14-lying-position-overflow.bin
+
+CATEGORY: 4, lying descriptor
+TARGETS: bit-position arithmetic in hid_get_item when the
+  cumulative position would push past 32 bits.
+INPUT: descriptor declaring an Input field of 65535 bits per
+  element with 15 elements (totaling ~983,025 bits).
+EXPECTED BEHAVIOR: parser tracks the position via uint32_t;
+  even at maximum it cannot overflow within a single
+  descriptor of this size. locate returns with X located at
+  pos=0 (first element).
+EXPECTED FAILURE MODE IF BROKEN: integer overflow in pos
+  tracking, position arithmetic in hid_get_data picks up
+  garbage state, OOB read on subsequent extract.

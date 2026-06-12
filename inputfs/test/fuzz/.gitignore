@@ -1,0 +1,3 @@
+# Build artefacts produced by `make`.
+inputfs-fuzz
+*.o
