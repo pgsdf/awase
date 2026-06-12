@@ -213,7 +213,7 @@ F.6 (ADR 0029, 2026-06-05).
 ## Repository Layout
 
 ```
-Awase/
+awase/
 ├── drawfs/          kernel module and protocol (FreeBSD 15)
 ├── inputfs/         kernel input substrate (FreeBSD 15)
 ├── audiofs/         kernel audio substrate (FreeBSD 15; class-matched PCI HDA; AD-3 commits 1-6g landed 2026-05-21)
