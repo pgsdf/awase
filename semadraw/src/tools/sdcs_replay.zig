@@ -988,6 +988,129 @@ fn rectApplyTBounds(t: Transform2D, x: f32, y: f32, w: f32, h: f32) struct { x: 
     return .{ .x = minx, .y = miny, .w = (maxx - minx), .h = (maxy - miny) };
 }
 
+const FillPoint = struct { x: f32, y: f32 };
+
+// Point-in-path test under a winding rule, over one or more closed
+// contours (ADR 0015). Points are device-space; each contour is closed
+// by connecting its last point to its first. A horizontal ray is cast
+// in +x; the half-open crossing convention (a.y <= py) != (b.y <= py)
+// counts each crossing once, which is what keeps vertices that land on
+// a sample row from double-counting or cancelling.
+fn pointInFilledPath(px: f32, py: f32, pts: []const FillPoint, contour_lens: []const u32, even_odd: bool) bool {
+    var winding: i32 = 0;
+    var parity: u1 = 0;
+    var base: usize = 0;
+    for (contour_lens) |clen| {
+        const n: usize = @intCast(clen);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const a = pts[base + i];
+            const b = pts[base + ((i + 1) % n)];
+            if ((a.y <= py) != (b.y <= py)) {
+                const t_cross = (py - a.y) / (b.y - a.y);
+                const xint = a.x + t_cross * (b.x - a.x);
+                if (xint > px) {
+                    if (even_odd) {
+                        parity ^= 1;
+                    } else if (b.y > a.y) {
+                        winding += 1;
+                    } else {
+                        winding -= 1;
+                    }
+                }
+            }
+        }
+        base += n;
+    }
+    if (even_odd) return parity == 1;
+    return winding != 0;
+}
+
+// Rasterize a filled path. Points are already transformed to device
+// space. Boundary coverage uses the same 4x4 (16-sample) lattice and
+// the same fbBlendPixelAA path as stroke rasterization, so a fill and a
+// coincident stroke antialias identically; coverage is an integer
+// sample count in [0,16] (ADR 0015 section 5). The non-AA path samples
+// the pixel center.
+fn emitFilledPath(
+    rgba: []u8,
+    w: usize,
+    h: usize,
+    clip_enabled: bool,
+    clip_rects: []const ClipRect,
+    blend_mode: u32,
+    pts: []const FillPoint,
+    contour_lens: []const u32,
+    even_odd: bool,
+    cr: f32,
+    cg: f32,
+    cb: f32,
+    ca: f32,
+    aa: bool,
+) void {
+    if (pts.len == 0) return;
+
+    var minx = pts[0].x;
+    var miny = pts[0].y;
+    var maxx = pts[0].x;
+    var maxy = pts[0].y;
+    for (pts) |p| {
+        if (p.x < minx) minx = p.x;
+        if (p.y < miny) miny = p.y;
+        if (p.x > maxx) maxx = p.x;
+        if (p.y > maxy) maxy = p.y;
+    }
+
+    if (minx < 0.0) minx = 0.0;
+    if (miny < 0.0) miny = 0.0;
+    if (maxx > @as(f32, @floatFromInt(w))) maxx = @as(f32, @floatFromInt(w));
+    if (maxy > @as(f32, @floatFromInt(h))) maxy = @as(f32, @floatFromInt(h));
+    if (maxx <= minx or maxy <= miny) return;
+
+    const ix0: isize = @intFromFloat(@floor(minx));
+    const iy0: isize = @intFromFloat(@floor(miny));
+    const ix1: isize = @intFromFloat(@ceil(maxx));
+    const iy1: isize = @intFromFloat(@ceil(maxy));
+
+    const r8 = clampU8(cr);
+    const g8 = clampU8(cg);
+    const b8 = clampU8(cb);
+    const a8 = clampU8(ca);
+
+    var iy: isize = iy0;
+    while (iy < iy1) : (iy += 1) {
+        if (iy < 0 or iy >= @as(isize, @intCast(h))) continue;
+        var ix: isize = ix0;
+        while (ix < ix1) : (ix += 1) {
+            if (ix < 0 or ix >= @as(isize, @intCast(w))) continue;
+            const base_px: f32 = @floatFromInt(ix);
+            const base_py: f32 = @floatFromInt(iy);
+            const idx: usize = (@as(usize, @intCast(iy)) * w + @as(usize, @intCast(ix))) * 4;
+
+            if (aa) {
+                var samples_inside: u32 = 0;
+                for (AA_SAMPLE_OFFSETS) |offset| {
+                    const spx = base_px + offset[0];
+                    const spy = base_py + offset[1];
+                    if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
+                    if (pointInFilledPath(spx, spy, pts, contour_lens, even_odd)) samples_inside += 1;
+                }
+                if (samples_inside > 0) {
+                    const coverage: f32 = @as(f32, @floatFromInt(samples_inside)) / @as(f32, @floatFromInt(AA_SAMPLES));
+                    fbBlendPixelAA(rgba, idx, r8, g8, b8, a8, blend_mode, coverage);
+                }
+            } else {
+                const spx = base_px + 0.5;
+                const spy = base_py + 0.5;
+                if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
+                if (pointInFilledPath(spx, spy, pts, contour_lens, even_odd)) {
+                    fbBlendPixel(rgba, idx, r8, g8, b8, a8, blend_mode);
+                }
+            }
+        }
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1476,6 +1599,43 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                     fbFillRectClipped(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, if (clip_enabled) clip_rects.items else null);
                 }
 
+            } else if (cmd.opcode == sdcs.Op.FILL_PATH) {
+                // Payload (ADR 0015): r,g,b,a (4 f32), fill_rule (u32),
+                // contour_count (u32), contour_lengths (cc x u32),
+                // points (sum x 2 x f32).
+                if (pb < 24) return error.Protocol;
+                const fcr = try readF32LE(r);
+                const fcg = try readF32LE(r);
+                const fcb = try readF32LE(r);
+                const fca = try readF32LE(r);
+                const fill_rule = try readU32LE(r);
+                const contour_count = try readU32LE(r);
+                if (fill_rule > 1) return error.Protocol;
+                if (contour_count == 0) return error.Protocol;
+
+                const lens = try alloc.alloc(u32, contour_count);
+                defer alloc.free(lens);
+                var total_pts: usize = 0;
+                for (lens) |*l| {
+                    l.* = try readU32LE(r);
+                    if (l.* < 3) return error.Protocol;
+                    total_pts += @as(usize, l.*);
+                }
+
+                const expected_size: usize = 24 + @as(usize, contour_count) * 4 + total_pts * 8;
+                if (pb != expected_size) return error.Protocol;
+
+                const fpts = try alloc.alloc(FillPoint, total_pts);
+                defer alloc.free(fpts);
+                for (fpts) |*p| {
+                    const ux = try readF32LE(r);
+                    const uy = try readF32LE(r);
+                    const tp = applyT(t, ux, uy);
+                    p.* = .{ .x = tp.x, .y = tp.y };
+                }
+
+                emitFilledPath(rgba, w, h, clip_enabled, clip_rects.items, blend_mode, fpts, lens, fill_rule == 1, fcr, fcg, fcb, fca, aa_enabled);
+
             } else if (cmd.opcode == sdcs.Op.BLIT_IMAGE) {
                 // Payload: dst_x(f32), dst_y(f32), img_w(u32), img_h(u32), pixels(RGBA)
                 if (pb < 16) return error.Protocol;
@@ -1901,4 +2061,67 @@ try out.writeAll(ppm_hdr);
         rgb_out[i * 3 + 2] = rgba[i * 4 + 2];
     }
     try out.writeAll(rgb_out);
+}
+
+test "pointInFilledPath convex square nonzero" {
+    const sq = [_]FillPoint{ .{ .x = 0, .y = 0 }, .{ .x = 10, .y = 0 }, .{ .x = 10, .y = 10 }, .{ .x = 0, .y = 10 } };
+    const lens = [_]u32{4};
+    try std.testing.expect(pointInFilledPath(5, 5, sq[0..], lens[0..], false));
+    try std.testing.expect(!pointInFilledPath(15, 5, sq[0..], lens[0..], false));
+    try std.testing.expect(!pointInFilledPath(-1, 5, sq[0..], lens[0..], false));
+}
+
+test "pointInFilledPath ring hole, opposite inner winding" {
+    // Outer CCW, inner CW (opposite) -> hole under both rules.
+    const pts = [_]FillPoint{
+        .{ .x = 0, .y = 0 },  .{ .x = 10, .y = 0 }, .{ .x = 10, .y = 10 }, .{ .x = 0, .y = 10 },
+        .{ .x = 3, .y = 3 },  .{ .x = 3, .y = 7 },  .{ .x = 7, .y = 7 },   .{ .x = 7, .y = 3 },
+    };
+    const lens = [_]u32{ 4, 4 };
+    try std.testing.expect(!pointInFilledPath(5, 5, pts[0..], lens[0..], true)); // even-odd hole
+    try std.testing.expect(pointInFilledPath(1, 5, pts[0..], lens[0..], true)); // between contours
+    try std.testing.expect(!pointInFilledPath(5, 5, pts[0..], lens[0..], false)); // nonzero hole
+    try std.testing.expect(pointInFilledPath(1, 5, pts[0..], lens[0..], false));
+}
+
+test "pointInFilledPath winding rule diverges on nested same-direction contours" {
+    // Both CCW: nonzero keeps the center filled, even-odd carves a hole.
+    const pts = [_]FillPoint{
+        .{ .x = 0, .y = 0 }, .{ .x = 10, .y = 0 }, .{ .x = 10, .y = 10 }, .{ .x = 0, .y = 10 },
+        .{ .x = 3, .y = 3 }, .{ .x = 7, .y = 3 },  .{ .x = 7, .y = 7 },   .{ .x = 3, .y = 7 },
+    };
+    const lens = [_]u32{ 4, 4 };
+    try std.testing.expect(pointInFilledPath(5, 5, pts[0..], lens[0..], false)); // nonzero: filled
+    try std.testing.expect(!pointInFilledPath(5, 5, pts[0..], lens[0..], true)); // even-odd: hole
+}
+
+test "emitFilledPath interior opaque, exterior untouched" {
+    const W: usize = 8;
+    const H: usize = 8;
+    var fb = [_]u8{0} ** (8 * 8 * 4);
+    const sq = [_]FillPoint{ .{ .x = 2, .y = 2 }, .{ .x = 6, .y = 2 }, .{ .x = 6, .y = 6 }, .{ .x = 2, .y = 6 } };
+    const lens = [_]u32{4};
+    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 0.0, 0.0, 1.0, true);
+
+    const i_in = (4 * W + 4) * 4;
+    try std.testing.expectEqual(@as(u8, 255), fb[i_in + 0]); // R
+    try std.testing.expectEqual(@as(u8, 255), fb[i_in + 3]); // A
+
+    const i_out = (0 * W + 0) * 4;
+    try std.testing.expectEqual(@as(u8, 0), fb[i_out + 3]); // untouched
+}
+
+test "emitFilledPath antialiases a fractional edge" {
+    const W: usize = 8;
+    const H: usize = 8;
+    var fb = [_]u8{0} ** (8 * 8 * 4);
+    const sq = [_]FillPoint{ .{ .x = 2.5, .y = 2.0 }, .{ .x = 5.5, .y = 2.0 }, .{ .x = 5.5, .y = 6.0 }, .{ .x = 2.5, .y = 6.0 } };
+    const lens = [_]u32{4};
+    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 1.0, 1.0, 1.0, true);
+
+    const i_edge = (4 * W + 2) * 4; // column [2,3] straddles left edge x=2.5
+    try std.testing.expect(fb[i_edge + 3] > 0 and fb[i_edge + 3] < 255);
+
+    const i_full = (4 * W + 3) * 4; // column [3,4] fully inside
+    try std.testing.expectEqual(@as(u8, 255), fb[i_full + 3]);
 }
