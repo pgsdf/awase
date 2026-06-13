@@ -149,86 +149,72 @@ if [ ! -f "$expected_file" ]; then
   echo "$hash_aa  aa.ppm" >> "$expected_file"
   echo "$hash_glyph  glyph.ppm" >> "$expected_file"
   echo "golden hashes created at $expected_file"
-  exit 0
 fi
 
 # Append new entries if the golden file exists but is missing them.
 if ! grep -q ' test.ppm$' "$expected_file"; then
   echo "$hash_one  test.ppm" >> "$expected_file"
   echo "added missing golden entry for test.ppm"
-  exit 0
 fi
 
 if ! grep -q ' overlap.ppm$' "$expected_file"; then
   echo "$hash_two  overlap.ppm" >> "$expected_file"
   echo "added missing golden entry for overlap.ppm"
-  exit 0
 fi
 
 if ! grep -q ' fractional.ppm$' "$expected_file"; then
   echo "$hash_three  fractional.ppm" >> "$expected_file"
   echo "added missing golden entry for fractional.ppm"
-  exit 0
 fi
 
 if ! grep -q ' clip.ppm$' "$expected_file"; then
   echo "$hash_four  clip.ppm" >> "$expected_file"
   echo "added missing golden entry for clip.ppm"
-  exit 0
 fi
 
 if ! grep -q ' transform.ppm$' "$expected_file"; then
   echo "$hash_five  transform.ppm" >> "$expected_file"
   echo "added missing golden entry for transform.ppm"
-  exit 0
 fi
 
 if ! grep -q ' blend.ppm$' "$expected_file"; then
   echo "$hash_six  blend.ppm" >> "$expected_file"
   echo "added missing golden entry for blend.ppm"
-  exit 0
 fi
 
 if ! grep -q ' miter_limit.ppm$' "$expected_file"; then
   echo "$hash_miter_limit  miter_limit.ppm" >> "$expected_file"
   echo "added missing golden entry for miter_limit.ppm"
-  exit 0
 fi
 
 if ! grep -q ' diagonal.ppm$' "$expected_file"; then
   echo "$hash_diagonal  diagonal.ppm" >> "$expected_file"
   echo "added missing golden entry for diagonal.ppm"
-  exit 0
 fi
 
 if ! grep -q ' blit.ppm$' "$expected_file"; then
   echo "$hash_blit  blit.ppm" >> "$expected_file"
   echo "added missing golden entry for blit.ppm"
-  exit 0
 fi
 
 if ! grep -q ' curves.ppm$' "$expected_file"; then
   echo "$hash_curves  curves.ppm" >> "$expected_file"
   echo "added missing golden entry for curves.ppm"
-  exit 0
 fi
 
 if ! grep -q ' path.ppm$' "$expected_file"; then
   echo "$hash_path  path.ppm" >> "$expected_file"
   echo "added missing golden entry for path.ppm"
-  exit 0
 fi
 
 if ! grep -q ' text.ppm$' "$expected_file"; then
   echo "$hash_text  text.ppm" >> "$expected_file"
   echo "added missing golden entry for text.ppm"
-  exit 0
 fi
 
 if ! grep -q ' aa.ppm$' "$expected_file"; then
   echo "$hash_aa  aa.ppm" >> "$expected_file"
   echo "added missing golden entry for aa.ppm"
-  exit 0
 fi
 
 expected_one=$(grep ' test.ppm$' "$expected_file" | awk '{print $1}')

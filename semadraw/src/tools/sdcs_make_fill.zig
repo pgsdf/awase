@@ -26,10 +26,13 @@ fn emitScene(enc: *semadraw.Encoder) !void {
     };
     try enc.fillPath(&.{hex[0..]}, .nonzero, 0.85, 0.30, 0.20, 1.0);
 
-    // Concave: a chevron / arrow notch.
+    // Concave: a right-pointing block arrow, concave at the two joins
+    // where the shaft meets the head. A single, simple (non-self-
+    // intersecting) contour.
     const chevron = [_]Point{
-        .{ .x = 120, .y = 20 }, .{ .x = 180, .y = 20 }, .{ .x = 150, .y = 48 },
-        .{ .x = 180, .y = 76 }, .{ .x = 120, .y = 76 }, .{ .x = 150, .y = 48 },
+        .{ .x = 120, .y = 32 }, .{ .x = 152, .y = 32 }, .{ .x = 152, .y = 20 },
+        .{ .x = 180, .y = 48 }, .{ .x = 152, .y = 76 }, .{ .x = 152, .y = 64 },
+        .{ .x = 120, .y = 64 },
     };
     try enc.fillPath(&.{chevron[0..]}, .nonzero, 0.20, 0.55, 0.85, 1.0);
 
