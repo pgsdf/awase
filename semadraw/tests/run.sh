@@ -415,4 +415,85 @@ fi
 echo "SDCS fill tests passed"
 
 echo ""
+echo "=== SDCS Gradient Tests (Stage B1, ADR 0016) ==="
+mkdir -p tests/out
+
+# Scene fixture (golden-hashed) plus determinism (two renders identical). The
+# scene pins the identity linear (two-stop and multi-stop), the radial fill, the
+# transformed linear (section 5 coordinate space), and all three extend modes.
+./zig-out/bin/sdcs_make_gradient tests/out/gradient.sdcs scene
+./zig-out/bin/sdcs_replay tests/out/gradient.sdcs tests/out/gradient.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/gradient.sdcs tests/out/gradient2.ppm 256 256
+if ! cmp -s tests/out/gradient.ppm tests/out/gradient2.ppm; then
+  echo "FAIL: gradient scene is nondeterministic"
+  exit 1
+fi
+
+hash_gradient=""
+if command -v sha256 >/dev/null 2>&1; then
+  hash_gradient=$(sha256 -q tests/out/gradient.ppm)
+elif command -v sha256sum >/dev/null 2>&1; then
+  hash_gradient=$(sha256sum tests/out/gradient.ppm | awk '{print $1}')
+fi
+
+gradient_golden=tests/golden/gradient.sha256
+if [ ! -f "$gradient_golden" ]; then
+  echo "$hash_gradient  gradient.ppm" > "$gradient_golden"
+  echo "created gradient golden at $gradient_golden"
+else
+  expected_gradient=$(awk '{print $1}' "$gradient_golden")
+  if [ "$hash_gradient" != "$expected_gradient" ]; then
+    echo "golden mismatch for gradient.ppm"
+    echo "expected: $expected_gradient"
+    echo "got:      $hash_gradient"
+    exit 1
+  fi
+fi
+
+# Invariant B1-3, linear: a single-color linear gradient FILL_RECT equals the
+# solid FILL_RECT of that color.
+./zig-out/bin/sdcs_make_gradient tests/out/grad_eq_solid_rect.sdcs equiv-solid-rect
+./zig-out/bin/sdcs_make_gradient tests/out/grad_eq_linear_rect.sdcs equiv-linear-rect
+./zig-out/bin/sdcs_replay tests/out/grad_eq_solid_rect.sdcs tests/out/grad_eq_solid_rect.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/grad_eq_linear_rect.sdcs tests/out/grad_eq_linear_rect.ppm 256 256
+if ! cmp -s tests/out/grad_eq_solid_rect.ppm tests/out/grad_eq_linear_rect.ppm; then
+  echo "FAIL: single-color linear gradient FILL_RECT does not match solid FILL_RECT"
+  exit 1
+fi
+
+# Invariant B1-3, radial: a single-color radial gradient FILL_PATH equals the
+# solid FILL_PATH of that color.
+./zig-out/bin/sdcs_make_gradient tests/out/grad_eq_solid_path.sdcs equiv-solid-path
+./zig-out/bin/sdcs_make_gradient tests/out/grad_eq_radial_path.sdcs equiv-radial-path
+./zig-out/bin/sdcs_replay tests/out/grad_eq_solid_path.sdcs tests/out/grad_eq_solid_path.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/grad_eq_radial_path.sdcs tests/out/grad_eq_radial_path.ppm 256 256
+if ! cmp -s tests/out/grad_eq_solid_path.ppm tests/out/grad_eq_radial_path.ppm; then
+  echo "FAIL: single-color radial gradient FILL_PATH does not match solid FILL_PATH"
+  exit 1
+fi
+
+# Invariant: pad and repeat differ over the region beyond the gradient axis.
+./zig-out/bin/sdcs_make_gradient tests/out/grad_ext_pad.sdcs extend-pad-full
+./zig-out/bin/sdcs_make_gradient tests/out/grad_ext_repeat.sdcs extend-repeat-full
+./zig-out/bin/sdcs_replay tests/out/grad_ext_pad.sdcs tests/out/grad_ext_pad.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/grad_ext_repeat.sdcs tests/out/grad_ext_repeat.ppm 256 256
+if cmp -s tests/out/grad_ext_pad.ppm tests/out/grad_ext_repeat.ppm; then
+  echo "FAIL: pad and repeat extend modes produced identical output"
+  exit 1
+fi
+
+# Invariant: after SET_SOURCE_NONE, a fill uses the inline color (matches a
+# solid fill that never set a source).
+./zig-out/bin/sdcs_make_gradient tests/out/grad_reset.sdcs reset
+./zig-out/bin/sdcs_make_gradient tests/out/grad_reset_ref.sdcs reset-ref
+./zig-out/bin/sdcs_replay tests/out/grad_reset.sdcs tests/out/grad_reset.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/grad_reset_ref.sdcs tests/out/grad_reset_ref.ppm 256 256
+if ! cmp -s tests/out/grad_reset.ppm tests/out/grad_reset_ref.ppm; then
+  echo "FAIL: SET_SOURCE_NONE did not return to the inline color"
+  exit 1
+fi
+
+echo "SDCS gradient tests passed"
+
+echo ""
 echo "=== All Tests Passed ==="
