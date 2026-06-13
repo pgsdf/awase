@@ -22,14 +22,21 @@ belong to SDCS:
   - path operations including Bezier curves, fills with winding
     rules, and stroke styling.
 
-The v0.1 opcode set (`sdcs.zig`) implements transforms, rectangle
+The v0.1 opcode set (`sdcs.zig`) covers transforms, rectangle
 clipping, blend modes, antialiasing, stroke styling, stroke
-primitives (rect, line, quadratic and cubic Bezier, path), image
-blit, and glyph runs. It does not implement any general fill: the
-only fill opcode is `FILL_RECT` (axis-aligned), and the reference
-renderer backs it with a single `fillRect` routine. There is no
-filled path, no winding rule, no gradient or pattern paint source,
-and no arbitrary path clip. Paths can be stroked but not filled.
+primitives (rect, line, quadratic and cubic Bezier, polyline path),
+image blit, and glyph runs. The write API (`encoder.zig`) and the
+reference rasterizer (`sdcs_replay.zig`, the golden oracle per ADR
+0002) implement all of these with coverage-based antialiasing,
+including 4x4 sub-pixel sampling for oriented stroke spans and
+analytic coverage for axis-aligned rectangles. They implement no
+general fill: the only fill is `FILL_RECT` (axis-aligned),
+`encoder.zig` has no `fillPath`, and `simd.zig` provides span fill
+and rectangle and convex coverage but no concave or winding-rule
+rasterizer. There is no filled path, no winding rule, no gradient or
+pattern paint source, and no arbitrary path clip. Paths can be
+stroked but not filled. (The compositor's `backend/software.zig` is
+a surface-blit stub, not the reference rasterizer.)
 
 These are therefore in-scope-but-unbuilt capabilities, not
 exclusions. ADR 0004's hard boundary (no 3D, compute, video, or
@@ -84,9 +91,11 @@ Each stage is gated, ADR-before-code, and closed against the
 reference renderer with golden tests. Stages are ordered by the
 dependencies in section 2.
 
-  - Stage A: path fill. Add `FILL_PATH` (filled arbitrary path with
-    winding rule), reusing the `STROKE_PATH` path encoding.
-    Unblocks METOC fills and NDE chrome. Highest priority.
+  - Stage A: path fill. Add `FILL_PATH` (a filled path of one or
+    more closed contours under a winding rule), reusing the
+    `STROKE_PATH` point encoding generalized to multiple contours so
+    holes are supported without a later format break. Unblocks METOC
+    fills and NDE chrome. Highest priority. Specified in ADR 0015.
   - Stage B: paint sources. Add linear and radial gradient sources
     and pattern (surface) sources. This introduces a paint-source
     state model: today every primitive carries solid RGBA inline,
