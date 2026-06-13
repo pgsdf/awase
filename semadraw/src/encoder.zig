@@ -84,6 +84,10 @@ pub const Encoder = struct {
         reflect = 2,
     };
 
+    pub const PatternFilter = enum(u32) {
+        nearest = 0,
+    };
+
     pub const GradientStop = struct {
         offset: f32,
         r: f32,
@@ -567,6 +571,66 @@ pub const Encoder = struct {
         try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_SOURCE_RADIAL_GRADIENT, payload);
     }
 
+    /// Set a pattern (surface) paint source (ADR 0017). The tile is inline
+    /// straight-RGBA8, row-major, top-left origin, tile_w * tile_h * 4 bytes,
+    /// reusing the BLIT_IMAGE texel layout. The affine (a, b, c, d, e, f) maps
+    /// pattern (texel) space to user space, the same convention as
+    /// setTransform2D. extend_x and extend_y are per-axis; filter is nearest
+    /// (floor-based point sampling) in this stage. Rejects, with
+    /// error.InvalidArgument: a non-finite affine component (checked first), a
+    /// degenerate affine (det == 0 computed in f32 on the components written),
+    /// tile_w or tile_h outside [1, 4096], and a texels length not equal to
+    /// tile_w * tile_h * 4 (computed in usize). The extend and filter enums are
+    /// type-checked, so an out-of-range selector cannot be constructed.
+    pub fn setSourcePattern(
+        self: *Encoder,
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
+        e: f32,
+        f: f32,
+        extend_x: ExtendMode,
+        extend_y: ExtendMode,
+        filter: PatternFilter,
+        tile_w: u32,
+        tile_h: u32,
+        texels: []const u8,
+    ) !void {
+        // Finiteness first, so the determinant never sees a non-finite input.
+        if (!std.math.isFinite(a) or !std.math.isFinite(b) or
+            !std.math.isFinite(c) or !std.math.isFinite(d) or
+            !std.math.isFinite(e) or !std.math.isFinite(f)) return error.InvalidArgument;
+        // Nondegeneracy in f32 on the components that will be serialized.
+        const det = a * d - c * b;
+        if (det == 0.0) return error.InvalidArgument;
+        if (tile_w < 1 or tile_w > 4096) return error.InvalidArgument;
+        if (tile_h < 1 or tile_h > 4096) return error.InvalidArgument;
+        const expected_texels: usize = @as(usize, tile_w) * @as(usize, tile_h) * 4;
+        if (texels.len != expected_texels) return error.InvalidArgument;
+
+        const header_len: usize = 44;
+        const payload_len: usize = header_len + texels.len;
+        const payload = try self.allocator.alloc(u8, payload_len);
+        defer self.allocator.free(payload);
+
+        var off: usize = 0;
+        putF32LE(payload, &off, a);
+        putF32LE(payload, &off, b);
+        putF32LE(payload, &off, c);
+        putF32LE(payload, &off, d);
+        putF32LE(payload, &off, e);
+        putF32LE(payload, &off, f);
+        putU32LE(payload, &off, @intFromEnum(extend_x));
+        putU32LE(payload, &off, @intFromEnum(extend_y));
+        putU32LE(payload, &off, @intFromEnum(filter));
+        putU32LE(payload, &off, tile_w);
+        putU32LE(payload, &off, tile_h);
+        @memcpy(payload[header_len..], texels);
+
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_SOURCE_PATTERN, payload);
+    }
+
     /// Stroke a cubic Bezier curve from (x0,y0) through control points (cx1,cy1) and (cx2,cy2) to (x1,y1).
     /// Payload format: x0, y0, cx1, cy1, cx2, cy2, x1, y1, stroke_width, r, g, b, a (13 x f32 = 52 bytes)
     pub fn strokeCubicBezier(
@@ -881,4 +945,42 @@ test "gradient encoders reject invalid input" {
         .{ .offset = 1.0, .r = 1, .g = 1, .b = 1, .a = 1 },
     };
     try testing.expectError(error.InvalidArgument, enc.setSourceLinearGradient(0, 0, 10, 0, nanstop[0..], .pad));
+}
+
+test "setSourcePattern encodes payload" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const tex = [_]u8{0} ** 16; // 2x2 RGBA8
+    try enc.setSourcePattern(1, 0, 0, 1, 0, 0, .repeat, .reflect, .nearest, 2, 2, tex[0..]);
+    const buf = enc.cmds.items;
+    // payload = 44 + 2*2*4 = 60; record = 8 + 60 = 68; pad8(68) = 4 -> 72.
+    try testing.expectEqual(@as(usize, 72), buf.len);
+    try testing.expectEqual(sdcs.Op.SET_SOURCE_PATTERN, std.mem.readInt(u16, buf[0..2], .little));
+    const payload = buf[8..];
+    // a at offset 0; extend_x 24, extend_y 28, filter 32, tile_w 36, tile_h 40.
+    try testing.expectEqual(@as(f32, 1.0), @as(f32, @bitCast(std.mem.readInt(u32, payload[0..4], .little))));
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, payload[24..28], .little));
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[28..32], .little));
+    try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, payload[32..36], .little));
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[36..40], .little));
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[40..44], .little));
+}
+
+test "setSourcePattern rejects invalid input" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const tex = [_]u8{0} ** 16; // 2x2
+    const empty = [_]u8{};
+    // non-finite affine component (checked first).
+    try testing.expectError(error.InvalidArgument, enc.setSourcePattern(std.math.nan(f32), 0, 0, 1, 0, 0, .pad, .pad, .nearest, 2, 2, tex[0..]));
+    // degenerate affine: det = 2*0 - 0*0 = 0.
+    try testing.expectError(error.InvalidArgument, enc.setSourcePattern(2, 0, 0, 0, 0, 0, .pad, .pad, .nearest, 2, 2, tex[0..]));
+    // tile dimensions out of range.
+    try testing.expectError(error.InvalidArgument, enc.setSourcePattern(1, 0, 0, 1, 0, 0, .pad, .pad, .nearest, 0, 2, empty[0..]));
+    try testing.expectError(error.InvalidArgument, enc.setSourcePattern(1, 0, 0, 1, 0, 0, .pad, .pad, .nearest, 4097, 2, empty[0..]));
+    // texels length does not match tile_w*tile_h*4.
+    const short = [_]u8{0} ** 12;
+    try testing.expectError(error.InvalidArgument, enc.setSourcePattern(1, 0, 0, 1, 0, 0, .pad, .pad, .nearest, 2, 2, short[0..]));
 }

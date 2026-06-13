@@ -29,7 +29,7 @@ pub const MagicPrefix = "SDCS";
 
 // Protocol version (major, minor). Bump major on incompatible changes.
 pub const version_major: u16 = 0;
-pub const version_minor: u16 = 2;
+pub const version_minor: u16 = 3;
 
 pub const Header = extern struct {
     magic: [8]u8,
@@ -86,6 +86,7 @@ pub const Op = struct {
     pub const SET_SOURCE_NONE: u16 = 0x0008; // Reset paint source to inline RGBA payload=0b
     pub const SET_SOURCE_LINEAR_GRADIENT: u16 = 0x0009; // Linear gradient source payload=variable
     pub const SET_SOURCE_RADIAL_GRADIENT: u16 = 0x000A; // Radial (concentric) gradient source payload=variable
+    pub const SET_SOURCE_PATTERN: u16 = 0x000B; // Pattern (surface) source payload=variable
 
     // Draw opcodes
     pub const FILL_RECT: u16 = 0x0010; // Fill rectangle payload=32b
@@ -166,6 +167,7 @@ pub fn opcodeName(opcode: u16) ?[]const u8 {
         Op.SET_SOURCE_NONE => "SET_SOURCE_NONE",
         Op.SET_SOURCE_LINEAR_GRADIENT => "SET_SOURCE_LINEAR_GRADIENT",
         Op.SET_SOURCE_RADIAL_GRADIENT => "SET_SOURCE_RADIAL_GRADIENT",
+        Op.SET_SOURCE_PATTERN => "SET_SOURCE_PATTERN",
         Op.FILL_RECT => "FILL_RECT",
         Op.STROKE_RECT => "STROKE_RECT",
         Op.STROKE_LINE => "STROKE_LINE",
@@ -315,6 +317,19 @@ fn validateOpcodePayload(op: u16, payload_bytes: u32) ValidateError!void {
         if ((body % 20) != 0) return ValidateError.Protocol;
         const stop_count = body / 20;
         if (stop_count < 2 or stop_count > 256) return ValidateError.Protocol;
+        return;
+    }
+    if (op == Op.SET_SOURCE_PATTERN) {
+        // header 44 (affine a,b,c,d,e,f, extend_x, extend_y, filter,
+        // tile_w, tile_h) + tile_w * tile_h * 4 texel bytes. This is the
+        // coarse size shape only; the exact tile_w/tile_h bounds and the
+        // tile_w*tile_h==texel_count match are enforced at encode and at
+        // decode, which read the body fields.
+        if (payload_bytes < 44) return ValidateError.Protocol;
+        const body = payload_bytes - 44;
+        if ((body % 4) != 0) return ValidateError.Protocol;
+        const texel_count = body / 4;
+        if (texel_count < 1 or texel_count > 4096 * 4096) return ValidateError.Protocol;
         return;
     }
     if (op == Op.END) {
@@ -486,6 +501,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
                 Op.SET_ANTIALIAS,
                 Op.SET_SOURCE_LINEAR_GRADIENT,
                 Op.SET_SOURCE_RADIAL_GRADIENT,
+                Op.SET_SOURCE_PATTERN,
                 Op.FILL_RECT,
                 Op.STROKE_RECT,
                 Op.STROKE_LINE,
@@ -723,7 +739,7 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
                     if (cmd.opcode == Op.END) end_seen = true;
                 },
 
-                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.SET_SOURCE_LINEAR_GRADIENT, Op.SET_SOURCE_RADIAL_GRADIENT, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
+                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.SET_SOURCE_LINEAR_GRADIENT, Op.SET_SOURCE_RADIAL_GRADIENT, Op.SET_SOURCE_PATTERN, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
                     if (cmd.payload_bytes != 0) {
                         file.seekBy(@as(i64, @intCast(cmd.payload_bytes))) catch {
                             diag.* = .{
@@ -825,6 +841,7 @@ test "opcodeName returns correct names for known opcodes" {
     try std.testing.expectEqualStrings("SET_SOURCE_NONE", opcodeName(Op.SET_SOURCE_NONE).?);
     try std.testing.expectEqualStrings("SET_SOURCE_LINEAR_GRADIENT", opcodeName(Op.SET_SOURCE_LINEAR_GRADIENT).?);
     try std.testing.expectEqualStrings("SET_SOURCE_RADIAL_GRADIENT", opcodeName(Op.SET_SOURCE_RADIAL_GRADIENT).?);
+    try std.testing.expectEqualStrings("SET_SOURCE_PATTERN", opcodeName(Op.SET_SOURCE_PATTERN).?);
     try std.testing.expectEqualStrings("BLIT_IMAGE", opcodeName(Op.BLIT_IMAGE).?);
     try std.testing.expectEqualStrings("DRAW_GLYPH_RUN", opcodeName(Op.DRAW_GLYPH_RUN).?);
     try std.testing.expectEqualStrings("END", opcodeName(Op.END).?);
@@ -898,6 +915,16 @@ test "validateOpcodePayload validates paint-source ops" {
     try validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 256 * 20);
     try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 1 * 20));
     try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 2 * 20 + 8));
+
+    // Pattern: header 44 + tile_w * tile_h * 4 texel bytes. Coarse size
+    // shape only (texel_count in [1, 4096*4096], body divisible by 4).
+    try validateOpcodePayload(Op.SET_SOURCE_PATTERN, 44 + 1 * 4); // 1x1
+    try validateOpcodePayload(Op.SET_SOURCE_PATTERN, 44 + 2 * 2 * 4); // 2x2
+    try validateOpcodePayload(Op.SET_SOURCE_PATTERN, 44 + 4096 * 4096 * 4); // max texels
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_PATTERN, 44)); // zero texels
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_PATTERN, 44 + 4 + 1)); // body not /4
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_PATTERN, 40)); // below header
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_PATTERN, 44 + (4096 * 4096 + 1) * 4)); // beyond max texels
 }
 
 test "validateOpcodePayload rejects wrong payload sizes" {
@@ -985,5 +1012,5 @@ test "Magic string is correct" {
 
 test "version constants" {
     try std.testing.expectEqual(@as(u16, 0), version_major);
-    try std.testing.expectEqual(@as(u16, 2), version_minor);
+    try std.testing.expectEqual(@as(u16, 3), version_minor);
 }
