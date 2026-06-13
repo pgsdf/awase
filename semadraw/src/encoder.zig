@@ -73,6 +73,11 @@ pub const Encoder = struct {
         Round = 2,
     };
 
+    pub const FillRule = enum(u32) {
+        nonzero = 0,
+        even_odd = 1,
+    };
+
     pub fn init(allocator: std.mem.Allocator) Encoder {
         return .{ .allocator = allocator, .cmds = std.ArrayList(u8){} };
     }
@@ -395,6 +400,61 @@ pub const Encoder = struct {
         try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.STROKE_PATH, payload);
     }
 
+    /// Fill a path of one or more closed contours under a winding rule
+    /// (ADR 0015). Each contour is a list of at least 3 points and is
+    /// implicitly closed by the renderer (final point to first point);
+    /// callers MUST NOT repeat the first point to close it. Curves are
+    /// flattened to points by the caller, as with strokePath.
+    /// Payload: r, g, b, a (4 x f32), fill_rule (u32), contour_count (u32),
+    /// contour_lengths (contour_count x u32), points (sum x 2 x f32).
+    pub fn fillPath(
+        self: *Encoder,
+        contours: []const []const Point,
+        fill_rule: FillRule,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) !void {
+        if (contours.len == 0) return error.InvalidArgument;
+        if (contours.len > 65535) return error.InvalidArgument;
+
+        var total_points: usize = 0;
+        for (contours) |c| {
+            if (c.len < 3) return error.InvalidArgument;
+            total_points += c.len;
+        }
+        if (total_points > 65535) return error.InvalidArgument;
+
+        const cc: usize = contours.len;
+        const header_len: usize = 24;
+        const table_len: usize = cc * 4;
+        const points_len: usize = total_points * 8;
+        const payload_len: usize = header_len + table_len + points_len;
+        const payload = try self.allocator.alloc(u8, payload_len);
+        defer self.allocator.free(payload);
+
+        var off: usize = 0;
+        putF32LE(payload, &off, r);
+        putF32LE(payload, &off, g);
+        putF32LE(payload, &off, b);
+        putF32LE(payload, &off, a);
+        putU32LE(payload, &off, @intFromEnum(fill_rule));
+        putU32LE(payload, &off, @intCast(cc));
+
+        for (contours) |c| {
+            putU32LE(payload, &off, @intCast(c.len));
+        }
+        for (contours) |c| {
+            for (c) |pt| {
+                putF32LE(payload, &off, pt.x);
+                putF32LE(payload, &off, pt.y);
+            }
+        }
+
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.FILL_PATH, payload);
+    }
+
     /// Stroke a cubic Bezier curve from (x0,y0) through control points (cx1,cy1) and (cx2,cy2) to (x1,y1).
     /// Payload format: x0, y0, cx1, cy1, cx2, cy2, x1, y1, stroke_width, r, g, b, a (13 x f32 = 52 bytes)
     pub fn strokeCubicBezier(
@@ -577,3 +637,56 @@ pub const Encoder = struct {
         try file.seekTo(end_pos);
     }
 };
+
+test "fillPath encodes multi-contour payload" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+
+    const outer = [_]Encoder.Point{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 10, .y = 0 },
+        .{ .x = 10, .y = 10 },
+        .{ .x = 0, .y = 10 },
+    };
+    const inner = [_]Encoder.Point{
+        .{ .x = 3, .y = 3 },
+        .{ .x = 7, .y = 3 },
+        .{ .x = 5, .y = 7 },
+    };
+    const contours = [_][]const Encoder.Point{ outer[0..], inner[0..] };
+
+    try enc.fillPath(contours[0..], .even_odd, 0.25, 0.5, 0.75, 1.0);
+
+    const buf = enc.cmds.items;
+    // Command record: 8-byte header + payload + pad8.
+    // payload_len = 24 + 4*2 + 8*(4+3) = 88; record = 8 + 88 = 96; pad8(96) = 0.
+    try testing.expectEqual(@as(usize, 96), buf.len);
+
+    const opcode = std.mem.readInt(u16, buf[0..2], .little);
+    try testing.expectEqual(sdcs.Op.FILL_PATH, opcode);
+
+    const payload_bytes = std.mem.readInt(u32, buf[4..8], .little);
+    try testing.expectEqual(@as(u32, 88), payload_bytes);
+
+    const payload = buf[8..];
+    // fill_rule at payload offset 16, contour_count at 20.
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, payload[16..20], .little));
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[20..24], .little));
+    // contour_lengths at offset 24: 4 then 3.
+    try testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, payload[24..28], .little));
+    try testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, payload[28..32], .little));
+}
+
+test "fillPath rejects degenerate input" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+
+    const two = [_]Encoder.Point{ .{ .x = 0, .y = 0 }, .{ .x = 1, .y = 1 } };
+    const bad = [_][]const Encoder.Point{two[0..]};
+    try testing.expectError(error.InvalidArgument, enc.fillPath(bad[0..], .nonzero, 1, 1, 1, 1));
+
+    const empty = [_][]const Encoder.Point{};
+    try testing.expectError(error.InvalidArgument, enc.fillPath(empty[0..], .nonzero, 1, 1, 1, 1));
+}

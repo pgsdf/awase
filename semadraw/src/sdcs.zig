@@ -94,6 +94,7 @@ pub const Op = struct {
     pub const STROKE_QUAD_BEZIER: u16 = 0x0016; // Stroke quadratic bezier payload=44b
     pub const STROKE_CUBIC_BEZIER: u16 = 0x0017; // Stroke cubic bezier payload=60b
     pub const STROKE_PATH: u16 = 0x0018; // Stroke path payload=variable
+    pub const FILL_PATH: u16 = 0x0019; // Fill path, one or more closed contours payload=variable
     pub const BLIT_IMAGE: u16 = 0x0020; // Blit image payload=variable
 
     // Text opcodes
@@ -168,6 +169,7 @@ pub fn opcodeName(opcode: u16) ?[]const u8 {
         Op.STROKE_QUAD_BEZIER => "STROKE_QUAD_BEZIER",
         Op.STROKE_CUBIC_BEZIER => "STROKE_CUBIC_BEZIER",
         Op.STROKE_PATH => "STROKE_PATH",
+        Op.FILL_PATH => "FILL_PATH",
         Op.BLIT_IMAGE => "BLIT_IMAGE",
         Op.DRAW_GLYPH_RUN => "DRAW_GLYPH_RUN",
         Op.END => "END",
@@ -462,6 +464,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
                 Op.STROKE_QUAD_BEZIER,
                 Op.STROKE_CUBIC_BEZIER,
                 Op.STROKE_PATH,
+                Op.FILL_PATH,
                 Op.BLIT_IMAGE,
                 Op.DRAW_GLYPH_RUN,
                 => {
@@ -689,7 +692,7 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
                     if (cmd.opcode == Op.END) end_seen = true;
                 },
 
-                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
+                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
                     if (cmd.payload_bytes != 0) {
                         file.seekBy(@as(i64, @intCast(cmd.payload_bytes))) catch {
                             diag.* = .{
@@ -787,6 +790,7 @@ test "opcodeName returns correct names for known opcodes" {
     try std.testing.expectEqualStrings("STROKE_QUAD_BEZIER", opcodeName(Op.STROKE_QUAD_BEZIER).?);
     try std.testing.expectEqualStrings("STROKE_CUBIC_BEZIER", opcodeName(Op.STROKE_CUBIC_BEZIER).?);
     try std.testing.expectEqualStrings("STROKE_PATH", opcodeName(Op.STROKE_PATH).?);
+    try std.testing.expectEqualStrings("FILL_PATH", opcodeName(Op.FILL_PATH).?);
     try std.testing.expectEqualStrings("BLIT_IMAGE", opcodeName(Op.BLIT_IMAGE).?);
     try std.testing.expectEqualStrings("DRAW_GLYPH_RUN", opcodeName(Op.DRAW_GLYPH_RUN).?);
     try std.testing.expectEqualStrings("END", opcodeName(Op.END).?);
