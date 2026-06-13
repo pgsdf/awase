@@ -334,6 +334,17 @@ pub fn build(b: *std.Build) void {
 	sdcs_make_aa.root_module.addImport("semadraw", semadraw_mod);
 	b.installArtifact(sdcs_make_aa);
 
+	const sdcs_make_fill = b.addExecutable(.{
+	    .name = "sdcs_make_fill",
+	    .root_module = b.createModule(.{
+	        .root_source_file = b.path("src/tools/sdcs_make_fill.zig"),
+	        .target = target,
+	        .optimize = optimize,
+	    }),
+	});
+	sdcs_make_fill.root_module.addImport("semadraw", semadraw_mod);
+	b.installArtifact(sdcs_make_fill);
+
 	const sdcs_make_demo = b.addExecutable(.{
 	    .name = "sdcs_make_demo",
 	    .root_module = b.createModule(.{

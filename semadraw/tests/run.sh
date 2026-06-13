@@ -373,4 +373,60 @@ fi
 echo "Determinism verification passed (3 runs identical)"
 
 echo ""
+echo "=== SDCS Fill Tests (Stage A, ADR 0015) ==="
+mkdir -p tests/out
+
+# Scene fixture (golden-hashed) plus determinism (two renders identical).
+./zig-out/bin/sdcs_make_fill tests/out/fill.sdcs scene
+./zig-out/bin/sdcs_replay tests/out/fill.sdcs tests/out/fill.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/fill.sdcs tests/out/fill2.ppm 256 256
+if ! cmp -s tests/out/fill.ppm tests/out/fill2.ppm; then
+  echo "FAIL: fill scene is nondeterministic"
+  exit 1
+fi
+
+hash_fill=""
+if command -v sha256 >/dev/null 2>&1; then
+  hash_fill=$(sha256 -q tests/out/fill.ppm)
+elif command -v sha256sum >/dev/null 2>&1; then
+  hash_fill=$(sha256sum tests/out/fill.ppm | awk '{print $1}')
+fi
+
+fill_golden=tests/golden/fill.sha256
+if [ ! -f "$fill_golden" ]; then
+  echo "$hash_fill  fill.ppm" > "$fill_golden"
+  echo "created fill golden at $fill_golden"
+else
+  expected_fill=$(awk '{print $1}' "$fill_golden")
+  if [ "$hash_fill" != "$expected_fill" ]; then
+    echo "golden mismatch for fill.ppm"
+    echo "expected: $expected_fill"
+    echo "got:      $hash_fill"
+    exit 1
+  fi
+fi
+
+# Invariant: a full-surface FILL_PATH square equals FILL_RECT (ADR 0014/0015).
+./zig-out/bin/sdcs_make_fill tests/out/fill_equiv_rect.sdcs equiv-rect
+./zig-out/bin/sdcs_make_fill tests/out/fill_equiv_path.sdcs equiv-path
+./zig-out/bin/sdcs_replay tests/out/fill_equiv_rect.sdcs tests/out/fill_equiv_rect.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/fill_equiv_path.sdcs tests/out/fill_equiv_path.ppm 256 256
+if ! cmp -s tests/out/fill_equiv_rect.ppm tests/out/fill_equiv_path.ppm; then
+  echo "FAIL: full-surface FILL_PATH does not match FILL_RECT"
+  exit 1
+fi
+
+# Invariant: a self-intersecting contour fills differently under nonzero and even-odd.
+./zig-out/bin/sdcs_make_fill tests/out/fill_star_nz.sdcs star-nz
+./zig-out/bin/sdcs_make_fill tests/out/fill_star_eo.sdcs star-eo
+./zig-out/bin/sdcs_replay tests/out/fill_star_nz.sdcs tests/out/fill_star_nz.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/fill_star_eo.sdcs tests/out/fill_star_eo.ppm 256 256
+if cmp -s tests/out/fill_star_nz.ppm tests/out/fill_star_eo.ppm; then
+  echo "FAIL: nonzero and even-odd produced identical output on a self-intersecting contour"
+  exit 1
+fi
+
+echo "SDCS fill tests passed"
+
+echo ""
 echo "=== All Tests Passed ==="

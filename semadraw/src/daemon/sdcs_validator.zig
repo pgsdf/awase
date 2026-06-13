@@ -131,6 +131,10 @@ pub const SdcsValidator = struct {
                         estimate.draw_calls += 1;
                         estimate.path_complexity += cmd.payload_bytes / 8; // rough vertex count
                     },
+                    sdcs.Op.FILL_PATH => {
+                        estimate.draw_calls += 1;
+                        estimate.path_complexity += cmd.payload_bytes / 8; // rough vertex count
+                    },
                     sdcs.Op.BLIT_IMAGE => {
                         estimate.draw_calls += 1;
                         estimate.texture_ops += 1;

@@ -117,6 +117,17 @@ and nested non-overlapping contours produce a cutout under even-odd
 regardless of winding direction. The algorithm is the single-contour
 algorithm with the edge set drawn from every contour.
 
+Reference realization. The committed reference renderer takes the
+simplest correct form of the above: it sub-samples every pixel in
+the bounding box uniformly with the section 5 lattice rather than
+separating an interior `simd.fillSpan` run from boundary sampling. A
+fully-interior pixel then has all sixteen samples inside and resolves
+to full coverage, so the output is identical to the span-fill form.
+This keeps a single code path and removes the interior-to-boundary
+seam noted in section 11. The `simd.fillSpan` interior fast path
+remains available as a later performance optimization and MUST
+preserve these outputs (the golden fixtures gate that).
+
 ## 5. Antialiasing and determinism (normative)
 
 These requirements are normative and are a closure gate, not
