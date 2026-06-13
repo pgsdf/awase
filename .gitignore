@@ -8,6 +8,7 @@ build-latest.log
 # Zig build artifacts
 zig-out/
 .zig-cache/
+tests/out/
 
 # FreeBSD kernel module build artifacts
 .depend.*
