@@ -1026,6 +1026,226 @@ fn pointInFilledPath(px: f32, py: f32, pts: []const FillPoint, contour_lens: []c
     return winding != 0;
 }
 
+// ---- Paint sources (ADR 0016, Stage B1) ----
+// A current-source register layered over the existing solid path. The
+// source affects per-pixel color only; coverage, antialiasing, and blend
+// are computed exactly as for a solid primitive (invariant B1-2). A
+// single-color gradient therefore renders byte-identically to the solid
+// fill of that color (invariant B1-3).
+
+const GradStop = struct { offset: f32, r: f32, g: f32, b: f32, a: f32 };
+
+const SourceKind = enum { none, linear, radial };
+
+const GradientSource = struct {
+    kind: SourceKind = .none,
+    extend: u32 = 0, // 0 pad, 1 repeat, 2 reflect
+    // linear axis (user space)
+    x0: f32 = 0,
+    y0: f32 = 0,
+    x1: f32 = 0,
+    y1: f32 = 0,
+    // radial (user space)
+    cx: f32 = 0,
+    cy: f32 = 0,
+    radius: f32 = 1,
+    stop_count: u32 = 0,
+    stops: [256]GradStop = undefined,
+};
+
+// Inverse of a 2D affine. applyT maps user->device as
+//   x' = a*x + c*y + e ; y' = b*x + d*y + f
+// so the device->user inverse is returned in the same field layout.
+fn invertT(t: Transform2D) ?Transform2D {
+    const det = t.a * t.d - t.c * t.b;
+    if (det == 0.0) return null;
+    const inv = 1.0 / det;
+    return Transform2D{
+        .a = t.d * inv,
+        .b = -t.b * inv,
+        .c = -t.c * inv,
+        .d = t.a * inv,
+        .e = (t.c * t.f - t.d * t.e) * inv,
+        .f = (t.b * t.e - t.a * t.f) * inv,
+    };
+}
+
+fn applyExtend(s: f32, mode: u32) f32 {
+    return switch (mode) {
+        1 => s - @floor(s), // repeat
+        2 => blk: { // reflect
+            const f = s - 2.0 * @floor(s / 2.0);
+            break :blk if (f <= 1.0) f else 2.0 - f;
+        },
+        else => blk: { // pad
+            if (s < 0.0) break :blk 0.0;
+            if (s > 1.0) break :blk 1.0;
+            break :blk s;
+        },
+    };
+}
+
+// Resolve the gradient color at normalized parameter t in [0,1], interpolating
+// adjacent stops linearly in straight RGBA. Stops are monotonic by validation.
+fn resolveStops(src: *const GradientSource, t: f32) [4]u8 {
+    const n = src.stop_count;
+    const first = src.stops[0];
+    if (t <= first.offset) return .{ clampU8(first.r), clampU8(first.g), clampU8(first.b), clampU8(first.a) };
+    const last = src.stops[n - 1];
+    if (t >= last.offset) return .{ clampU8(last.r), clampU8(last.g), clampU8(last.b), clampU8(last.a) };
+    var i: u32 = 1;
+    while (i < n) : (i += 1) {
+        const s1 = src.stops[i];
+        if (t <= s1.offset) {
+            const s0 = src.stops[i - 1];
+            const span = s1.offset - s0.offset;
+            const u: f32 = if (span > 0.0) (t - s0.offset) / span else 0.0;
+            return .{
+                clampU8(s0.r + u * (s1.r - s0.r)),
+                clampU8(s0.g + u * (s1.g - s0.g)),
+                clampU8(s0.b + u * (s1.b - s0.b)),
+                clampU8(s0.a + u * (s1.a - s0.a)),
+            };
+        }
+    }
+    return .{ clampU8(last.r), clampU8(last.g), clampU8(last.b), clampU8(last.a) };
+}
+
+// Sample the source at a device-space pixel center. tinv maps device->user.
+fn sampleGradientColor(src: *const GradientSource, tinv: Transform2D, px: f32, py: f32) [4]u8 {
+    const u = applyT(tinv, px, py);
+    var s: f32 = 0;
+    if (src.kind == .linear) {
+        const dx = src.x1 - src.x0;
+        const dy = src.y1 - src.y0;
+        const denom = dx * dx + dy * dy; // > 0 by validation
+        s = ((u.x - src.x0) * dx + (u.y - src.y0) * dy) / denom;
+    } else {
+        const ddx = u.x - src.cx;
+        const ddy = u.y - src.cy;
+        s = @sqrt(ddx * ddx + ddy * ddy) / src.radius;
+    }
+    return resolveStops(src, applyExtend(s, src.extend));
+}
+
+// Sourced rect fills mirror the solid fbFillRect* partition exactly (same
+// pixel set, same coverage), substituting a per-pixel sampled color for the
+// constant color. Since fbBlendPixel at full coverage is byte-identical to
+// simd.fillSpan, a single-color gradient reproduces the solid fill exactly.
+
+fn fbFillRectAASourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32) void {
+    if (rw <= 0.0 or rh <= 0.0) return;
+    const x1 = x;
+    const y1 = y;
+    const x2 = x + rw;
+    const y2 = y + rh;
+
+    const ix0: isize = @intFromFloat(@floor(x1));
+    const iy0: isize = @intFromFloat(@floor(y1));
+    const ix1: isize = @intFromFloat(@ceil(x2));
+    const iy1: isize = @intFromFloat(@ceil(y2));
+
+    const px0: usize = @intCast(@max(ix0, 0));
+    const py0: usize = @intCast(@max(iy0, 0));
+    const px1: usize = @intCast(@min(ix1, @as(isize, @intCast(w))));
+    const py1: usize = @intCast(@min(iy1, @as(isize, @intCast(h))));
+    if (px0 >= px1 or py0 >= py1) return;
+
+    const interior_x0: usize = @intCast(@max(@as(isize, @intFromFloat(@ceil(x1))), @as(isize, @intCast(px0))));
+    const interior_y0: usize = @intCast(@max(@as(isize, @intFromFloat(@ceil(y1))), @as(isize, @intCast(py0))));
+    const interior_x1: usize = @intCast(@min(@as(isize, @intFromFloat(@floor(x2))), @as(isize, @intCast(px1))));
+    const interior_y1: usize = @intCast(@min(@as(isize, @intFromFloat(@floor(y2))), @as(isize, @intCast(py1))));
+
+    if (interior_x0 < interior_x1 and interior_y0 < interior_y1) {
+        var iy: usize = interior_y0;
+        while (iy < interior_y1) : (iy += 1) {
+            var ix: usize = interior_x0;
+            while (ix < interior_x1) : (ix += 1) {
+                const idx: usize = (iy * w + ix) * 4;
+                const col = sampleGradientColor(src, tinv, @as(f32, @floatFromInt(ix)) + 0.5, @as(f32, @floatFromInt(iy)) + 0.5);
+                fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
+            }
+        }
+    }
+
+    var iy: usize = py0;
+    while (iy < py1) : (iy += 1) {
+        var ix: usize = px0;
+        while (ix < px1) : (ix += 1) {
+            if (ix >= interior_x0 and ix < interior_x1 and iy >= interior_y0 and iy < interior_y1) continue;
+            const px: f32 = @floatFromInt(ix);
+            const py: f32 = @floatFromInt(iy);
+            const coverage = simd.computeRectCoverageAA(px, py, x1, y1, x2, y2);
+            if (coverage > 0.0) {
+                const idx: usize = (iy * w + ix) * 4;
+                const col = sampleGradientColor(src, tinv, px + 0.5, py + 0.5);
+                if (coverage >= 1.0) {
+                    fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
+                } else {
+                    fbBlendPixelAA(rgba, idx, col[0], col[1], col[2], col[3], mode, coverage);
+                }
+            }
+        }
+    }
+}
+
+fn fbFillRectSourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32) void {
+    const ix0: isize = @intFromFloat(@floor(x));
+    const iy0: isize = @intFromFloat(@floor(y));
+    const ix1: isize = @intFromFloat(@ceil(x + rw));
+    const iy1: isize = @intFromFloat(@ceil(y + rh));
+
+    const x0: usize = @intCast(@max(ix0, 0));
+    const y0: usize = @intCast(@max(iy0, 0));
+    const x1u: usize = @intCast(@min(ix1, @as(isize, @intCast(w))));
+    const y1u: usize = @intCast(@min(iy1, @as(isize, @intCast(h))));
+    if (x0 >= x1u or y0 >= y1u) return;
+
+    var iy: usize = y0;
+    while (iy < y1u) : (iy += 1) {
+        var ix: usize = x0;
+        while (ix < x1u) : (ix += 1) {
+            const idx: usize = (iy * w + ix) * 4;
+            const col = sampleGradientColor(src, tinv, @as(f32, @floatFromInt(ix)) + 0.5, @as(f32, @floatFromInt(iy)) + 0.5);
+            fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
+        }
+    }
+}
+
+fn fbFillRectClippedAASourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
+    if (clips) |cs| {
+        for (cs) |c| {
+            const ix = @max(rx, c.x);
+            const iy = @max(ry, c.y);
+            const ix2 = @min(rx + rw, c.x + c.w);
+            const iy2 = @min(ry + rh, c.y + c.h);
+            const iw = ix2 - ix;
+            const ih = iy2 - iy;
+            if (iw <= 0.0 or ih <= 0.0) continue;
+            fbFillRectAASourced(rgba, w, h, ix, iy, iw, ih, src, tinv, mode);
+        }
+    } else {
+        fbFillRectAASourced(rgba, w, h, rx, ry, rw, rh, src, tinv, mode);
+    }
+}
+
+fn fbFillRectClippedSourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
+    if (clips) |cs| {
+        for (cs) |c| {
+            const ix = @max(rx, c.x);
+            const iy = @max(ry, c.y);
+            const ix2 = @min(rx + rw, c.x + c.w);
+            const iy2 = @min(ry + rh, c.y + c.h);
+            const iw = ix2 - ix;
+            const ih = iy2 - iy;
+            if (iw <= 0.0 or ih <= 0.0) continue;
+            fbFillRectSourced(rgba, w, h, ix, iy, iw, ih, src, tinv, mode);
+        }
+    } else {
+        fbFillRectSourced(rgba, w, h, rx, ry, rw, rh, src, tinv, mode);
+    }
+}
+
 // Rasterize a filled path. Points are already transformed to device
 // space. Boundary coverage uses the same 4x4 (16-sample) lattice and
 // the same fbBlendPixelAA path as stroke rasterization, so a fill and a
@@ -1047,6 +1267,8 @@ fn emitFilledPath(
     cb: f32,
     ca: f32,
     aa: bool,
+    source: ?*const GradientSource,
+    tinv: Transform2D,
 ) void {
     if (pts.len == 0) return;
 
@@ -1097,14 +1319,24 @@ fn emitFilledPath(
                 }
                 if (samples_inside > 0) {
                     const coverage: f32 = @as(f32, @floatFromInt(samples_inside)) / @as(f32, @floatFromInt(AA_SAMPLES));
-                    fbBlendPixelAA(rgba, idx, r8, g8, b8, a8, blend_mode, coverage);
+                    if (source) |src| {
+                        const col = sampleGradientColor(src, tinv, base_px + 0.5, base_py + 0.5);
+                        fbBlendPixelAA(rgba, idx, col[0], col[1], col[2], col[3], blend_mode, coverage);
+                    } else {
+                        fbBlendPixelAA(rgba, idx, r8, g8, b8, a8, blend_mode, coverage);
+                    }
                 }
             } else {
                 const spx = base_px + 0.5;
                 const spy = base_py + 0.5;
                 if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
                 if (pointInFilledPath(spx, spy, pts, contour_lens, even_odd)) {
-                    fbBlendPixel(rgba, idx, r8, g8, b8, a8, blend_mode);
+                    if (source) |src| {
+                        const col = sampleGradientColor(src, tinv, spx, spy);
+                        fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], blend_mode);
+                    } else {
+                        fbBlendPixel(rgba, idx, r8, g8, b8, a8, blend_mode);
+                    }
                 }
             }
         }
@@ -1138,6 +1370,7 @@ pub fn main() !void {
     var t = Transform2D{};
     var blend_mode: u32 = 0;
     var aa_enabled: bool = false;
+    var current_source = GradientSource{};
 var stroke_join: StrokeJoin = .Miter;
 var stroke_cap: StrokeCap = .Butt;
 var miter_limit: f32 = 4.0; // SVG default
@@ -1252,8 +1485,51 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
             var lr = LimitedFileReader{ .file = &file, .remaining = pb };
             const r = lr.reader();
 
-            if (cmd.opcode == sdcs.Op.SET_BLEND) {
+            if (cmd.opcode == sdcs.Op.RESET) {
+                current_source.kind = .none;
+            } else if (cmd.opcode == sdcs.Op.SET_BLEND) {
                 blend_mode = try readU32LE(r);
+            } else if (cmd.opcode == sdcs.Op.SET_SOURCE_NONE) {
+                current_source.kind = .none;
+            } else if (cmd.opcode == sdcs.Op.SET_SOURCE_LINEAR_GRADIENT) {
+                current_source.kind = .linear;
+                current_source.x0 = try readF32LE(r);
+                current_source.y0 = try readF32LE(r);
+                current_source.x1 = try readF32LE(r);
+                current_source.y1 = try readF32LE(r);
+                current_source.extend = try readU32LE(r);
+                const sc = try readU32LE(r);
+                if (sc < 2 or sc > 256) return error.Protocol;
+                current_source.stop_count = sc;
+                var si: u32 = 0;
+                while (si < sc) : (si += 1) {
+                    current_source.stops[si] = .{
+                        .offset = try readF32LE(r),
+                        .r = try readF32LE(r),
+                        .g = try readF32LE(r),
+                        .b = try readF32LE(r),
+                        .a = try readF32LE(r),
+                    };
+                }
+            } else if (cmd.opcode == sdcs.Op.SET_SOURCE_RADIAL_GRADIENT) {
+                current_source.kind = .radial;
+                current_source.cx = try readF32LE(r);
+                current_source.cy = try readF32LE(r);
+                current_source.radius = try readF32LE(r);
+                current_source.extend = try readU32LE(r);
+                const sc = try readU32LE(r);
+                if (sc < 2 or sc > 256) return error.Protocol;
+                current_source.stop_count = sc;
+                var si: u32 = 0;
+                while (si < sc) : (si += 1) {
+                    current_source.stops[si] = .{
+                        .offset = try readF32LE(r),
+                        .r = try readF32LE(r),
+                        .g = try readF32LE(r),
+                        .b = try readF32LE(r),
+                        .a = try readF32LE(r),
+                    };
+                }
             } else if (cmd.opcode == sdcs.Op.SET_ANTIALIAS) {
                 const aa_val = try readU32LE(r);
                 aa_enabled = (aa_val != 0);
@@ -1593,7 +1869,14 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                 const cb = try readF32LE(r);
                 const ca = try readF32LE(r);
                 const tb = rectApplyTBounds(t, rx, ry, rw2, rh2);
-                if (aa_enabled) {
+                if (current_source.kind != .none) {
+                    const tinv = invertT(t) orelse Transform2D{};
+                    if (aa_enabled) {
+                        fbFillRectClippedAASourced(rgba, w, h, tb.x, tb.y, tb.w, tb.h, &current_source, tinv, blend_mode, if (clip_enabled) clip_rects.items else null);
+                    } else {
+                        fbFillRectClippedSourced(rgba, w, h, tb.x, tb.y, tb.w, tb.h, &current_source, tinv, blend_mode, if (clip_enabled) clip_rects.items else null);
+                    }
+                } else if (aa_enabled) {
                     fbFillRectClippedAA(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, if (clip_enabled) clip_rects.items else null);
                 } else {
                     fbFillRectClipped(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, if (clip_enabled) clip_rects.items else null);
@@ -1634,7 +1917,9 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                     p.* = .{ .x = tp.x, .y = tp.y };
                 }
 
-                emitFilledPath(rgba, w, h, clip_enabled, clip_rects.items, blend_mode, fpts, lens, fill_rule == 1, fcr, fcg, fcb, fca, aa_enabled);
+                const fp_src: ?*const GradientSource = if (current_source.kind != .none) &current_source else null;
+                const fp_tinv = if (fp_src != null) (invertT(t) orelse Transform2D{}) else Transform2D{};
+                emitFilledPath(rgba, w, h, clip_enabled, clip_rects.items, blend_mode, fpts, lens, fill_rule == 1, fcr, fcg, fcb, fca, aa_enabled, fp_src, fp_tinv);
 
             } else if (cmd.opcode == sdcs.Op.BLIT_IMAGE) {
                 // Payload: dst_x(f32), dst_y(f32), img_w(u32), img_h(u32), pixels(RGBA)
@@ -2101,7 +2386,7 @@ test "emitFilledPath interior opaque, exterior untouched" {
     var fb = [_]u8{0} ** (8 * 8 * 4);
     const sq = [_]FillPoint{ .{ .x = 2, .y = 2 }, .{ .x = 6, .y = 2 }, .{ .x = 6, .y = 6 }, .{ .x = 2, .y = 6 } };
     const lens = [_]u32{4};
-    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 0.0, 0.0, 1.0, true);
+    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 0.0, 0.0, 1.0, true, null, Transform2D{});
 
     const i_in = (4 * W + 4) * 4;
     try std.testing.expectEqual(@as(u8, 255), fb[i_in + 0]); // R
@@ -2117,11 +2402,137 @@ test "emitFilledPath antialiases a fractional edge" {
     var fb = [_]u8{0} ** (8 * 8 * 4);
     const sq = [_]FillPoint{ .{ .x = 2.5, .y = 2.0 }, .{ .x = 5.5, .y = 2.0 }, .{ .x = 5.5, .y = 6.0 }, .{ .x = 2.5, .y = 6.0 } };
     const lens = [_]u32{4};
-    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 1.0, 1.0, 1.0, true);
+    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 1.0, 1.0, 1.0, true, null, Transform2D{});
 
     const i_edge = (4 * W + 2) * 4; // column [2,3] straddles left edge x=2.5
     try std.testing.expect(fb[i_edge + 3] > 0 and fb[i_edge + 3] < 255);
 
     const i_full = (4 * W + 3) * 4; // column [3,4] fully inside
     try std.testing.expectEqual(@as(u8, 255), fb[i_full + 3]);
+}
+
+test "applyExtend pad repeat reflect" {
+    const testing = std.testing;
+    // pad (mode 0)
+    try testing.expectApproxEqAbs(@as(f32, 1.0), applyExtend(1.5, 0), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), applyExtend(-0.5, 0), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), applyExtend(0.5, 0), 1e-6);
+    // repeat (mode 1): integer maps to 0
+    try testing.expectApproxEqAbs(@as(f32, 0.5), applyExtend(1.5, 1), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), applyExtend(2.0, 1), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.25), applyExtend(3.25, 1), 1e-6);
+    // reflect (mode 2): triangle wave
+    try testing.expectApproxEqAbs(@as(f32, 0.5), applyExtend(1.5, 2), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), applyExtend(1.0, 2), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.0), applyExtend(2.0, 2), 1e-6);
+    try testing.expectApproxEqAbs(@as(f32, 0.7), applyExtend(2.7, 2), 1e-6);
+}
+
+test "sampleGradientColor linear endpoints and midpoint" {
+    const testing = std.testing;
+    var src = GradientSource{};
+    src.kind = .linear;
+    src.x0 = 0;
+    src.y0 = 0;
+    src.x1 = 100;
+    src.y1 = 0;
+    src.extend = 0;
+    src.stop_count = 2;
+    src.stops[0] = .{ .offset = 0, .r = 1, .g = 0, .b = 0, .a = 1 };
+    src.stops[1] = .{ .offset = 1, .r = 0, .g = 0, .b = 1, .a = 1 };
+    const id = Transform2D{};
+    const c0 = sampleGradientColor(&src, id, 0.5, 0.5);
+    try testing.expect(c0[0] > 250 and c0[2] < 5);
+    const c1 = sampleGradientColor(&src, id, 99.5, 0.5);
+    try testing.expect(c1[2] > 250 and c1[0] < 5);
+    const cm = sampleGradientColor(&src, id, 50.5, 0.5);
+    try testing.expect(cm[0] > 118 and cm[0] < 138);
+    try testing.expect(cm[2] > 118 and cm[2] < 138);
+}
+
+test "sampleGradientColor radial center to edge" {
+    const testing = std.testing;
+    var src = GradientSource{};
+    src.kind = .radial;
+    src.cx = 50;
+    src.cy = 50;
+    src.radius = 50;
+    src.extend = 0;
+    src.stop_count = 2;
+    src.stops[0] = .{ .offset = 0, .r = 1, .g = 1, .b = 1, .a = 1 };
+    src.stops[1] = .{ .offset = 1, .r = 0, .g = 0, .b = 0, .a = 1 };
+    const id = Transform2D{};
+    const center = sampleGradientColor(&src, id, 50.5, 50.5);
+    try testing.expect(center[0] > 245);
+    const edge = sampleGradientColor(&src, id, 100.5, 50.5);
+    try testing.expect(edge[0] < 10);
+}
+
+test "single-color gradient path equals solid path (B1-3)" {
+    const testing = std.testing;
+    const W = 16;
+    const H = 16;
+    var fb_solid: [W * H * 4]u8 = undefined;
+    var fb_grad: [W * H * 4]u8 = undefined;
+    for (0..W * H) |i| {
+        fb_solid[i * 4 + 0] = 16;
+        fb_solid[i * 4 + 1] = 32;
+        fb_solid[i * 4 + 2] = 48;
+        fb_solid[i * 4 + 3] = 255;
+        fb_grad[i * 4 + 0] = 16;
+        fb_grad[i * 4 + 1] = 32;
+        fb_grad[i * 4 + 2] = 48;
+        fb_grad[i * 4 + 3] = 255;
+    }
+    const sq = [_]FillPoint{
+        .{ .x = 2.3, .y = 2.7 },
+        .{ .x = 12.6, .y = 2.7 },
+        .{ .x = 12.6, .y = 12.4 },
+        .{ .x = 2.3, .y = 12.4 },
+    };
+    const lens = [_]u32{4};
+    emitFilledPath(fb_solid[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0.25, 0.5, 0.75, 1.0, true, null, Transform2D{});
+    var src = GradientSource{};
+    src.kind = .linear;
+    src.x0 = 0;
+    src.y0 = 0;
+    src.x1 = 10;
+    src.y1 = 0;
+    src.extend = 0;
+    src.stop_count = 2;
+    src.stops[0] = .{ .offset = 0, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
+    src.stops[1] = .{ .offset = 1, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
+    emitFilledPath(fb_grad[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0, 0, 0, 1, true, &src, Transform2D{});
+    try testing.expectEqualSlices(u8, fb_solid[0..], fb_grad[0..]);
+}
+
+test "single-color gradient rect equals solid rect (B1-3, FILL_RECT)" {
+    const testing = std.testing;
+    const W = 16;
+    const H = 16;
+    var fb_solid: [W * H * 4]u8 = undefined;
+    var fb_grad: [W * H * 4]u8 = undefined;
+    for (0..W * H) |i| {
+        fb_solid[i * 4 + 0] = 16;
+        fb_solid[i * 4 + 1] = 32;
+        fb_solid[i * 4 + 2] = 48;
+        fb_solid[i * 4 + 3] = 255;
+        fb_grad[i * 4 + 0] = 16;
+        fb_grad[i * 4 + 1] = 32;
+        fb_grad[i * 4 + 2] = 48;
+        fb_grad[i * 4 + 3] = 255;
+    }
+    fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(0.25), clampU8(0.5), clampU8(0.75), clampU8(1.0), 0, null);
+    var src = GradientSource{};
+    src.kind = .linear;
+    src.x0 = 0;
+    src.y0 = 0;
+    src.x1 = 10;
+    src.y1 = 0;
+    src.extend = 0;
+    src.stop_count = 2;
+    src.stops[0] = .{ .offset = 0, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
+    src.stops[1] = .{ .offset = 1, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
+    fbFillRectClippedAASourced(fb_grad[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, null);
+    try testing.expectEqualSlices(u8, fb_solid[0..], fb_grad[0..]);
 }
