@@ -29,7 +29,7 @@ pub const MagicPrefix = "SDCS";
 
 // Protocol version (major, minor). Bump major on incompatible changes.
 pub const version_major: u16 = 0;
-pub const version_minor: u16 = 1;
+pub const version_minor: u16 = 2;
 
 pub const Header = extern struct {
     magic: [8]u8,
@@ -83,6 +83,9 @@ pub const Op = struct {
     pub const SET_TRANSFORM_2D: u16 = 0x0005; // Set 2D transform payload=24b
     pub const RESET_TRANSFORM: u16 = 0x0006; // Reset transform payload=0b
     pub const SET_ANTIALIAS: u16 = 0x0007; // Set antialiasing payload=4b
+    pub const SET_SOURCE_NONE: u16 = 0x0008; // Reset paint source to inline RGBA payload=0b
+    pub const SET_SOURCE_LINEAR_GRADIENT: u16 = 0x0009; // Linear gradient source payload=variable
+    pub const SET_SOURCE_RADIAL_GRADIENT: u16 = 0x000A; // Radial (concentric) gradient source payload=variable
 
     // Draw opcodes
     pub const FILL_RECT: u16 = 0x0010; // Fill rectangle payload=32b
@@ -160,6 +163,9 @@ pub fn opcodeName(opcode: u16) ?[]const u8 {
         Op.SET_TRANSFORM_2D => "SET_TRANSFORM_2D",
         Op.RESET_TRANSFORM => "RESET_TRANSFORM",
         Op.SET_ANTIALIAS => "SET_ANTIALIAS",
+        Op.SET_SOURCE_NONE => "SET_SOURCE_NONE",
+        Op.SET_SOURCE_LINEAR_GRADIENT => "SET_SOURCE_LINEAR_GRADIENT",
+        Op.SET_SOURCE_RADIAL_GRADIENT => "SET_SOURCE_RADIAL_GRADIENT",
         Op.FILL_RECT => "FILL_RECT",
         Op.STROKE_RECT => "STROKE_RECT",
         Op.STROKE_LINE => "STROKE_LINE",
@@ -287,6 +293,28 @@ fn validateOpcodePayload(op: u16, payload_bytes: u32) ValidateError!void {
     }
     if (op == Op.STROKE_LINE) {
         if (payload_bytes != 36) return ValidateError.Protocol;
+        return;
+    }
+    if (op == Op.SET_SOURCE_NONE) {
+        if (payload_bytes != 0) return ValidateError.Protocol;
+        return;
+    }
+    if (op == Op.SET_SOURCE_LINEAR_GRADIENT) {
+        // header 24 (x0,y0,x1,y1,extend,stop_count) + stop_count * 20
+        if (payload_bytes < 24) return ValidateError.Protocol;
+        const body = payload_bytes - 24;
+        if ((body % 20) != 0) return ValidateError.Protocol;
+        const stop_count = body / 20;
+        if (stop_count < 2 or stop_count > 256) return ValidateError.Protocol;
+        return;
+    }
+    if (op == Op.SET_SOURCE_RADIAL_GRADIENT) {
+        // header 20 (cx,cy,radius,extend,stop_count) + stop_count * 20
+        if (payload_bytes < 20) return ValidateError.Protocol;
+        const body = payload_bytes - 20;
+        if ((body % 20) != 0) return ValidateError.Protocol;
+        const stop_count = body / 20;
+        if (stop_count < 2 or stop_count > 256) return ValidateError.Protocol;
         return;
     }
     if (op == Op.END) {
@@ -443,6 +471,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
                 Op.RESET,
                 Op.CLEAR_CLIP,
                 Op.RESET_TRANSFORM,
+                Op.SET_SOURCE_NONE,
                 Op.END,
                 => {
                     if (cmd.payload_bytes != 0) return ValidateError.Protocol;
@@ -455,6 +484,8 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
                 Op.SET_BLEND,
                 Op.SET_TRANSFORM_2D,
                 Op.SET_ANTIALIAS,
+                Op.SET_SOURCE_LINEAR_GRADIENT,
+                Op.SET_SOURCE_RADIAL_GRADIENT,
                 Op.FILL_RECT,
                 Op.STROKE_RECT,
                 Op.STROKE_LINE,
@@ -677,7 +708,7 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
             }
 
             switch (cmd.opcode) {
-                Op.RESET, Op.CLEAR_CLIP, Op.RESET_TRANSFORM, Op.END => {
+                Op.RESET, Op.CLEAR_CLIP, Op.RESET_TRANSFORM, Op.SET_SOURCE_NONE, Op.END => {
                     if (cmd.payload_bytes != 0) {
                         diag.* = .{
                             .file_offset = current_offset,
@@ -692,7 +723,7 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
                     if (cmd.opcode == Op.END) end_seen = true;
                 },
 
-                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
+                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.SET_SOURCE_LINEAR_GRADIENT, Op.SET_SOURCE_RADIAL_GRADIENT, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
                     if (cmd.payload_bytes != 0) {
                         file.seekBy(@as(i64, @intCast(cmd.payload_bytes))) catch {
                             diag.* = .{
@@ -791,6 +822,9 @@ test "opcodeName returns correct names for known opcodes" {
     try std.testing.expectEqualStrings("STROKE_CUBIC_BEZIER", opcodeName(Op.STROKE_CUBIC_BEZIER).?);
     try std.testing.expectEqualStrings("STROKE_PATH", opcodeName(Op.STROKE_PATH).?);
     try std.testing.expectEqualStrings("FILL_PATH", opcodeName(Op.FILL_PATH).?);
+    try std.testing.expectEqualStrings("SET_SOURCE_NONE", opcodeName(Op.SET_SOURCE_NONE).?);
+    try std.testing.expectEqualStrings("SET_SOURCE_LINEAR_GRADIENT", opcodeName(Op.SET_SOURCE_LINEAR_GRADIENT).?);
+    try std.testing.expectEqualStrings("SET_SOURCE_RADIAL_GRADIENT", opcodeName(Op.SET_SOURCE_RADIAL_GRADIENT).?);
     try std.testing.expectEqualStrings("BLIT_IMAGE", opcodeName(Op.BLIT_IMAGE).?);
     try std.testing.expectEqualStrings("DRAW_GLYPH_RUN", opcodeName(Op.DRAW_GLYPH_RUN).?);
     try std.testing.expectEqualStrings("END", opcodeName(Op.END).?);
@@ -844,6 +878,26 @@ test "fourcc produces correct values" {
     try std.testing.expectEqual(ChunkType.RSRC, fourcc('R', 'S', 'R', 'C'));
     try std.testing.expectEqual(ChunkType.DATA, fourcc('D', 'A', 'T', 'A'));
     try std.testing.expectEqual(ChunkType.META, fourcc('M', 'E', 'T', 'A'));
+}
+
+test "validateOpcodePayload validates paint-source ops" {
+    // SET_SOURCE_NONE: zero payload only.
+    try validateOpcodePayload(Op.SET_SOURCE_NONE, 0);
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_NONE, 4));
+
+    // Linear gradient: header 24 + stop_count * 20, stop_count in [2, 256].
+    try validateOpcodePayload(Op.SET_SOURCE_LINEAR_GRADIENT, 24 + 2 * 20);
+    try validateOpcodePayload(Op.SET_SOURCE_LINEAR_GRADIENT, 24 + 256 * 20);
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_LINEAR_GRADIENT, 24 + 1 * 20));
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_LINEAR_GRADIENT, 24 + 257 * 20));
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_LINEAR_GRADIENT, 24 + 2 * 20 + 4));
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_LINEAR_GRADIENT, 12));
+
+    // Radial gradient: header 20 + stop_count * 20.
+    try validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 2 * 20);
+    try validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 256 * 20);
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 1 * 20));
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_SOURCE_RADIAL_GRADIENT, 20 + 2 * 20 + 8));
 }
 
 test "validateOpcodePayload rejects wrong payload sizes" {
@@ -931,5 +985,5 @@ test "Magic string is correct" {
 
 test "version constants" {
     try std.testing.expectEqual(@as(u16, 0), version_major);
-    try std.testing.expectEqual(@as(u16, 1), version_minor);
+    try std.testing.expectEqual(@as(u16, 2), version_minor);
 }

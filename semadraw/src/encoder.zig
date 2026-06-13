@@ -78,6 +78,20 @@ pub const Encoder = struct {
         even_odd = 1,
     };
 
+    pub const ExtendMode = enum(u32) {
+        pad = 0,
+        repeat = 1,
+        reflect = 2,
+    };
+
+    pub const GradientStop = struct {
+        offset: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    };
+
     pub fn init(allocator: std.mem.Allocator) Encoder {
         return .{ .allocator = allocator, .cmds = std.ArrayList(u8){} };
     }
@@ -455,6 +469,104 @@ pub const Encoder = struct {
         try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.FILL_PATH, payload);
     }
 
+    /// Reset the current paint source to the inline-RGBA default (ADR 0016).
+    pub fn setSourceNone(self: *Encoder) !void {
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_SOURCE_NONE, &[_]u8{});
+    }
+
+    fn validateStops(stops: []const GradientStop) !void {
+        if (stops.len < 2 or stops.len > 256) return error.InvalidArgument;
+        var prev: f32 = 0.0;
+        var first = true;
+        for (stops) |s| {
+            if (!std.math.isFinite(s.offset) or !std.math.isFinite(s.r) or
+                !std.math.isFinite(s.g) or !std.math.isFinite(s.b) or
+                !std.math.isFinite(s.a)) return error.InvalidArgument;
+            if (s.offset < 0.0 or s.offset > 1.0) return error.InvalidArgument;
+            if (!first and s.offset < prev) return error.InvalidArgument;
+            prev = s.offset;
+            first = false;
+        }
+    }
+
+    fn writeStops(payload: []u8, off: *usize, stops: []const GradientStop) void {
+        for (stops) |s| {
+            putF32LE(payload, off, s.offset);
+            putF32LE(payload, off, s.r);
+            putF32LE(payload, off, s.g);
+            putF32LE(payload, off, s.b);
+            putF32LE(payload, off, s.a);
+        }
+    }
+
+    /// Set a linear gradient paint source. Axis endpoints are in user space
+    /// (ADR 0016 section 5). Rejects fewer than 2 or more than 256 stops, a
+    /// non-finite input, offsets outside [0, 1] or out of order, and a
+    /// degenerate (zero-length) axis.
+    pub fn setSourceLinearGradient(
+        self: *Encoder,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        stops: []const GradientStop,
+        extend: ExtendMode,
+    ) !void {
+        if (!std.math.isFinite(x0) or !std.math.isFinite(y0) or
+            !std.math.isFinite(x1) or !std.math.isFinite(y1)) return error.InvalidArgument;
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        if (dx * dx + dy * dy <= 0.0) return error.InvalidArgument;
+        try validateStops(stops);
+
+        const payload_len: usize = 24 + stops.len * 20;
+        const payload = try self.allocator.alloc(u8, payload_len);
+        defer self.allocator.free(payload);
+
+        var off: usize = 0;
+        putF32LE(payload, &off, x0);
+        putF32LE(payload, &off, y0);
+        putF32LE(payload, &off, x1);
+        putF32LE(payload, &off, y1);
+        putU32LE(payload, &off, @intFromEnum(extend));
+        putU32LE(payload, &off, @intCast(stops.len));
+        writeStops(payload, &off, stops);
+
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_SOURCE_LINEAR_GRADIENT, payload);
+    }
+
+    /// Set a concentric radial gradient paint source. Center is in user space,
+    /// radius in user units (ADR 0016 section 5). Rejects a non-finite input, a
+    /// radius not greater than 0, and the same stop violations as the linear
+    /// encoder.
+    pub fn setSourceRadialGradient(
+        self: *Encoder,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        stops: []const GradientStop,
+        extend: ExtendMode,
+    ) !void {
+        if (!std.math.isFinite(cx) or !std.math.isFinite(cy) or
+            !std.math.isFinite(radius)) return error.InvalidArgument;
+        if (radius <= 0.0) return error.InvalidArgument;
+        try validateStops(stops);
+
+        const payload_len: usize = 20 + stops.len * 20;
+        const payload = try self.allocator.alloc(u8, payload_len);
+        defer self.allocator.free(payload);
+
+        var off: usize = 0;
+        putF32LE(payload, &off, cx);
+        putF32LE(payload, &off, cy);
+        putF32LE(payload, &off, radius);
+        putU32LE(payload, &off, @intFromEnum(extend));
+        putU32LE(payload, &off, @intCast(stops.len));
+        writeStops(payload, &off, stops);
+
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_SOURCE_RADIAL_GRADIENT, payload);
+    }
+
     /// Stroke a cubic Bezier curve from (x0,y0) through control points (cx1,cy1) and (cx2,cy2) to (x1,y1).
     /// Payload format: x0, y0, cx1, cy1, cx2, cy2, x1, y1, stroke_width, r, g, b, a (13 x f32 = 52 bytes)
     pub fn strokeCubicBezier(
@@ -689,4 +801,84 @@ test "fillPath rejects degenerate input" {
 
     const empty = [_][]const Encoder.Point{};
     try testing.expectError(error.InvalidArgument, enc.fillPath(empty[0..], .nonzero, 1, 1, 1, 1));
+}
+
+test "setSourceNone encodes empty payload" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    try enc.setSourceNone();
+    const buf = enc.cmds.items;
+    try testing.expectEqual(@as(usize, 8), buf.len); // header only, pad8(8)=0
+    try testing.expectEqual(sdcs.Op.SET_SOURCE_NONE, std.mem.readInt(u16, buf[0..2], .little));
+    try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, buf[4..8], .little));
+}
+
+test "setSourceLinearGradient encodes payload" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const stops = [_]Encoder.GradientStop{
+        .{ .offset = 0.0, .r = 1, .g = 0, .b = 0, .a = 1 },
+        .{ .offset = 1.0, .r = 0, .g = 0, .b = 1, .a = 1 },
+    };
+    try enc.setSourceLinearGradient(0, 0, 100, 0, stops[0..], .pad);
+    const buf = enc.cmds.items;
+    // payload = 24 + 2*20 = 64; record = 8 + 64 = 72; pad8(72)=0.
+    try testing.expectEqual(@as(usize, 72), buf.len);
+    try testing.expectEqual(sdcs.Op.SET_SOURCE_LINEAR_GRADIENT, std.mem.readInt(u16, buf[0..2], .little));
+    try testing.expectEqual(@as(u32, 64), std.mem.readInt(u32, buf[4..8], .little));
+    const payload = buf[8..];
+    // extend at payload offset 16, stop_count at 20.
+    try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, payload[16..20], .little));
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[20..24], .little));
+}
+
+test "setSourceRadialGradient encodes payload" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const stops = [_]Encoder.GradientStop{
+        .{ .offset = 0.0, .r = 1, .g = 1, .b = 1, .a = 1 },
+        .{ .offset = 0.5, .r = 0.5, .g = 0.5, .b = 0.5, .a = 1 },
+        .{ .offset = 1.0, .r = 0, .g = 0, .b = 0, .a = 1 },
+    };
+    try enc.setSourceRadialGradient(50, 50, 40, stops[0..], .reflect);
+    const buf = enc.cmds.items;
+    // payload = 20 + 3*20 = 80; record = 8 + 80 = 88; pad8(88)=0.
+    try testing.expectEqual(@as(usize, 88), buf.len);
+    try testing.expectEqual(sdcs.Op.SET_SOURCE_RADIAL_GRADIENT, std.mem.readInt(u16, buf[0..2], .little));
+    const payload = buf[8..];
+    // extend at payload offset 12, stop_count at 16.
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[12..16], .little));
+    try testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, payload[16..20], .little));
+}
+
+test "gradient encoders reject invalid input" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+    const ok = [_]Encoder.GradientStop{
+        .{ .offset = 0.0, .r = 0, .g = 0, .b = 0, .a = 1 },
+        .{ .offset = 1.0, .r = 1, .g = 1, .b = 1, .a = 1 },
+    };
+    const one = [_]Encoder.GradientStop{ok[0]};
+    try testing.expectError(error.InvalidArgument, enc.setSourceLinearGradient(0, 0, 10, 0, one[0..], .pad));
+    try testing.expectError(error.InvalidArgument, enc.setSourceLinearGradient(5, 5, 5, 5, ok[0..], .pad)); // degenerate axis
+    try testing.expectError(error.InvalidArgument, enc.setSourceRadialGradient(0, 0, 0, ok[0..], .pad)); // radius <= 0
+    const bad_off = [_]Encoder.GradientStop{
+        .{ .offset = -0.1, .r = 0, .g = 0, .b = 0, .a = 1 },
+        .{ .offset = 1.0, .r = 1, .g = 1, .b = 1, .a = 1 },
+    };
+    try testing.expectError(error.InvalidArgument, enc.setSourceLinearGradient(0, 0, 10, 0, bad_off[0..], .pad));
+    const dec = [_]Encoder.GradientStop{
+        .{ .offset = 0.8, .r = 0, .g = 0, .b = 0, .a = 1 },
+        .{ .offset = 0.2, .r = 1, .g = 1, .b = 1, .a = 1 },
+    };
+    try testing.expectError(error.InvalidArgument, enc.setSourceLinearGradient(0, 0, 10, 0, dec[0..], .pad));
+    const nanstop = [_]Encoder.GradientStop{
+        .{ .offset = 0.0, .r = std.math.nan(f32), .g = 0, .b = 0, .a = 1 },
+        .{ .offset = 1.0, .r = 1, .g = 1, .b = 1, .a = 1 },
+    };
+    try testing.expectError(error.InvalidArgument, enc.setSourceLinearGradient(0, 0, 10, 0, nanstop[0..], .pad));
 }
