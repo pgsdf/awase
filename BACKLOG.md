@@ -456,6 +456,15 @@ properties. Clients describe a retained scene graph rather than pushing
 raw pixel commands each frame. semadrawd composites the layer tree
 rather than blitting each surface independently.
 
+**Scope (2026-06-13, NDE semantic design Revision 2, decision 2 /
+correction A).** LT-1 is presentation mechanism only: transform,
+opacity, clip, z-order. The semantic tree is unbundled from LT-1 and
+lives as a separate versioned wire format and library in `shared/`,
+terminating at NDE; the two are never fused. Revision 1 had fused two
+structures with different shapes, cadences, and owners, and that was
+withdrawn as a design error. LT-1 carries no typed semantic properties
+or transactions.
+
 Key design points:
 
 - Extend the semadraw IPC protocol with `SET_LAYER_TRANSFORM`,
@@ -727,7 +736,7 @@ reference to ADR 0005 (which already ships `/var/run/pgsd/<uid>/` under
 both `PGSD_RUNTIME_DIR` and `XDG_RUNTIME_DIR`), leaving only an optional
 multi-session refcount. Not implementable until SM-2 lands.
 
-### `[ ]` SM-5: quick-exit guard false-positive on clean logout  *(Open 2026-06-09, Small, P2)*
+### `[x]` SM-5: quick-exit guard false-positive on clean logout  *(Closed 2026-06-13, operator-ratified; fix verified in source. Opened 2026-06-09, Small, P2)*
 
 Follow-up defect in the SM-4 login-UI area. After a clean login then
 logout, the next login screen shows "session exited quickly (code 0);
@@ -743,6 +752,14 @@ QUICK_EXIT_THRESHOLD_NS`), so a clean exit is silent at any duration
 while a genuinely failed or fast-erroring start (nonzero) is still
 flagged. No ADR (AD-fix under this entry). Observed on pgsd-bare-metal
 2026-06-09.
+
+**Closed 2026-06-13.** Verified in `pgsd-sessiond/src/main.zig`: the
+session-loop quick-exit guard gates on `child_exit != 0 and
+launch_elapsed_ns < QUICK_EXIT_THRESHOLD_NS`, so a clean code-0 logout
+is silent at any duration while a fast nonzero exit is still flagged.
+The exit-code gate is documented in the inline comment at the guard
+(it names SM-5) and in the daemon header comment. The landed code
+matches the Fix paragraph above; no further work.
 
 ## Architectural Discipline
 
