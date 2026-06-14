@@ -12,7 +12,7 @@ manually (not from loader.conf), start daemons.
 
 ## Prerequisites
 
-- FreeBSD 15.0-RELEASE installed and bootable. ZFS or UFS root.
+- FreeBSD 15.1-RELEASE installed and bootable. ZFS or UFS root.
 - Network access for `pkg install` and `git clone`.
 - Root access via `sudo` or direct login.
 - The `/usr/src` tree if you intend to build the PGSD kernel
@@ -77,7 +77,7 @@ If you intend to build the PGSD kernel, also install the FreeBSD
 source tree:
 
 ```
-sudo pkg install -y src
+sudo pkg install -y FreeBSD-src FreeBSD-src-sys
 ```
 
 **Verify:**
