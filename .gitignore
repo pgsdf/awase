@@ -22,3 +22,4 @@ opt_global.h
 ad21-diagnose.sh
 ad22-diagnose.sh
 *.orig
+semadraw/tests/out/
