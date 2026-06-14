@@ -473,6 +473,64 @@ pub const Encoder = struct {
         try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.FILL_PATH, payload);
     }
 
+    /// Set the clip to an arbitrary path (ADR 0018, Stage C). The clip is one
+    /// or more closed contours under a winding rule, authored in user space;
+    /// the renderer bakes it to device space with the transform in effect when
+    /// this command is decoded. Setting a path clip replaces any current clip
+    /// (rectangles or path); CLEAR_CLIP clears it.
+    ///
+    /// Payload (ADR 0018 section 4): fill_rule (u32), contour_count (u32),
+    /// contour_lengths (contour_count x u32), points (sum x 2 x f32). This is
+    /// the FILL_PATH contour layout with the RGBA prefix removed.
+    ///
+    /// Argument validation mirrors fillPath, and additionally rejects
+    /// non-finite coordinates (ADR 0018 section 7). Lengths are accumulated in
+    /// usize to avoid overflow.
+    pub fn setClipPath(
+        self: *Encoder,
+        contours: []const []const Point,
+        fill_rule: FillRule,
+    ) !void {
+        if (contours.len == 0) return error.InvalidArgument;
+        if (contours.len > 65535) return error.InvalidArgument;
+
+        var total_points: usize = 0;
+        for (contours) |c| {
+            if (c.len < 3) return error.InvalidArgument;
+            for (c) |pt| {
+                if (!std.math.isFinite(pt.x) or !std.math.isFinite(pt.y)) {
+                    return error.InvalidArgument;
+                }
+            }
+            total_points += c.len;
+        }
+        if (total_points > 65535) return error.InvalidArgument;
+
+        const cc: usize = contours.len;
+        const header_len: usize = 8;
+        const table_len: usize = cc * 4;
+        const points_len: usize = total_points * 8;
+        const payload_len: usize = header_len + table_len + points_len;
+        const payload = try self.allocator.alloc(u8, payload_len);
+        defer self.allocator.free(payload);
+
+        var off: usize = 0;
+        putU32LE(payload, &off, @intFromEnum(fill_rule));
+        putU32LE(payload, &off, @intCast(cc));
+
+        for (contours) |c| {
+            putU32LE(payload, &off, @intCast(c.len));
+        }
+        for (contours) |c| {
+            for (c) |pt| {
+                putF32LE(payload, &off, pt.x);
+                putF32LE(payload, &off, pt.y);
+            }
+        }
+
+        try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_CLIP_PATH, payload);
+    }
+
     /// Reset the current paint source to the inline-RGBA default (ADR 0016).
     pub fn setSourceNone(self: *Encoder) !void {
         try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.SET_SOURCE_NONE, &[_]u8{});
@@ -865,6 +923,72 @@ test "fillPath rejects degenerate input" {
 
     const empty = [_][]const Encoder.Point{};
     try testing.expectError(error.InvalidArgument, enc.fillPath(empty[0..], .nonzero, 1, 1, 1, 1));
+}
+
+test "setClipPath encodes multi-contour payload" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+
+    const outer = [_]Encoder.Point{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 10, .y = 0 },
+        .{ .x = 10, .y = 10 },
+        .{ .x = 0, .y = 10 },
+    };
+    const inner = [_]Encoder.Point{
+        .{ .x = 3, .y = 3 },
+        .{ .x = 7, .y = 3 },
+        .{ .x = 5, .y = 7 },
+    };
+    const contours = [_][]const Encoder.Point{ outer[0..], inner[0..] };
+
+    try enc.setClipPath(contours[0..], .even_odd);
+
+    const buf = enc.cmds.items;
+    // Command record: 8-byte header + payload + pad8.
+    // payload_len = 8 + 4*2 + 8*(4+3) = 72; record = 8 + 72 = 80; pad8(80) = 0.
+    try testing.expectEqual(@as(usize, 80), buf.len);
+
+    const opcode = std.mem.readInt(u16, buf[0..2], .little);
+    try testing.expectEqual(sdcs.Op.SET_CLIP_PATH, opcode);
+
+    const payload_bytes = std.mem.readInt(u32, buf[4..8], .little);
+    try testing.expectEqual(@as(u32, 72), payload_bytes);
+
+    const payload = buf[8..];
+    // No color prefix: fill_rule at payload offset 0, contour_count at 4.
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, payload[0..4], .little));
+    try testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, payload[4..8], .little));
+    // contour_lengths at offset 8: 4 then 3.
+    try testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, payload[8..12], .little));
+    try testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, payload[12..16], .little));
+    // First point (0,0) begins at offset 16.
+    try testing.expectEqual(@as(f32, 0), @as(f32, @bitCast(std.mem.readInt(u32, payload[16..20], .little))));
+}
+
+test "setClipPath rejects degenerate and non-finite input" {
+    const testing = std.testing;
+    var enc = Encoder.init(testing.allocator);
+    defer enc.deinit();
+
+    // Fewer than 3 points.
+    const two = [_]Encoder.Point{ .{ .x = 0, .y = 0 }, .{ .x = 1, .y = 1 } };
+    const bad = [_][]const Encoder.Point{two[0..]};
+    try testing.expectError(error.InvalidArgument, enc.setClipPath(bad[0..], .nonzero));
+
+    // No contours.
+    const empty = [_][]const Encoder.Point{};
+    try testing.expectError(error.InvalidArgument, enc.setClipPath(empty[0..], .nonzero));
+
+    // Non-finite coordinate in an otherwise valid contour.
+    const nan = [_]Encoder.Point{
+        .{ .x = 0, .y = 0 },
+        .{ .x = std.math.inf(f32), .y = 0 },
+        .{ .x = 5, .y = 5 },
+    };
+    const bad_nan = [_][]const Encoder.Point{nan[0..]};
+    try testing.expectError(error.InvalidArgument, enc.setClipPath(bad_nan[0..], .nonzero));
 }
 
 test "setSourceNone encodes empty payload" {

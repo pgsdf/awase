@@ -29,7 +29,7 @@ pub const MagicPrefix = "SDCS";
 
 // Protocol version (major, minor). Bump major on incompatible changes.
 pub const version_major: u16 = 0;
-pub const version_minor: u16 = 3;
+pub const version_minor: u16 = 4;
 
 pub const Header = extern struct {
     magic: [8]u8,
@@ -87,6 +87,7 @@ pub const Op = struct {
     pub const SET_SOURCE_LINEAR_GRADIENT: u16 = 0x0009; // Linear gradient source payload=variable
     pub const SET_SOURCE_RADIAL_GRADIENT: u16 = 0x000A; // Radial (concentric) gradient source payload=variable
     pub const SET_SOURCE_PATTERN: u16 = 0x000B; // Pattern (surface) source payload=variable
+    pub const SET_CLIP_PATH: u16 = 0x000C; // Set clip path (one or more closed contours under a winding rule) payload=variable
 
     // Draw opcodes
     pub const FILL_RECT: u16 = 0x0010; // Fill rectangle payload=32b
@@ -168,6 +169,7 @@ pub fn opcodeName(opcode: u16) ?[]const u8 {
         Op.SET_SOURCE_LINEAR_GRADIENT => "SET_SOURCE_LINEAR_GRADIENT",
         Op.SET_SOURCE_RADIAL_GRADIENT => "SET_SOURCE_RADIAL_GRADIENT",
         Op.SET_SOURCE_PATTERN => "SET_SOURCE_PATTERN",
+        Op.SET_CLIP_PATH => "SET_CLIP_PATH",
         Op.FILL_RECT => "FILL_RECT",
         Op.STROKE_RECT => "STROKE_RECT",
         Op.STROKE_LINE => "STROKE_LINE",
@@ -330,6 +332,20 @@ fn validateOpcodePayload(op: u16, payload_bytes: u32) ValidateError!void {
         if ((body % 4) != 0) return ValidateError.Protocol;
         const texel_count = body / 4;
         if (texel_count < 1 or texel_count > 4096 * 4096) return ValidateError.Protocol;
+        return;
+    }
+    if (op == Op.SET_CLIP_PATH) {
+        // header 8 (fill_rule:u32, contour_count:u32) + contour table
+        // (contour_count * u32) + points (total_points * 2 * f32). This is
+        // the coarse size shape only: the field-level checks (fill_rule,
+        // contour_count and per-contour-length bounds, total-point limit,
+        // exact reconstructed length) are enforced at encode and at decode,
+        // which read the body fields. The smallest valid body is one
+        // contour of three points: 1*4 + 3*8 = 28, so payload >= 36. The
+        // contour table is a multiple of 4 bytes and the point array a
+        // multiple of 8, so the body (payload - 8) is a multiple of 4.
+        if (payload_bytes < 36) return ValidateError.Protocol;
+        if (((payload_bytes - 8) % 4) != 0) return ValidateError.Protocol;
         return;
     }
     if (op == Op.END) {
@@ -502,6 +518,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
                 Op.SET_SOURCE_LINEAR_GRADIENT,
                 Op.SET_SOURCE_RADIAL_GRADIENT,
                 Op.SET_SOURCE_PATTERN,
+                Op.SET_CLIP_PATH,
                 Op.FILL_RECT,
                 Op.STROKE_RECT,
                 Op.STROKE_LINE,
@@ -739,7 +756,7 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
                     if (cmd.opcode == Op.END) end_seen = true;
                 },
 
-                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.SET_SOURCE_LINEAR_GRADIENT, Op.SET_SOURCE_RADIAL_GRADIENT, Op.SET_SOURCE_PATTERN, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
+                Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.SET_SOURCE_LINEAR_GRADIENT, Op.SET_SOURCE_RADIAL_GRADIENT, Op.SET_SOURCE_PATTERN, Op.SET_CLIP_PATH, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
                     if (cmd.payload_bytes != 0) {
                         file.seekBy(@as(i64, @intCast(cmd.payload_bytes))) catch {
                             diag.* = .{
@@ -842,6 +859,7 @@ test "opcodeName returns correct names for known opcodes" {
     try std.testing.expectEqualStrings("SET_SOURCE_LINEAR_GRADIENT", opcodeName(Op.SET_SOURCE_LINEAR_GRADIENT).?);
     try std.testing.expectEqualStrings("SET_SOURCE_RADIAL_GRADIENT", opcodeName(Op.SET_SOURCE_RADIAL_GRADIENT).?);
     try std.testing.expectEqualStrings("SET_SOURCE_PATTERN", opcodeName(Op.SET_SOURCE_PATTERN).?);
+    try std.testing.expectEqualStrings("SET_CLIP_PATH", opcodeName(Op.SET_CLIP_PATH).?);
     try std.testing.expectEqualStrings("BLIT_IMAGE", opcodeName(Op.BLIT_IMAGE).?);
     try std.testing.expectEqualStrings("DRAW_GLYPH_RUN", opcodeName(Op.DRAW_GLYPH_RUN).?);
     try std.testing.expectEqualStrings("END", opcodeName(Op.END).?);
@@ -982,6 +1000,21 @@ test "SET_CLIP_RECTS payload validation" {
     try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_CLIP_RECTS, 10));
 }
 
+test "SET_CLIP_PATH coarse payload validation" {
+    // Smallest valid: 8-byte header + 1 contour of 3 points = 8 + 4 + 24 = 36.
+    try validateOpcodePayload(Op.SET_CLIP_PATH, 36);
+    // 1 contour of 4 points: 8 + 4 + 32 = 44.
+    try validateOpcodePayload(Op.SET_CLIP_PATH, 44);
+    // 2 contours, 3 + 5 points: 8 + 8 + 64 = 80.
+    try validateOpcodePayload(Op.SET_CLIP_PATH, 80);
+    // Invalid: below the 36-byte minimum.
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_CLIP_PATH, 8));
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_CLIP_PATH, 35));
+    // Invalid: body (payload - 8) not a multiple of 4.
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_CLIP_PATH, 37));
+    try std.testing.expectError(ValidateError.Protocol, validateOpcodePayload(Op.SET_CLIP_PATH, 38));
+}
+
 test "ValidationDiagnostics default values" {
     const diag = ValidationDiagnostics{};
     try std.testing.expectEqual(@as(u64, 0), diag.file_offset);
@@ -1012,5 +1045,5 @@ test "Magic string is correct" {
 
 test "version constants" {
     try std.testing.expectEqual(@as(u16, 0), version_major);
-    try std.testing.expectEqual(@as(u16, 3), version_minor);
+    try std.testing.expectEqual(@as(u16, 4), version_minor);
 }

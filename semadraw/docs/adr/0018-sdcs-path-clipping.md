@@ -223,30 +223,35 @@ identical color, identical blend yield identical bytes.
 
 ## 6. Validation
 
-`validateOpcodePayload` gains a `SET_CLIP_PATH` case that mirrors
-`FILL_PATH` minus the color prefix, size-only and side-effect-free:
+Validation follows the existing SDCS model, the same one `FILL_PATH`
+uses. `validateOpcodePayload` performs only coarse payload-shape
+validation: by construction it receives the payload length, not the
+payload body, so it cannot inspect `fill_rule`, `contour_count`, contour
+lengths, or point totals. Field-level validation of `SET_CLIP_PATH`
+occurs in the components that parse the payload body, the encoder before
+serialization and the renderer/replay path while decoding. The live
+validators treat `SET_CLIP_PATH` as a variable-length opcode for framing
+purposes, ensuring its payload stays within the declared chunk, exactly
+as they already do for `FILL_PATH`.
 
-  - payload at least 8 bytes (the header).
-  - `fill_rule` at most 1.
-  - `contour_count` at least 1 and at most 65535.
-  - each contour length at least 3; running total of points at most
-    65535.
-  - exact length check: payload equals `8 + contour_count * 4 +
-    total_points * 8`.
+Coarse shape, in `validateOpcodePayload`: the payload is at least 36
+bytes (the 8-byte header plus the smallest possible body, one contour of
+three points: `8 + 1 * 4 + 3 * 8`), and `payload - 8` is a multiple of 4
+(the contour table is a multiple of 4 bytes and the point array a
+multiple of 8). This mirrors the coarse size-shape case that
+`SET_SOURCE_PATTERN` carries; it does not attempt the field-level checks,
+which need the body.
 
-The accumulated payload-length computation, and the running point total,
-must be performed in a type wide enough to avoid integer overflow (u64 or
-usize), not u32. Computing the expected length in 32 bits would let a
-malformed stream wrap the product around and pass a length check it
-should fail. This matches the overflow-safe accounting ADR 0017 requires
-for the pattern payload.
-
-Both live validators carry `SET_CLIP_PATH` in the variable-payload group,
-beside `SET_CLIP_RECTS`, `FILL_PATH`, the gradient sources, and the
-pattern source. The encoder additionally rejects non-finite point
-coordinates before serialization, as `fillPath` does; the byte-level
-validator checks structure and length, not coordinate finiteness, which
-matches how `FILL_PATH` is validated today.
+Field-level, in the encoder and (in increment 2) the decode path:
+`fill_rule` in {0, 1}; `contour_count` in 1..65535; each contour length
+at least 3; total points at most 65535; the reconstructed payload length
+equal to `8 + contour_count * 4 + total_points * 8` exactly; and point
+coordinates finite (the encoder rejects non-finite coordinates before
+serialization, as `fillPath` does). The reconstructed-length computation
+and the running point total must be performed in a type wide enough to
+avoid integer overflow (u64 or usize), not u32, so a malformed stream
+cannot wrap a product around a length check. This matches the
+overflow-safe accounting ADR 0017 requires for the pattern payload.
 
 ## 7. Encoder API
 
@@ -386,3 +391,11 @@ pattern:
     editorial polish ("per-sample coverage computation" wording in
     section 5, shortened the transform immutability test description). No
     normative changes.
+  - 2026-06-14: section 6 erratum (operator). Rewrote validation to match
+    the existing SDCS architecture: `validateOpcodePayload` carries only a
+    coarse payload-shape case (the prior text implied field-level checks
+    in a size-only function and claimed to mirror a `FILL_PATH` case that
+    does not exist). Field-level checks live in the encoder and the decode
+    path, and the live validators treat `SET_CLIP_PATH` as variable-length
+    for framing, as they already do for `FILL_PATH`. No change to the wire
+    format or the normative semantics.
