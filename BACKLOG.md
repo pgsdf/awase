@@ -239,6 +239,42 @@ not considered validated until then.
 
 ## `semadraw`: semantic rendering substrate
 
+### `[x]` SDCS-1: fill, paint sources, and path clipping completion  *(Closed 2026-06-14, operator-ratified; ADR 0014 program)*
+
+**ADR 0014 program closed. All four stages landed, passed golden-image
+verification, and are now part of the baseline SDCS feature set.**
+
+The v0.1 SDCS opcode set (ADR 0004 scope) stroked paths but could not
+fill them, had no paint source beyond inline RGBA, and clipped only to
+rectangles. ADR 0014 (program ADR, 2026-06-13) staged the completion of
+the three in-scope capabilities ADR 0004 enumerated but v0.1 left
+unimplemented: path fill with winding rules, gradient and pattern paint
+sources, and arbitrary path clipping. Each stage landed under its own
+implementation ADR (ADR-before-code per stage); the software reference
+renderer (`sdcs_replay.zig`, the golden oracle per ADR 0002) and golden
+tests were the closure gate.
+
+Stages and the opcodes they added to the baseline:
+
+- **Stage A** (ADR 0015): path fill, `FILL_PATH` 0x0019, nonzero and
+  even-odd winding.
+- **Stage B1** (ADR 0016): gradient sources, `SET_SOURCE_LINEAR_GRADIENT`
+  0x0009, `SET_SOURCE_RADIAL_GRADIENT` 0x000A, and `SET_SOURCE_NONE`
+  0x0008 (reset to inline RGBA).
+- **Stage B2** (ADR 0017): pattern (surface) source, `SET_SOURCE_PATTERN`
+  0x000B.
+- **Stage C** (ADR 0018): arbitrary path clipping, `SET_CLIP_PATH`
+  0x000C. Closes the ADR 0014 program.
+
+Closure criteria met: `sudo sh tests/run.sh` green end-to-end on
+pgsd-bare-metal across all stages, including the Stage C clip suite (all
+ten ADR 0018 section-8 invariants) and the cross-platform scene hash
+(sandbox replay byte-identical to bare metal; pure-Zig trig reproduces
+bit-for-bit). The C-1 byte-identity invariant (rect fills under a path
+clip match the path-fill rasterizer sample-for-sample) holds across the
+clip work. Downstream: LT-1 names "SDCS stable" as a dependency; that is
+now met for the 2D drawing surface.
+
 The window-manager-client additions below come from the NDE-1
 substrate validation (`semadraw/docs/WM_CLIENT_CONTRACT.md`) against
 NDE DESIGN.md section 3.2. Each is a general privileged-client
@@ -272,6 +308,33 @@ live surface (cleared on destroy and disconnect). Bench: the privileged
 client sets focus to each of two surfaces owned by distinct clients;
 `inputfs` routes keyboard input to the focused client; a non-privileged
 client is refused; destroy and disconnect clear focus to `NO_FOCUS`.
+
+**Progress (2026-06-14, scoping and prerequisite; D-7 paused).** ADR 0011
+accepted. Protocol slots verified free in the semadraw client namespace
+(`set_focus` 0x0034 in requests, `focus_changed` 0x9003 in events; the
+earlier apparent 0x9003 collision was a different protocol section).
+Implementation scoped into four increments: (1) protocol constants + wire
+structs + ser/deser tests; (2) focus-region ownership and lifecycle; (3)
+`set_focus` handler + privilege gate + surface→session resolution + region
+publication; (4) `focus_changed` events + the D7 validity invariant +
+integration bench.
+
+FocusWriter ownership investigation completed: `FocusWriter`,
+`setKeyboardFocus`, and `setSurfaceMap` are referenced only in
+`shared/src/input.zig` and have never had a daemon caller. INPUT_FOCUS.md
+and inputfs ADR 0003 both name the compositor (semadrawd) as the sole
+writer and owner of `/var/run/sema/input/focus`. Semadrawd is therefore
+confirmed as the intended sole writer; the work is simply unlanded.
+Focus-region publication is identified as a prerequisite capability
+broader than set_focus (it also owns the pointer-routing `surface_map` and
+the seqlock discipline), handled as its own increment and likely its own
+brief ADR. `forwardKeyEvents()` (the existing top-visible-surface key
+delivery) is intentionally out of scope: D-7 is focus-region publication
+only, and unifying the two focus models would need its own ADR.
+
+D-7 is paused pending that prerequisite work and a protocol-constants
+reconciliation (AD-54) that had to land before increment 1 could
+regenerate cleanly.
 
 ### `[ ]` D-8: privileged pointer-grab message  *(Open 2026-06-08, Small, P2; serves fuller section 3.2, after D-7)*
 
@@ -312,8 +375,11 @@ enforceable over the WM and therefore cannot route through WM
 privilege. Security-critical and warrants its own ADR, in which the
 lock-client authorization model is decided. Gates the secure SM-2 under
 the secure-environment mandate. ADR: `semadraw/docs/adr/0012-session-lock-mode.md`
-(Accepted 2026-06-09); code owed (protocol additions, focus-region lock
-field, semadrawd LOCKED state machine, inputfs precedence, bench).
+(Accepted 2026-06-09). Protocol additions landed (Stage 1a): `session_lock`
+0x0035, `session_unlock` 0x0036, `session_locked` 0x9004, and
+`session_unlocked` 0x9005 in `protocol.zig`. Code still owed (Stage 1b
+onward, paused pending a larger time block): focus-region lock field,
+semadrawd LOCKED state machine, inputfs precedence, bench.
 
 ## Deferred
 
@@ -2360,3 +2426,42 @@ first week of supervised operation); and whether the per-service
 s6-log retention defaults fit observed volume. Not before field
 experience justifies it; the deferral is the decision, this entry
 is only its bookmark.
+
+### `[x]` AD-54: protocol_constants.json / generated-output reconciliation  *(Closed 2026-06-14, operator-ratified; shared/ generation-contract repair)*
+
+The repository source-of-truth and generated artifacts diverged:
+`gen_constants.py --validate` failed on the committed tree because
+`shared/protocol_constants.json` no longer matched the committed generated
+files (`semadraw/src/ipc/protocol.zig`, `semadraw/src/sdcs.zig`,
+`drawfs/sys/dev/drawfs/drawfs_proto.h`). The JSON had been frozen at the
+post-rename baseline while the SDCS paint/clip opcodes and the D-10
+session-lock messages were ratified and landed in committed code without
+the JSON being updated alongside. Running the generator on the drifted
+tree would have stripped ten shipped constants.
+
+Reconciliation restored consistency by updating `protocol_constants.json`
+to reflect the ratified protocol already present in committed code: the
+six SDCS opcodes (`SET_SOURCE_NONE`/`LINEAR_GRADIENT`/`RADIAL_GRADIENT`/
+`PATTERN` 0x0008 through 0x000B, `SET_CLIP_PATH` 0x000C, `FILL_PATH`
+0x0019), the four session-lock messages (0x0035/0x0036 requests,
+0x9004/0x9005 events), and a narrowed `idle_query` reserved-range note.
+Regeneration is now idempotent: the generated files are byte-identical to
+committed output.
+
+Closure criterion: `gen_constants.py --validate` now passes on a clean
+tree. Surfaced 2026-06-14 while adding the D-7 `set_focus`/`focus_changed`
+constants. Recurrence prevention is tracked separately as AD-55.
+
+### `[ ]` AD-55: generator integrity enforcement  *(Open 2026-06-14, Small, P2; prevents recurrence of AD-54-class drift)*
+
+Wire `gen_constants.py --validate` into CI, pre-merge checks, or
+`tests/run.sh` so protocol-definition drift between
+`shared/protocol_constants.json` and the generated artifacts cannot
+silently accumulate again. AD-54 repaired the current drift; this item is
+the standing guard against the same class recurring. The failure mode
+AD-54 encountered (drift invisible until someone regenerates months later)
+is exactly what an automated `--validate` gate catches at the point of
+introduction. Placement is the open design question: `tests/run.sh` is the
+reliable backstop since it always runs at bench time; a pre-commit hook
+would catch it earlier but is bypassable. No ADR required (enforcement
+mechanism, not a protocol change).
