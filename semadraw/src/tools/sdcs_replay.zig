@@ -84,8 +84,7 @@ fn emitSquareCap(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x: f32,
     y: f32,
@@ -129,7 +128,7 @@ fn emitSquareCap(
         clampU8(cb),
         clampU8(ca),
         blend_mode,
-        if (clip_enabled) clip_rects else null,
+        clip,
     );
 }
 
@@ -143,6 +142,121 @@ fn pointInClips(px: f32, py: f32, clips: ?[]const ClipRect) bool {
     return true;
 }
 
+// The active clip (ADR 0018). One of three kinds: none (everything passes),
+// a union of rectangles (the SET_CLIP_RECTS path, device space), or an
+// arbitrary path under a winding rule (SET_CLIP_PATH, baked to device space
+// at set time). Path points and lengths are owned by the decode loop; the
+// Clip only borrows them.
+const ClipKind = enum { none, rects, path };
+
+const Clip = struct {
+    kind: ClipKind = .none,
+    rects: []const ClipRect = &.{},
+    path_pts: []const FillPoint = &.{},
+    path_lens: []const u32 = &.{},
+    path_even_odd: bool = false,
+};
+
+// The per-sample clip predicate: does (px, py) pass the active clip? This is
+// the single point of dispatch that every draw routine routes through. The
+// path case reuses the Stage A winding predicate, so a path clip admits
+// exactly the samples the same contour would fill (ADR 0018 invariant C-1).
+fn clipContains(clip: Clip, px: f32, py: f32) bool {
+    return switch (clip.kind) {
+        .none => true,
+        .rects => pointInClips(px, py, clip.rects),
+        .path => pointInFilledPath(px, py, clip.path_pts, clip.path_lens, clip.path_even_odd),
+    };
+}
+
+// Fill an axis-aligned rect region under a path clip by per-sample testing.
+// The rect-rect intersection fast path is valid only for a rectangle clip; a
+// path clip requires the same per-sample coverage computation emitFilledPath
+// uses, so that a rect under a path clip and a coincident FILL_PATH
+// antialias identically (ADR 0018 section 5, invariant C-1). A sample
+// contributes when it lies inside the rect (half-open, matching the rect
+// clip convention) and passes the clip. Solid color arrives pre-quantized in
+// r8..a8; a non-null source overrides the color, sampled at the pixel center
+// exactly as emitFilledPath samples it.
+fn fbFillRectClipPath(
+    rgba: []u8,
+    w: usize,
+    h: usize,
+    rx: f32,
+    ry: f32,
+    rw: f32,
+    rh: f32,
+    r8: u8,
+    g8: u8,
+    b8: u8,
+    a8: u8,
+    mode: u32,
+    aa: bool,
+    clip: Clip,
+    source: ?*const PaintSource,
+    tinv: Transform2D,
+) void {
+    if (rw <= 0.0 or rh <= 0.0) return;
+
+    var minx = rx;
+    var miny = ry;
+    var maxx = rx + rw;
+    var maxy = ry + rh;
+    if (minx < 0.0) minx = 0.0;
+    if (miny < 0.0) miny = 0.0;
+    if (maxx > @as(f32, @floatFromInt(w))) maxx = @as(f32, @floatFromInt(w));
+    if (maxy > @as(f32, @floatFromInt(h))) maxy = @as(f32, @floatFromInt(h));
+    if (maxx <= minx or maxy <= miny) return;
+
+    const ix0: isize = @intFromFloat(@floor(minx));
+    const iy0: isize = @intFromFloat(@floor(miny));
+    const ix1: isize = @intFromFloat(@ceil(maxx));
+    const iy1: isize = @intFromFloat(@ceil(maxy));
+
+    var iy: isize = iy0;
+    while (iy < iy1) : (iy += 1) {
+        if (iy < 0 or iy >= @as(isize, @intCast(h))) continue;
+        var ix: isize = ix0;
+        while (ix < ix1) : (ix += 1) {
+            if (ix < 0 or ix >= @as(isize, @intCast(w))) continue;
+            const base_px: f32 = @floatFromInt(ix);
+            const base_py: f32 = @floatFromInt(iy);
+            const idx: usize = (@as(usize, @intCast(iy)) * w + @as(usize, @intCast(ix))) * 4;
+
+            if (aa) {
+                var samples_inside: u32 = 0;
+                for (AA_SAMPLE_OFFSETS) |offset| {
+                    const spx = base_px + offset[0];
+                    const spy = base_py + offset[1];
+                    if (spx >= rx and spx < rx + rw and spy >= ry and spy < ry + rh and clipContains(clip, spx, spy)) {
+                        samples_inside += 1;
+                    }
+                }
+                if (samples_inside > 0) {
+                    const coverage: f32 = @as(f32, @floatFromInt(samples_inside)) / @as(f32, @floatFromInt(AA_SAMPLES));
+                    if (source) |src| {
+                        const col = sampleSourceColor(src, tinv, base_px + 0.5, base_py + 0.5);
+                        fbBlendPixelAA(rgba, idx, col[0], col[1], col[2], col[3], mode, coverage);
+                    } else {
+                        fbBlendPixelAA(rgba, idx, r8, g8, b8, a8, mode, coverage);
+                    }
+                }
+            } else {
+                const spx = base_px + 0.5;
+                const spy = base_py + 0.5;
+                if (spx >= rx and spx < rx + rw and spy >= ry and spy < ry + rh and clipContains(clip, spx, spy)) {
+                    if (source) |src| {
+                        const col = sampleSourceColor(src, tinv, spx, spy);
+                        fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
+                    } else {
+                        fbBlendPixel(rgba, idx, r8, g8, b8, a8, mode);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Rasterize an arbitrary-angle stroked line as an oriented rectangle.
 /// The line from (x1,y1) to (x2,y2) is stroked with width sw.
 fn emitStrokedLineArbitrary(
@@ -150,8 +264,7 @@ fn emitStrokedLineArbitrary(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x1: f32,
     y1: f32,
@@ -236,7 +349,7 @@ fn emitStrokedLineArbitrary(
             const py_f: f32 = @as(f32, @floatFromInt(iy)) + 0.5;
 
             // Clip test
-            if (clip_enabled and !pointInClips(px_f, py_f, clip_rects)) continue;
+            if (!clipContains(clip, px_f, py_f)) continue;
 
             // Half-plane tests: check if point is on the inside of all 4 edges
             // Cross product sign determines which side of the edge the point is on
@@ -261,8 +374,7 @@ fn emitStrokedLineArbitraryAA(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x1: f32,
     y1: f32,
@@ -353,7 +465,7 @@ fn emitStrokedLineArbitraryAA(
                 const spy = base_py + offset[1];
 
                 // Clip test at sub-pixel level
-                if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
+                if (!clipContains(clip, spx, spy)) continue;
 
                 // Half-plane tests
                 const d0 = (spx - p0.x) * e0y - (spy - p0.y) * e0x;
@@ -405,8 +517,7 @@ fn emitStrokedQuadBezier(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x0: f32,
     y0: f32,
@@ -436,8 +547,7 @@ fn emitStrokedQuadBezier(
             w,
             h,
             t,
-            clip_enabled,
-            clip_rects,
+            clip,
             blend_mode,
             prev_x,
             prev_y,
@@ -461,8 +571,7 @@ fn emitStrokedCubicBezier(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x0: f32,
     y0: f32,
@@ -494,8 +603,7 @@ fn emitStrokedCubicBezier(
             w,
             h,
             t,
-            clip_enabled,
-            clip_rects,
+            clip,
             blend_mode,
             prev_x,
             prev_y,
@@ -519,8 +627,7 @@ fn emitStrokedQuadBezierAA(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x0: f32,
     y0: f32,
@@ -543,7 +650,7 @@ fn emitStrokedQuadBezierAA(
         const t_param: f32 = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segments));
         const pt = evalQuadBezier(x0, y0, cx, cy, x1, y1, t_param);
 
-        emitStrokedLineArbitraryAA(rgba, w, h, t, clip_enabled, clip_rects, blend_mode, prev_x, prev_y, pt.x, pt.y, sw, cr, cg, cb, ca);
+        emitStrokedLineArbitraryAA(rgba, w, h, t, clip, blend_mode, prev_x, prev_y, pt.x, pt.y, sw, cr, cg, cb, ca);
 
         prev_x = pt.x;
         prev_y = pt.y;
@@ -556,8 +663,7 @@ fn emitStrokedCubicBezierAA(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x0: f32,
     y0: f32,
@@ -582,7 +688,7 @@ fn emitStrokedCubicBezierAA(
         const t_param: f32 = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(segments));
         const pt = evalCubicBezier(x0, y0, cx1, cy1, cx2, cy2, x1, y1, t_param);
 
-        emitStrokedLineArbitraryAA(rgba, w, h, t, clip_enabled, clip_rects, blend_mode, prev_x, prev_y, pt.x, pt.y, sw, cr, cg, cb, ca);
+        emitStrokedLineArbitraryAA(rgba, w, h, t, clip, blend_mode, prev_x, prev_y, pt.x, pt.y, sw, cr, cg, cb, ca);
 
         prev_x = pt.x;
         prev_y = pt.y;
@@ -594,8 +700,7 @@ fn emitRoundCap(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x: f32,
     y: f32,
@@ -634,7 +739,7 @@ fn emitRoundCap(
             const px: f32 = @as(f32, @floatFromInt(ix)) + 0.5;
             const py: f32 = @as(f32, @floatFromInt(iy)) + 0.5;
 
-            if (clip_enabled and !pointInClips(px, py, clip_rects)) continue;
+            if (!clipContains(clip, px, py)) continue;
 
             const dx = px - c.x;
             const dy = py - c.y;
@@ -663,8 +768,7 @@ fn emitRoundCapAA(
     w: usize,
     h: usize,
     t: Transform2D,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     x: f32,
     y: f32,
@@ -714,7 +818,7 @@ fn emitRoundCapAA(
                 const spx = base_px + offset[0];
                 const spy = base_py + offset[1];
 
-                if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
+                if (!clipContains(clip, spx, spy)) continue;
 
                 const dx = spx - c.x;
                 const dy = spy - c.y;
@@ -912,39 +1016,43 @@ const ClipRect = struct {
     h: f32,
 };
 
-fn fbFillRectClipped(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, r: u8, g: u8, b: u8, a: u8, mode: u32, clips: ?[]const ClipRect) void {
-    if (clips) |cs| {
-        // Apply union of clip rects by filling each intersection.
-        for (cs) |c| {
-            const ix = @max(rx, c.x);
-            const iy = @max(ry, c.y);
-            const ix2 = @min(rx + rw, c.x + c.w);
-            const iy2 = @min(ry + rh, c.y + c.h);
-            const iw = ix2 - ix;
-            const ih = iy2 - iy;
-            if (iw <= 0.0 or ih <= 0.0) continue;
-            fbFillRect(rgba, w, h, ix, iy, iw, ih, r, g, b, a, mode);
-        }
-    } else {
-        fbFillRect(rgba, w, h, rx, ry, rw, rh, r, g, b, a, mode);
+fn fbFillRectClipped(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, r: u8, g: u8, b: u8, a: u8, mode: u32, clip: Clip) void {
+    switch (clip.kind) {
+        .none => fbFillRect(rgba, w, h, rx, ry, rw, rh, r, g, b, a, mode),
+        .rects => {
+            // Union of clip rects: fill each rect-rect intersection.
+            for (clip.rects) |c| {
+                const ix = @max(rx, c.x);
+                const iy = @max(ry, c.y);
+                const ix2 = @min(rx + rw, c.x + c.w);
+                const iy2 = @min(ry + rh, c.y + c.h);
+                const iw = ix2 - ix;
+                const ih = iy2 - iy;
+                if (iw <= 0.0 or ih <= 0.0) continue;
+                fbFillRect(rgba, w, h, ix, iy, iw, ih, r, g, b, a, mode);
+            }
+        },
+        .path => fbFillRectClipPath(rgba, w, h, rx, ry, rw, rh, r, g, b, a, mode, false, clip, null, .{}),
     }
 }
 
-fn fbFillRectClippedAA(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, r: u8, g: u8, b: u8, a: u8, mode: u32, clips: ?[]const ClipRect) void {
-    if (clips) |cs| {
-        // Apply union of clip rects by filling each intersection.
-        for (cs) |c| {
-            const ix = @max(rx, c.x);
-            const iy = @max(ry, c.y);
-            const ix2 = @min(rx + rw, c.x + c.w);
-            const iy2 = @min(ry + rh, c.y + c.h);
-            const iw = ix2 - ix;
-            const ih = iy2 - iy;
-            if (iw <= 0.0 or ih <= 0.0) continue;
-            fbFillRectAA(rgba, w, h, ix, iy, iw, ih, r, g, b, a, mode);
-        }
-    } else {
-        fbFillRectAA(rgba, w, h, rx, ry, rw, rh, r, g, b, a, mode);
+fn fbFillRectClippedAA(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, r: u8, g: u8, b: u8, a: u8, mode: u32, clip: Clip) void {
+    switch (clip.kind) {
+        .none => fbFillRectAA(rgba, w, h, rx, ry, rw, rh, r, g, b, a, mode),
+        .rects => {
+            // Union of clip rects: fill each rect-rect intersection.
+            for (clip.rects) |c| {
+                const ix = @max(rx, c.x);
+                const iy = @max(ry, c.y);
+                const ix2 = @min(rx + rw, c.x + c.w);
+                const iy2 = @min(ry + rh, c.y + c.h);
+                const iw = ix2 - ix;
+                const ih = iy2 - iy;
+                if (iw <= 0.0 or ih <= 0.0) continue;
+                fbFillRectAA(rgba, w, h, ix, iy, iw, ih, r, g, b, a, mode);
+            }
+        },
+        .path => fbFillRectClipPath(rgba, w, h, rx, ry, rw, rh, r, g, b, a, mode, true, clip, null, .{}),
     }
 }
 
@@ -1277,37 +1385,41 @@ fn fbFillRectSourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh
     }
 }
 
-fn fbFillRectClippedAASourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
-    if (clips) |cs| {
-        for (cs) |c| {
-            const ix = @max(rx, c.x);
-            const iy = @max(ry, c.y);
-            const ix2 = @min(rx + rw, c.x + c.w);
-            const iy2 = @min(ry + rh, c.y + c.h);
-            const iw = ix2 - ix;
-            const ih = iy2 - iy;
-            if (iw <= 0.0 or ih <= 0.0) continue;
-            fbFillRectAASourced(rgba, w, h, ix, iy, iw, ih, src, tinv, mode);
-        }
-    } else {
-        fbFillRectAASourced(rgba, w, h, rx, ry, rw, rh, src, tinv, mode);
+fn fbFillRectClippedAASourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32, clip: Clip) void {
+    switch (clip.kind) {
+        .none => fbFillRectAASourced(rgba, w, h, rx, ry, rw, rh, src, tinv, mode),
+        .rects => {
+            for (clip.rects) |c| {
+                const ix = @max(rx, c.x);
+                const iy = @max(ry, c.y);
+                const ix2 = @min(rx + rw, c.x + c.w);
+                const iy2 = @min(ry + rh, c.y + c.h);
+                const iw = ix2 - ix;
+                const ih = iy2 - iy;
+                if (iw <= 0.0 or ih <= 0.0) continue;
+                fbFillRectAASourced(rgba, w, h, ix, iy, iw, ih, src, tinv, mode);
+            }
+        },
+        .path => fbFillRectClipPath(rgba, w, h, rx, ry, rw, rh, 0, 0, 0, 0, mode, true, clip, src, tinv),
     }
 }
 
-fn fbFillRectClippedSourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
-    if (clips) |cs| {
-        for (cs) |c| {
-            const ix = @max(rx, c.x);
-            const iy = @max(ry, c.y);
-            const ix2 = @min(rx + rw, c.x + c.w);
-            const iy2 = @min(ry + rh, c.y + c.h);
-            const iw = ix2 - ix;
-            const ih = iy2 - iy;
-            if (iw <= 0.0 or ih <= 0.0) continue;
-            fbFillRectSourced(rgba, w, h, ix, iy, iw, ih, src, tinv, mode);
-        }
-    } else {
-        fbFillRectSourced(rgba, w, h, rx, ry, rw, rh, src, tinv, mode);
+fn fbFillRectClippedSourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32, clip: Clip) void {
+    switch (clip.kind) {
+        .none => fbFillRectSourced(rgba, w, h, rx, ry, rw, rh, src, tinv, mode),
+        .rects => {
+            for (clip.rects) |c| {
+                const ix = @max(rx, c.x);
+                const iy = @max(ry, c.y);
+                const ix2 = @min(rx + rw, c.x + c.w);
+                const iy2 = @min(ry + rh, c.y + c.h);
+                const iw = ix2 - ix;
+                const ih = iy2 - iy;
+                if (iw <= 0.0 or ih <= 0.0) continue;
+                fbFillRectSourced(rgba, w, h, ix, iy, iw, ih, src, tinv, mode);
+            }
+        },
+        .path => fbFillRectClipPath(rgba, w, h, rx, ry, rw, rh, 0, 0, 0, 0, mode, false, clip, src, tinv),
     }
 }
 
@@ -1321,8 +1433,7 @@ fn emitFilledPath(
     rgba: []u8,
     w: usize,
     h: usize,
-    clip_enabled: bool,
-    clip_rects: []const ClipRect,
+    clip: Clip,
     blend_mode: u32,
     pts: []const FillPoint,
     contour_lens: []const u32,
@@ -1379,7 +1490,7 @@ fn emitFilledPath(
                 for (AA_SAMPLE_OFFSETS) |offset| {
                     const spx = base_px + offset[0];
                     const spy = base_py + offset[1];
-                    if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
+                    if (!clipContains(clip, spx, spy)) continue;
                     if (pointInFilledPath(spx, spy, pts, contour_lens, even_odd)) samples_inside += 1;
                 }
                 if (samples_inside > 0) {
@@ -1394,7 +1505,7 @@ fn emitFilledPath(
             } else {
                 const spx = base_px + 0.5;
                 const spy = base_py + 0.5;
-                if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
+                if (!clipContains(clip, spx, spy)) continue;
                 if (pointInFilledPath(spx, spy, pts, contour_lens, even_odd)) {
                     if (source) |src| {
                         const col = sampleSourceColor(src, tinv, spx, spy);
@@ -1431,7 +1542,11 @@ pub fn main() !void {
 
     var clip_rects = std.ArrayList(ClipRect){};
     defer clip_rects.deinit(alloc);
-    var clip_enabled: bool = false;
+    var clip_path_pts = std.ArrayList(FillPoint){};
+    defer clip_path_pts.deinit(alloc);
+    var clip_path_lens = std.ArrayList(u32){};
+    defer clip_path_lens.deinit(alloc);
+    var clip: Clip = .{};
     var t = Transform2D{};
     var blend_mode: u32 = 0;
     var aa_enabled: bool = false;
@@ -1515,8 +1630,7 @@ if (pending_cap_valid and cmd.opcode != sdcs.Op.STROKE_LINE) {
             w,
             h,
             pending_t,
-            clip_enabled,
-            clip_rects.items,
+            clip,
             blend_mode,
             pending_end_x,
             pending_end_y,
@@ -1531,9 +1645,9 @@ if (pending_cap_valid and cmd.opcode != sdcs.Op.STROKE_LINE) {
     }
 else if (stroke_cap == .Round) {
     if (aa_enabled) {
-        emitRoundCapAA(rgba, w, h, pending_t, clip_enabled, clip_rects.items, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
+        emitRoundCapAA(rgba, w, h, pending_t, clip, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
     } else {
-        emitRoundCap(rgba, w, h, pending_t, clip_enabled, clip_rects.items, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
+        emitRoundCap(rgba, w, h, pending_t, clip, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
     }
 }
 
@@ -1647,11 +1761,12 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
             } else if (cmd.opcode == sdcs.Op.RESET_TRANSFORM) {
                 t = Transform2D{};
             } else if (cmd.opcode == sdcs.Op.SET_CLIP_RECTS) {
-                // payload: u32 count + rects
+                // payload: u32 count + rects. Replaces any current clip
+                // (rectangles or path) with this rectangle union (ADR 0018).
                 const count = try readU32LE(r);
                 clip_rects.clearRetainingCapacity();
-                clip_enabled = (count != 0);
-                // consume bytes: count + rects
+                clip_path_pts.clearRetainingCapacity();
+                clip_path_lens.clearRetainingCapacity();
                 var i: u32 = 0;
                 while (i < count) : (i += 1) {
                     const cx = try readF32LE(r);
@@ -1660,10 +1775,61 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
                     const ch2 = try readF32LE(r);
                     try clip_rects.append(alloc, .{ .x = cx, .y = cy, .w = cw, .h = ch2 });
                 }
+                clip = if (count != 0)
+                    .{ .kind = .rects, .rects = clip_rects.items }
+                else
+                    .{};
 
             } else if (cmd.opcode == sdcs.Op.CLEAR_CLIP) {
                 clip_rects.clearRetainingCapacity();
-                clip_enabled = false;
+                clip_path_pts.clearRetainingCapacity();
+                clip_path_lens.clearRetainingCapacity();
+                clip = .{};
+            } else if (cmd.opcode == sdcs.Op.SET_CLIP_PATH) {
+                // Payload (ADR 0018 section 4): fill_rule (u32),
+                // contour_count (u32), contour_lengths (cc x u32), points
+                // (sum x 2 x f32), user space. Points are baked to device
+                // space here with the transform in effect now, and the
+                // result replaces any current clip. Field-level checks
+                // (mirroring FILL_PATH) run as the body is read; lengths
+                // accumulate in usize to avoid overflow.
+                if (pb < 8) return error.Protocol;
+                const fill_rule = try readU32LE(r);
+                const contour_count = try readU32LE(r);
+                if (fill_rule > 1) return error.Protocol;
+                if (contour_count == 0 or contour_count > 65535) return error.Protocol;
+
+                clip_rects.clearRetainingCapacity();
+                clip_path_pts.clearRetainingCapacity();
+                clip_path_lens.clearRetainingCapacity();
+
+                var total_pts: usize = 0;
+                var ci: u32 = 0;
+                while (ci < contour_count) : (ci += 1) {
+                    const clen = try readU32LE(r);
+                    if (clen < 3) return error.Protocol;
+                    total_pts += @as(usize, clen);
+                    if (total_pts > 65535) return error.Protocol;
+                    try clip_path_lens.append(alloc, clen);
+                }
+
+                const expected: usize = 8 + @as(usize, contour_count) * 4 + total_pts * 8;
+                if (@as(usize, pb) != expected) return error.Protocol;
+
+                var pi: usize = 0;
+                while (pi < total_pts) : (pi += 1) {
+                    const ux = try readF32LE(r);
+                    const uy = try readF32LE(r);
+                    const dp = applyT(t, ux, uy);
+                    try clip_path_pts.append(alloc, .{ .x = dp.x, .y = dp.y });
+                }
+
+                clip = .{
+                    .kind = .path,
+                    .path_pts = clip_path_pts.items,
+                    .path_lens = clip_path_lens.items,
+                    .path_even_odd = (fill_rule == 1),
+                };
             } else if (cmd.opcode == sdcs.Op.SET_STROKE_JOIN) {
                 const join_u = try readU32LE(r);
                 if (join_u == 0) {
@@ -1721,8 +1887,7 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
                             w,
                             h,
                             pending_t,
-                            clip_enabled,
-                            clip_rects.items,
+                            clip,
                             blend_mode,
                             pending_end_x,
                             pending_end_y,
@@ -1737,9 +1902,9 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
                     }
 else if (stroke_cap == .Round) {
     if (aa_enabled) {
-        emitRoundCapAA(rgba, w, h, pending_t, clip_enabled, clip_rects.items, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
+        emitRoundCapAA(rgba, w, h, pending_t, clip, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
     } else {
-        emitRoundCap(rgba, w, h, pending_t, clip_enabled, clip_rects.items, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
+        emitRoundCap(rgba, w, h, pending_t, clip, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
     }
 }
 
@@ -1771,8 +1936,7 @@ else if (stroke_cap == .Round) {
                             w,
                             h,
                             t,
-                            clip_enabled,
-                            clip_rects.items,
+                            clip,
                             blend_mode,
                             x1,
                             y1,
@@ -1832,9 +1996,9 @@ else if (stroke_cap == .Round) {
                         if (stroke_join == .Round) {
                             // Round join is approximated by a filled disk at the join point.
                             if (aa_enabled) {
-                                emitRoundCapAA(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, jx, jy, sw, cr, cg, cb, ca);
+                                emitRoundCapAA(rgba, w, h, t, clip, blend_mode, jx, jy, sw, cr, cg, cb, ca);
                             } else {
-                                emitRoundCap(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, jx, jy, sw, cr, cg, cb, ca);
+                                emitRoundCap(rgba, w, h, t, clip, blend_mode, jx, jy, sw, cr, cg, cb, ca);
                             }
                         } else if (stroke_join == .Miter) {
                             // Miter join v1: emit an extra sw x sw corner block on the outer corner.
@@ -1861,7 +2025,7 @@ else if (stroke_cap == .Round) {
                                     const px = jx + (if (sx > 0) 0 else -sw);
                                     const py = jy + (if (sy > 0) 0 else -sw);
                                     const patch = rectApplyTBounds(t, px, py, sw, sw);
-                                    const join_clips = if (clip_enabled) clip_rects.items else null;
+                                    const join_clips = clip;
                                     if (aa_enabled) {
                                         fbFillRectClippedAA(rgba, w, h, patch.x, patch.y, patch.w, patch.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, join_clips);
                                     } else {
@@ -1882,7 +2046,7 @@ else if (stroke_cap == .Round) {
 
     // v1 semantics: only axis aligned lines in user space
     const s2: f32 = sw / 2.0;
-    const clips = if (clip_enabled) clip_rects.items else null;
+    const clips = clip;
 
     if (x1 == x2) {
         const yy0 = @min(y1, y2);
@@ -1905,9 +2069,9 @@ else if (stroke_cap == .Round) {
     } else {
         // v2: arbitrary-angle lines with proper oriented quad rasterization
         if (aa_enabled) {
-            emitStrokedLineArbitraryAA(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, x1, y1, x2, y2, sw, cr, cg, cb, ca);
+            emitStrokedLineArbitraryAA(rgba, w, h, t, clip, blend_mode, x1, y1, x2, y2, sw, cr, cg, cb, ca);
         } else {
-            emitStrokedLineArbitrary(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, x1, y1, x2, y2, sw, cr, cg, cb, ca);
+            emitStrokedLineArbitrary(rgba, w, h, t, clip, blend_mode, x1, y1, x2, y2, sw, cr, cg, cb, ca);
         }
     }
             // update last segment info for join detection
@@ -1948,7 +2112,7 @@ else if (cmd.opcode == sdcs.Op.STROKE_RECT) {
     const left = rectApplyTBounds(t, rx - s2, ry + s2, sw, @max(0.0, rh2 - sw));
     const right = rectApplyTBounds(t, rx + rw2 - s2, ry + s2, sw, @max(0.0, rh2 - sw));
 
-    const clips = if (clip_enabled) clip_rects.items else null;
+    const clips = clip;
     if (aa_enabled) {
         fbFillRectClippedAA(rgba, w, h, top.x, top.y, top.w, top.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, clips);
         fbFillRectClippedAA(rgba, w, h, bottom.x, bottom.y, bottom.w, bottom.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, clips);
@@ -1976,14 +2140,14 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                 if (current_source.kind != .none) {
                     const tinv = invertT(t) orelse Transform2D{};
                     if (aa_enabled) {
-                        fbFillRectClippedAASourced(rgba, w, h, tb.x, tb.y, tb.w, tb.h, &current_source, tinv, blend_mode, if (clip_enabled) clip_rects.items else null);
+                        fbFillRectClippedAASourced(rgba, w, h, tb.x, tb.y, tb.w, tb.h, &current_source, tinv, blend_mode, clip);
                     } else {
-                        fbFillRectClippedSourced(rgba, w, h, tb.x, tb.y, tb.w, tb.h, &current_source, tinv, blend_mode, if (clip_enabled) clip_rects.items else null);
+                        fbFillRectClippedSourced(rgba, w, h, tb.x, tb.y, tb.w, tb.h, &current_source, tinv, blend_mode, clip);
                     }
                 } else if (aa_enabled) {
-                    fbFillRectClippedAA(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, if (clip_enabled) clip_rects.items else null);
+                    fbFillRectClippedAA(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, clip);
                 } else {
-                    fbFillRectClipped(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, if (clip_enabled) clip_rects.items else null);
+                    fbFillRectClipped(rgba, w, h, tb.x, tb.y, tb.w, tb.h, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), blend_mode, clip);
                 }
 
             } else if (cmd.opcode == sdcs.Op.FILL_PATH) {
@@ -2023,7 +2187,7 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
 
                 const fp_src: ?*const PaintSource = if (current_source.kind != .none) &current_source else null;
                 const fp_tinv = if (fp_src != null) (invertT(t) orelse Transform2D{}) else Transform2D{};
-                emitFilledPath(rgba, w, h, clip_enabled, clip_rects.items, blend_mode, fpts, lens, fill_rule == 1, fcr, fcg, fcb, fca, aa_enabled, fp_src, fp_tinv);
+                emitFilledPath(rgba, w, h, clip, blend_mode, fpts, lens, fill_rule == 1, fcr, fcg, fcb, fca, aa_enabled, fp_src, fp_tinv);
 
             } else if (cmd.opcode == sdcs.Op.BLIT_IMAGE) {
                 // Payload: dst_x(f32), dst_y(f32), img_w(u32), img_h(u32), pixels(RGBA)
@@ -2062,7 +2226,7 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                         const tp = applyT(t, px, py);
 
                         // Clip test
-                        if (clip_enabled and !pointInClips(tp.x, tp.y, clip_rects.items)) continue;
+                        if (!clipContains(clip, tp.x, tp.y)) continue;
 
                         // Bounds check
                         const dx: isize = @intFromFloat(@floor(tp.x));
@@ -2093,9 +2257,9 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                 if (bsw <= 0.0) continue;
 
                 if (aa_enabled) {
-                    emitStrokedQuadBezierAA(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, bx0, by0, bcx, bcy, bx1, by1, bsw, bcr, bcg, bcb, bca);
+                    emitStrokedQuadBezierAA(rgba, w, h, t, clip, blend_mode, bx0, by0, bcx, bcy, bx1, by1, bsw, bcr, bcg, bcb, bca);
                 } else {
-                    emitStrokedQuadBezier(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, bx0, by0, bcx, bcy, bx1, by1, bsw, bcr, bcg, bcb, bca);
+                    emitStrokedQuadBezier(rgba, w, h, t, clip, blend_mode, bx0, by0, bcx, bcy, bx1, by1, bsw, bcr, bcg, bcb, bca);
                 }
 
                 // Reset line tracking state since curves don't participate in joins
@@ -2121,9 +2285,9 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                 if (bsw <= 0.0) continue;
 
                 if (aa_enabled) {
-                    emitStrokedCubicBezierAA(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, bx0, by0, bcx1, bcy1, bcx2, bcy2, bx1, by1, bsw, bcr, bcg, bcb, bca);
+                    emitStrokedCubicBezierAA(rgba, w, h, t, clip, blend_mode, bx0, by0, bcx1, bcy1, bcx2, bcy2, bx1, by1, bsw, bcr, bcg, bcb, bca);
                 } else {
-                    emitStrokedCubicBezier(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, bx0, by0, bcx1, bcy1, bcx2, bcy2, bx1, by1, bsw, bcr, bcg, bcb, bca);
+                    emitStrokedCubicBezier(rgba, w, h, t, clip, blend_mode, bx0, by0, bcx1, bcy1, bcx2, bcy2, bx1, by1, bsw, bcr, bcg, bcb, bca);
                 }
 
                 // Reset line tracking state since curves don't participate in joins
@@ -2175,7 +2339,7 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                     const cur_v = (@abs(sx1 - sx2) < eps);
 
                     // Emit join at start of segment if connected to previous
-                    const path_clips = if (clip_enabled) clip_rects.items else null;
+                    const path_clips = clip;
                     if (prev_seg_valid) {
                         const prev_h = (@abs(prev_seg_y1 - prev_seg_y2) < eps);
                         const prev_v = (@abs(prev_seg_x1 - prev_seg_x2) < eps);
@@ -2189,9 +2353,9 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                             if (connects) {
                                 if (stroke_join == .Round) {
                                     if (aa_enabled) {
-                                        emitRoundCapAA(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, jx, jy, psw, pcr, pcg, pcb, pca);
+                                        emitRoundCapAA(rgba, w, h, t, clip, blend_mode, jx, jy, psw, pcr, pcg, pcb, pca);
                                     } else {
-                                        emitRoundCap(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, jx, jy, psw, pcr, pcg, pcb, pca);
+                                        emitRoundCap(rgba, w, h, t, clip, blend_mode, jx, jy, psw, pcr, pcg, pcb, pca);
                                     }
                                 } else if (stroke_join == .Miter) {
                                     const sqrt2: f32 = 1.41421356237;
@@ -2247,9 +2411,9 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                     } else {
                         // Arbitrary angle
                         if (aa_enabled) {
-                            emitStrokedLineArbitraryAA(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, sx1, sy1, sx2, sy2, psw, pcr, pcg, pcb, pca);
+                            emitStrokedLineArbitraryAA(rgba, w, h, t, clip, blend_mode, sx1, sy1, sx2, sy2, psw, pcr, pcg, pcb, pca);
                         } else {
-                            emitStrokedLineArbitrary(rgba, w, h, t, clip_enabled, clip_rects.items, blend_mode, sx1, sy1, sx2, sy2, psw, pcr, pcg, pcb, pca);
+                            emitStrokedLineArbitrary(rgba, w, h, t, clip, blend_mode, sx1, sy1, sx2, sy2, psw, pcr, pcg, pcb, pca);
                         }
                     }
 
@@ -2352,19 +2516,10 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                             if (dx >= @as(isize, @intCast(w)) or dy >= @as(isize, @intCast(h))) continue;
 
                             // Check clipping
-                            if (clip_enabled) {
+                            {
                                 const dx_f: f32 = @floatFromInt(dx);
                                 const dy_f: f32 = @floatFromInt(dy);
-                                var in_clip = false;
-                                for (clip_rects.items) |cr| {
-                                    if (dx_f >= cr.x and dx_f < cr.x + cr.w and
-                                        dy_f >= cr.y and dy_f < cr.y + cr.h)
-                                    {
-                                        in_clip = true;
-                                        break;
-                                    }
-                                }
-                                if (!in_clip) continue;
+                                if (!clipContains(clip, dx_f, dy_f)) continue;
                             }
 
                             const dst_idx: usize = (@as(usize, @intCast(dy)) * w + @as(usize, @intCast(dx))) * 4;
@@ -2406,8 +2561,7 @@ if (pending_cap_valid) {
             w,
             h,
             pending_t,
-            clip_enabled,
-            clip_rects.items,
+            clip,
             blend_mode,
             pending_end_x,
             pending_end_y,
@@ -2422,9 +2576,9 @@ if (pending_cap_valid) {
     }
 else if (stroke_cap == .Round) {
     if (aa_enabled) {
-        emitRoundCapAA(rgba, w, h, pending_t, clip_enabled, clip_rects.items, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
+        emitRoundCapAA(rgba, w, h, pending_t, clip, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
     } else {
-        emitRoundCap(rgba, w, h, pending_t, clip_enabled, clip_rects.items, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
+        emitRoundCap(rgba, w, h, pending_t, clip, blend_mode, pending_end_x, pending_end_y, pending_sw, pending_cr, pending_cg, pending_cb, pending_ca);
     }
 }
 
@@ -2490,7 +2644,7 @@ test "emitFilledPath interior opaque, exterior untouched" {
     var fb = [_]u8{0} ** (8 * 8 * 4);
     const sq = [_]FillPoint{ .{ .x = 2, .y = 2 }, .{ .x = 6, .y = 2 }, .{ .x = 6, .y = 6 }, .{ .x = 2, .y = 6 } };
     const lens = [_]u32{4};
-    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 0.0, 0.0, 1.0, true, null, Transform2D{});
+    emitFilledPath(fb[0..], W, H, Clip{}, 0, sq[0..], lens[0..], false, 1.0, 0.0, 0.0, 1.0, true, null, Transform2D{});
 
     const i_in = (4 * W + 4) * 4;
     try std.testing.expectEqual(@as(u8, 255), fb[i_in + 0]); // R
@@ -2506,7 +2660,7 @@ test "emitFilledPath antialiases a fractional edge" {
     var fb = [_]u8{0} ** (8 * 8 * 4);
     const sq = [_]FillPoint{ .{ .x = 2.5, .y = 2.0 }, .{ .x = 5.5, .y = 2.0 }, .{ .x = 5.5, .y = 6.0 }, .{ .x = 2.5, .y = 6.0 } };
     const lens = [_]u32{4};
-    emitFilledPath(fb[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 1.0, 1.0, 1.0, 1.0, true, null, Transform2D{});
+    emitFilledPath(fb[0..], W, H, Clip{}, 0, sq[0..], lens[0..], false, 1.0, 1.0, 1.0, 1.0, true, null, Transform2D{});
 
     const i_edge = (4 * W + 2) * 4; // column [2,3] straddles left edge x=2.5
     try std.testing.expect(fb[i_edge + 3] > 0 and fb[i_edge + 3] < 255);
@@ -2595,7 +2749,7 @@ test "single-color gradient path equals solid path (B1-3)" {
         .{ .x = 2.3, .y = 12.4 },
     };
     const lens = [_]u32{4};
-    emitFilledPath(fb_solid[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0.25, 0.5, 0.75, 1.0, true, null, Transform2D{});
+    emitFilledPath(fb_solid[0..], W, H, Clip{}, 0, sq[0..], lens[0..], false, 0.25, 0.5, 0.75, 1.0, true, null, Transform2D{});
     var src = PaintSource{};
     src.kind = .linear;
     src.x0 = 0;
@@ -2606,7 +2760,7 @@ test "single-color gradient path equals solid path (B1-3)" {
     src.stop_count = 2;
     src.stops[0] = .{ .offset = 0, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
     src.stops[1] = .{ .offset = 1, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
-    emitFilledPath(fb_grad[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0, 0, 0, 1, true, &src, Transform2D{});
+    emitFilledPath(fb_grad[0..], W, H, Clip{}, 0, sq[0..], lens[0..], false, 0, 0, 0, 1, true, &src, Transform2D{});
     try testing.expectEqualSlices(u8, fb_solid[0..], fb_grad[0..]);
 }
 
@@ -2626,7 +2780,7 @@ test "single-color gradient rect equals solid rect (B1-3, FILL_RECT)" {
         fb_grad[i * 4 + 2] = 48;
         fb_grad[i * 4 + 3] = 255;
     }
-    fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(0.25), clampU8(0.5), clampU8(0.75), clampU8(1.0), 0, null);
+    fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(0.25), clampU8(0.5), clampU8(0.75), clampU8(1.0), 0, Clip{});
     var src = PaintSource{};
     src.kind = .linear;
     src.x0 = 0;
@@ -2637,7 +2791,7 @@ test "single-color gradient rect equals solid rect (B1-3, FILL_RECT)" {
     src.stop_count = 2;
     src.stops[0] = .{ .offset = 0, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
     src.stops[1] = .{ .offset = 1, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
-    fbFillRectClippedAASourced(fb_grad[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, null);
+    fbFillRectClippedAASourced(fb_grad[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, Clip{});
     try testing.expectEqualSlices(u8, fb_solid[0..], fb_grad[0..]);
 }
 
@@ -2721,7 +2875,7 @@ test "single-color pattern equals solid path (B2-1)" {
     const cg: f32 = 0.5;
     const cb: f32 = 0.75;
     const ca: f32 = 1.0;
-    emitFilledPath(fb_solid[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, cr, cg, cb, ca, true, null, Transform2D{});
+    emitFilledPath(fb_solid[0..], W, H, Clip{}, 0, sq[0..], lens[0..], false, cr, cg, cb, ca, true, null, Transform2D{});
     // 1x1 uniform tile of the quantized solid color.
     var tile = [_]u8{ clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca) };
     var src = PaintSource{};
@@ -2732,7 +2886,7 @@ test "single-color pattern equals solid path (B2-1)" {
     src.tile_w = 1;
     src.tile_h = 1;
     src.tile = tile[0..];
-    emitFilledPath(fb_pat[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0, 0, 0, 1, true, &src, Transform2D{});
+    emitFilledPath(fb_pat[0..], W, H, Clip{}, 0, sq[0..], lens[0..], false, 0, 0, 0, 1, true, &src, Transform2D{});
     try testing.expectEqualSlices(u8, fb_solid[0..], fb_pat[0..]);
 }
 
@@ -2756,7 +2910,7 @@ test "single-color pattern equals solid rect (B2-1, FILL_RECT)" {
     const cg: f32 = 0.55;
     const cb: f32 = 0.80;
     const ca: f32 = 1.0;
-    fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), 0, null);
+    fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), 0, Clip{});
     var tile = [_]u8{ clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca) };
     var src = PaintSource{};
     src.kind = .pattern;
@@ -2766,6 +2920,100 @@ test "single-color pattern equals solid rect (B2-1, FILL_RECT)" {
     src.tile_w = 1;
     src.tile_h = 1;
     src.tile = tile[0..];
-    fbFillRectClippedAASourced(fb_pat[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, null);
+    fbFillRectClippedAASourced(fb_pat[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, Clip{});
     try testing.expectEqualSlices(u8, fb_solid[0..], fb_pat[0..]);
+}
+
+test "clipContains dispatches over none, rects, and path (ADR 0018)" {
+    const testing = std.testing;
+
+    // none admits everything.
+    try testing.expect(clipContains(Clip{}, 100, -50));
+
+    // rects: inside the union passes, outside fails (half-open).
+    const rects = [_]ClipRect{.{ .x = 0, .y = 0, .w = 4, .h = 4 }};
+    const rclip = Clip{ .kind = .rects, .rects = rects[0..] };
+    try testing.expect(clipContains(rclip, 2, 2));
+    try testing.expect(!clipContains(rclip, 4, 2)); // x == x+w is outside
+    try testing.expect(!clipContains(rclip, 5, 5));
+
+    // path: a triangle with vertices (0,0),(10,0),(0,10) under nonzero.
+    const tri = [_]FillPoint{ .{ .x = 0, .y = 0 }, .{ .x = 10, .y = 0 }, .{ .x = 0, .y = 10 } };
+    const lens = [_]u32{3};
+    const pclip = Clip{ .kind = .path, .path_pts = tri[0..], .path_lens = lens[0..], .path_even_odd = false };
+    try testing.expect(clipContains(pclip, 2, 2)); // inside
+    try testing.expect(!clipContains(pclip, 8, 8)); // beyond the hypotenuse
+    try testing.expect(!clipContains(pclip, -1, 5)); // left of the triangle
+}
+
+// A device-space polygon used by both C-1 equivalence tests. Fractional
+// vertices exercise antialiased clip edges.
+fn c1TestPolygon() [5]FillPoint {
+    return .{
+        .{ .x = 12.0, .y = 2.5 },
+        .{ .x = 21.5, .y = 9.3 },
+        .{ .x = 17.6, .y = 20.4 },
+        .{ .x = 6.4, .y = 20.4 },
+        .{ .x = 2.5, .y = 9.3 },
+    };
+}
+
+test "rect under path clip equals fill of that path, AA (ADR 0018 C-1)" {
+    const testing = std.testing;
+    const W = 24;
+    const H = 24;
+    var fb_fill: [W * H * 4]u8 = undefined;
+    var fb_clip: [W * H * 4]u8 = undefined;
+    for (0..W * H) |i| {
+        inline for (.{ 0, 1, 2 }) |k| {
+            fb_fill[i * 4 + k] = 16;
+            fb_clip[i * 4 + k] = 16;
+        }
+        fb_fill[i * 4 + 3] = 255;
+        fb_clip[i * 4 + 3] = 255;
+    }
+    const P = c1TestPolygon();
+    const lens = [_]u32{5};
+    const cr: f32 = 0.85;
+    const cg: f32 = 0.20;
+    const cb: f32 = 0.45;
+    const ca: f32 = 1.0;
+
+    // Fill the path directly (no clip).
+    emitFilledPath(fb_fill[0..], W, H, Clip{}, 0, P[0..], lens[0..], false, cr, cg, cb, ca, true, null, Transform2D{});
+
+    // Clip to the path, fill a covering full-canvas rect with the same color.
+    const clip = Clip{ .kind = .path, .path_pts = P[0..], .path_lens = lens[0..], .path_even_odd = false };
+    fbFillRectClippedAA(fb_clip[0..], W, H, 0, 0, W, H, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), 0, clip);
+
+    try testing.expectEqualSlices(u8, fb_fill[0..], fb_clip[0..]);
+}
+
+test "rect under path clip equals fill of that path, non-AA (ADR 0018 C-1)" {
+    const testing = std.testing;
+    const W = 24;
+    const H = 24;
+    var fb_fill: [W * H * 4]u8 = undefined;
+    var fb_clip: [W * H * 4]u8 = undefined;
+    for (0..W * H) |i| {
+        inline for (.{ 0, 1, 2 }) |k| {
+            fb_fill[i * 4 + k] = 16;
+            fb_clip[i * 4 + k] = 16;
+        }
+        fb_fill[i * 4 + 3] = 255;
+        fb_clip[i * 4 + 3] = 255;
+    }
+    const P = c1TestPolygon();
+    const lens = [_]u32{5};
+    const cr: f32 = 0.10;
+    const cg: f32 = 0.70;
+    const cb: f32 = 0.55;
+    const ca: f32 = 1.0;
+
+    emitFilledPath(fb_fill[0..], W, H, Clip{}, 0, P[0..], lens[0..], false, cr, cg, cb, ca, false, null, Transform2D{});
+
+    const clip = Clip{ .kind = .path, .path_pts = P[0..], .path_lens = lens[0..], .path_even_odd = false };
+    fbFillRectClipped(fb_clip[0..], W, H, 0, 0, W, H, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), 0, clip);
+
+    try testing.expectEqualSlices(u8, fb_fill[0..], fb_clip[0..]);
 }

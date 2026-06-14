@@ -24,9 +24,6 @@ mkdir -p tests/out
 ./zig-out/bin/sdcs_make_fractional tests/out/fractional.sdcs
 ./zig-out/bin/sdcs_replay tests/out/fractional.sdcs tests/out/fractional.ppm 256 256
 
-./zig-out/bin/sdcs_make_clip tests/out/clip.sdcs
-./zig-out/bin/sdcs_replay tests/out/clip.sdcs tests/out/clip.ppm 256 256
-
 ./zig-out/bin/sdcs_make_transform tests/out/transform.sdcs
 ./zig-out/bin/sdcs_replay tests/out/transform.sdcs tests/out/transform.ppm 256 256
 
@@ -80,7 +77,6 @@ mkdir -p tests/out
 hash_one=""
 hash_two=""
 hash_three=""
-hash_four=""
 hash_five=""
 hash_six=""
 hash_seven=""
@@ -101,7 +97,6 @@ if command -v sha256 >/dev/null 2>&1; then
   hash_one=$(sha256 -q tests/out/test.ppm)
   hash_two=$(sha256 -q tests/out/overlap.ppm)
   hash_three=$(sha256 -q tests/out/fractional.ppm)
-  hash_four=$(sha256 -q tests/out/clip.ppm)
   hash_five=$(sha256 -q tests/out/transform.ppm)
   hash_six=$(sha256 -q tests/out/blend.ppm)
   hash_miter_limit=$(sha256 -q tests/out/miter_limit.ppm)
@@ -116,7 +111,6 @@ elif command -v sha256sum >/dev/null 2>&1; then
   hash_one=$(sha256sum tests/out/test.ppm | awk '{print $1}')
   hash_two=$(sha256sum tests/out/overlap.ppm | awk '{print $1}')
   hash_three=$(sha256sum tests/out/fractional.ppm | awk '{print $1}')
-  hash_four=$(sha256sum tests/out/clip.ppm | awk '{print $1}')
   hash_five=$(sha256sum tests/out/transform.ppm | awk '{print $1}')
   hash_six=$(sha256sum tests/out/blend.ppm | awk '{print $1}')
   hash_miter_limit=$(sha256sum tests/out/miter_limit.ppm | awk '{print $1}')
@@ -137,7 +131,6 @@ if [ ! -f "$expected_file" ]; then
   echo "$hash_one  test.ppm" > "$expected_file"
   echo "$hash_two  overlap.ppm" >> "$expected_file"
   echo "$hash_three  fractional.ppm" >> "$expected_file"
-  echo "$hash_four  clip.ppm" >> "$expected_file"
   echo "$hash_five  transform.ppm" >> "$expected_file"
   echo "$hash_six  blend.ppm" >> "$expected_file"
   echo "$hash_miter_limit  miter_limit.ppm" >> "$expected_file"
@@ -165,11 +158,6 @@ fi
 if ! grep -q ' fractional.ppm$' "$expected_file"; then
   echo "$hash_three  fractional.ppm" >> "$expected_file"
   echo "added missing golden entry for fractional.ppm"
-fi
-
-if ! grep -q ' clip.ppm$' "$expected_file"; then
-  echo "$hash_four  clip.ppm" >> "$expected_file"
-  echo "added missing golden entry for clip.ppm"
 fi
 
 if ! grep -q ' transform.ppm$' "$expected_file"; then
@@ -220,7 +208,6 @@ fi
 expected_one=$(grep ' test.ppm$' "$expected_file" | awk '{print $1}')
 expected_two=$(grep ' overlap.ppm$' "$expected_file" | awk '{print $1}')
 expected_three=$(grep ' fractional.ppm$' "$expected_file" | awk '{print $1}')
-expected_four=$(grep ' clip.ppm$' "$expected_file" | awk '{print $1}')
 expected_five=$(grep ' transform.ppm$' "$expected_file" | awk '{print $1}')
 expected_six=$(grep ' blend.ppm$' "$expected_file" | awk '{print $1}')
 expected_miter_limit=$(grep ' miter_limit.ppm$' "$expected_file" | awk '{print $1}')
@@ -249,13 +236,6 @@ if [ "$hash_three" != "$expected_three" ]; then
   echo "golden mismatch for fractional.ppm"
   echo "expected: $expected_three"
   echo "got:      $hash_three"
-  exit 1
-fi
-
-if [ "$hash_four" != "$expected_four" ]; then
-  echo "golden mismatch for clip.ppm"
-  echo "expected: $expected_four"
-  echo "got:      $hash_four"
   exit 1
 fi
 
@@ -575,6 +555,122 @@ if ! cmp -s tests/out/pat_reset.ppm tests/out/pat_reset_ref.ppm; then
 fi
 
 echo "SDCS pattern tests passed"
+
+echo ""
+echo "=== SDCS Clip Tests (Stage C, ADR 0018) ==="
+mkdir -p tests/out
+
+# Scene fixture (golden-hashed) plus determinism (two renders identical). The
+# scene pins a basic single-contour clip (pentagon), a carved hole
+# (opposite-wound squares under even_odd), and a clip baked under a CTM then
+# left fixed in device space while the fill runs under the identity transform.
+./zig-out/bin/sdcs_make_clip tests/out/clip.sdcs scene
+./zig-out/bin/sdcs_replay tests/out/clip.sdcs tests/out/clip.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip.sdcs tests/out/clip2.ppm 256 256
+if ! cmp -s tests/out/clip.ppm tests/out/clip2.ppm; then
+  echo "FAIL: clip scene is nondeterministic"
+  exit 1
+fi
+
+hash_clip=""
+if command -v sha256 >/dev/null 2>&1; then
+  hash_clip=$(sha256 -q tests/out/clip.ppm)
+elif command -v sha256sum >/dev/null 2>&1; then
+  hash_clip=$(sha256sum tests/out/clip.ppm | awk '{print $1}')
+fi
+
+clip_golden=tests/golden/clip.sha256
+if [ ! -f "$clip_golden" ]; then
+  echo "$hash_clip  clip.ppm" > "$clip_golden"
+  echo "created clip golden at $clip_golden"
+else
+  expected_clip=$(awk '{print $1}' "$clip_golden")
+  if [ "$hash_clip" != "$expected_clip" ]; then
+    echo "golden mismatch for clip.ppm"
+    echo "expected: $expected_clip"
+    echo "got:      $hash_clip"
+    exit 1
+  fi
+fi
+
+# Invariant C-1, single contour: a covering FILL_RECT under a path clip is
+# byte-identical to a direct FILL_PATH of that path (identity CTM, so the baked
+# device contour equals the authored path).
+./zig-out/bin/sdcs_make_clip tests/out/clip_c1_rect.sdcs c1-rect-clip
+./zig-out/bin/sdcs_make_clip tests/out/clip_c1_fill.sdcs c1-rect-fill
+./zig-out/bin/sdcs_replay tests/out/clip_c1_rect.sdcs tests/out/clip_c1_rect.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_c1_fill.sdcs tests/out/clip_c1_fill.ppm 256 256
+if ! cmp -s tests/out/clip_c1_rect.ppm tests/out/clip_c1_fill.ppm; then
+  echo "FAIL: covering rect under path clip does not match direct fill (C-1)"
+  exit 1
+fi
+
+# Invariant C-1, multi-contour: the same equivalence with a two-contour clip.
+./zig-out/bin/sdcs_make_clip tests/out/clip_c1m_rect.sdcs c1-multi-clip
+./zig-out/bin/sdcs_make_clip tests/out/clip_c1m_fill.sdcs c1-multi-fill
+./zig-out/bin/sdcs_replay tests/out/clip_c1m_rect.sdcs tests/out/clip_c1m_rect.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_c1m_fill.sdcs tests/out/clip_c1m_fill.ppm 256 256
+if ! cmp -s tests/out/clip_c1m_rect.ppm tests/out/clip_c1m_fill.ppm; then
+  echo "FAIL: covering rect under multi-contour clip does not match direct fill (C-1)"
+  exit 1
+fi
+
+# Invariant: a hole carved by opposite-wound contours is identical under
+# nonzero and even_odd (both rules exclude the inner square).
+./zig-out/bin/sdcs_make_clip tests/out/clip_hole_nz.sdcs hole-nonzero
+./zig-out/bin/sdcs_make_clip tests/out/clip_hole_eo.sdcs hole-even-odd
+./zig-out/bin/sdcs_replay tests/out/clip_hole_nz.sdcs tests/out/clip_hole_nz.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_hole_eo.sdcs tests/out/clip_hole_eo.ppm 256 256
+if ! cmp -s tests/out/clip_hole_nz.ppm tests/out/clip_hole_eo.ppm; then
+  echo "FAIL: opposite-wound hole differs between winding rules"
+  exit 1
+fi
+
+# Invariant: winding rule matters. Same-wound nested squares fill solid under
+# nonzero but carve a hole under even_odd, so the two must differ.
+./zig-out/bin/sdcs_make_clip tests/out/clip_wind_nz.sdcs winding-nonzero
+./zig-out/bin/sdcs_make_clip tests/out/clip_wind_eo.sdcs winding-even-odd
+./zig-out/bin/sdcs_replay tests/out/clip_wind_nz.sdcs tests/out/clip_wind_nz.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_wind_eo.sdcs tests/out/clip_wind_eo.ppm 256 256
+if cmp -s tests/out/clip_wind_nz.ppm tests/out/clip_wind_eo.ppm; then
+  echo "FAIL: nonzero and even_odd produced identical output for same-wound contours"
+  exit 1
+fi
+
+# Invariant: a clip is fixed in device space at set time. A later transform
+# before the fill must not move it, so the two renders must be identical.
+./zig-out/bin/sdcs_make_clip tests/out/clip_immut_a.sdcs immut-a
+./zig-out/bin/sdcs_make_clip tests/out/clip_immut_b.sdcs immut-b
+./zig-out/bin/sdcs_replay tests/out/clip_immut_a.sdcs tests/out/clip_immut_a.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_immut_b.sdcs tests/out/clip_immut_b.ppm 256 256
+if ! cmp -s tests/out/clip_immut_a.ppm tests/out/clip_immut_b.ppm; then
+  echo "FAIL: a transform after SET_CLIP_PATH moved the clip"
+  exit 1
+fi
+
+# Invariant: CLEAR_CLIP restores the unclipped state (matches a fill that never
+# set a clip).
+./zig-out/bin/sdcs_make_clip tests/out/clip_clear.sdcs clear
+./zig-out/bin/sdcs_make_clip tests/out/clip_clear_ref.sdcs clear-ref
+./zig-out/bin/sdcs_replay tests/out/clip_clear.sdcs tests/out/clip_clear.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_clear_ref.sdcs tests/out/clip_clear_ref.ppm 256 256
+if ! cmp -s tests/out/clip_clear.ppm tests/out/clip_clear_ref.ppm; then
+  echo "FAIL: CLEAR_CLIP did not restore the unclipped state"
+  exit 1
+fi
+
+# Invariant: setting a clip replaces the current clip (it does not intersect).
+# P2 is not a subset of P1, so an intersection would differ from P2 alone.
+./zig-out/bin/sdcs_make_clip tests/out/clip_replace.sdcs replace
+./zig-out/bin/sdcs_make_clip tests/out/clip_replace_ref.sdcs replace-ref
+./zig-out/bin/sdcs_replay tests/out/clip_replace.sdcs tests/out/clip_replace.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/clip_replace_ref.sdcs tests/out/clip_replace_ref.ppm 256 256
+if ! cmp -s tests/out/clip_replace.ppm tests/out/clip_replace_ref.ppm; then
+  echo "FAIL: SET_CLIP_PATH intersected instead of replacing the current clip"
+  exit 1
+fi
+
+echo "SDCS clip tests passed"
 
 echo ""
 echo "=== All Tests Passed ==="
