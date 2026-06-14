@@ -227,9 +227,17 @@
                     "value": "0x0033",
                     "description": "Set cursor sprite + hotspot (focus-validated; AD-21 sub-item 7, ADR 0005 section 5)"
                 },
+                "SESSION_LOCK": {
+                    "value": "0x0035",
+                    "description": "Enter compositor session-lock mode with the given surface as the lock surface (D-10, ADR 0012); root-only; reply event is SESSION_LOCKED"
+                },
+                "SESSION_UNLOCK": {
+                    "value": "0x0036",
+                    "description": "Leave session-lock mode; lock owner only (D-10, ADR 0012); reply event is SESSION_UNLOCKED"
+                },
                 "IDLE_QUERY": {
                     "value": "0x0037",
-                    "description": "Query last input timestamp for idle detection; reply is IDLE_REPLY (ADR 0013; 0x0034-0x0036 reserved for set_focus, session_lock, session_unlock)"
+                    "description": "Query last input timestamp for idle detection; reply is IDLE_REPLY (ADR 0013; 0x0034 reserved for set_focus)"
                 },
                 "SYNC": {
                     "value": "0x0040",
@@ -302,6 +310,14 @@
                 "MOUSE_EVENT": {
                     "value": "0x9002",
                     "description": "Mouse event"
+                },
+                "SESSION_LOCKED": {
+                    "value": "0x9004",
+                    "description": "Compositor entered session-lock mode (D-10, ADR 0012); sent to all clients, WM treats as a suspension signal"
+                },
+                "SESSION_UNLOCKED": {
+                    "value": "0x9005",
+                    "description": "Compositor left session-lock mode (D-10, ADR 0012); sent to all clients"
                 },
                 "GESTURE_EVENT": {
                     "value": "0x9030",
@@ -400,6 +416,31 @@
                     "value": "0x0007",
                     "payload": 4,
                     "description": "Set antialiasing"
+                },
+                "SET_SOURCE_NONE": {
+                    "value": "0x0008",
+                    "payload": 0,
+                    "description": "Reset paint source to inline RGBA"
+                },
+                "SET_SOURCE_LINEAR_GRADIENT": {
+                    "value": "0x0009",
+                    "payload": -1,
+                    "description": "Linear gradient source"
+                },
+                "SET_SOURCE_RADIAL_GRADIENT": {
+                    "value": "0x000A",
+                    "payload": -1,
+                    "description": "Radial (concentric) gradient source"
+                },
+                "SET_SOURCE_PATTERN": {
+                    "value": "0x000B",
+                    "payload": -1,
+                    "description": "Pattern (surface) source"
+                },
+                "SET_CLIP_PATH": {
+                    "value": "0x000C",
+                    "payload": -1,
+                    "description": "Set clip path (one or more closed contours under a winding rule)"
                 }
             },
             "draw": {
@@ -447,6 +488,11 @@
                     "value": "0x0018",
                     "payload": -1,
                     "description": "Stroke path"
+                },
+                "FILL_PATH": {
+                    "value": "0x0019",
+                    "payload": -1,
+                    "description": "Fill path, one or more closed contours"
                 },
                 "BLIT_IMAGE": {
                     "value": "0x0020",
