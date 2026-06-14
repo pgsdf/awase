@@ -4,7 +4,7 @@ const semadraw = @import("semadraw");
 /// Test generator for non-axis-aligned (diagonal) lines.
 /// Demonstrates STROKE_LINE v2 with arbitrary angles.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

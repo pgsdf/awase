@@ -4,7 +4,7 @@ const semadraw = @import("semadraw");
 /// Test generator for STROKE_PATH (polyline paths).
 /// Creates various path shapes to test the path rendering implementation.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

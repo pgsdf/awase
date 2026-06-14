@@ -19,6 +19,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/compat.zig: Awase compatibility boundary over churning std
+    // APIs (process args here; the std.posix socket shim joins later).
+    const compat_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const posix_safe_tests = b.addTest(.{
         .root_module = posix_safe_mod,
     });
@@ -113,6 +121,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "resolver", .module = resolver_mod },
                 .{ .name = "stream",   .module = stream_mod   },
                 .{ .name = "clock",    .module = clock_mod    },
+                .{ .name = "compat",   .module = compat_mod   },
             },
         }),
     });

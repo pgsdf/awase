@@ -11,7 +11,7 @@
 //! const Encoder = @import("semadraw").Encoder;
 //!
 //! pub fn main() !void {
-//!     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+//!     var gpa = std.heap.DebugAllocator(.{}){};
 //!     defer _ = gpa.deinit();
 //!
 //!     var myapp = try App.init(gpa.allocator(), .{

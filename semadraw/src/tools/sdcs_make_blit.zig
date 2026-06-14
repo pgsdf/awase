@@ -4,7 +4,7 @@ const semadraw = @import("semadraw");
 /// Test generator for BLIT_IMAGE.
 /// Creates small procedural images and blits them at various positions.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

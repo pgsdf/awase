@@ -2914,7 +2914,7 @@ pub fn main() !void {
     };
     posix.sigaction(posix.SIG.PIPE, &act, null);
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

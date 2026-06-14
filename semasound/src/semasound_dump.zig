@@ -50,9 +50,9 @@ fn eventSeq(line: []const u8) u64 {
 
 pub fn main() !void {
     var follow = false;
-    var args = std.process.args();
-    _ = args.next();
-    while (args.next()) |a| {
+    const args = try std.process.argsAlloc(std.heap.page_allocator);
+    defer std.process.argsFree(std.heap.page_allocator, args);
+    for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "-f")) follow = true;
     }
 

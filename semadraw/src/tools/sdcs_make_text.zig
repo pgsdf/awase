@@ -123,7 +123,7 @@ fn charToGlyphIndex(c: u8) ?u32 {
 
 /// Test generator for DRAW_GLYPH_RUN (text rendering with glyph atlas).
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

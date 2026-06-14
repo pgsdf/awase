@@ -4,7 +4,7 @@ const semadraw = @import("semadraw");
 /// Test generator for Bezier curves (quadratic and cubic).
 /// Creates various curve shapes to test the curve rendering implementation.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

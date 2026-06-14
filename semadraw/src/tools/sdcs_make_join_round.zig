@@ -6,7 +6,7 @@ const semadraw = @import("semadraw");
 // Produces a small SDCS stream containing two connected STROKE_LINE commands that
 // meet at a right angle with StrokeJoin.Round enabled.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 

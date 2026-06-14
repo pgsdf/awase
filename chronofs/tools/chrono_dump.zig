@@ -21,6 +21,7 @@ const std = @import("std");
 const resolver_mod = @import("resolver");
 const stream_mod   = @import("stream");
 const clock_mod    = @import("clock");
+const compat       = @import("compat");
 
 const DomainStreams = stream_mod.DomainStreams;
 const Resolver      = resolver_mod.Resolver;
@@ -307,13 +308,14 @@ const USAGE =
     \\
 ;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init.Minimal) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+    const argv_owned = try compat.args.alloc(allocator, init.args);
+    defer argv_owned.deinit(allocator);
+    const argv = argv_owned.argv;
 
     const args = parseArgs(argv) catch {
         writeStderr(USAGE);

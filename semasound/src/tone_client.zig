@@ -59,32 +59,43 @@ pub fn main() !void {
     var label_name: []const u8 = "";
     var class_name: []const u8 = "";
 
-    var args = std.process.args();
-    _ = args.next();
+    const args = try std.process.argsAlloc(std.heap.page_allocator);
+    defer std.process.argsFree(std.heap.page_allocator, args);
     var pos: usize = 0;
-    while (args.next()) |a| {
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
         if (std.mem.eql(u8, a, "--badrate")) {
             badrate = true;
         } else if (std.mem.eql(u8, a, "--gap")) {
-            if (args.next()) |g| gap_ms = std.fmt.parseInt(u64, g, 10) catch 0;
+            i += 1;
+            if (i < args.len) gap_ms = std.fmt.parseInt(u64, args[i], 10) catch 0;
         } else if (std.mem.eql(u8, a, "--rate")) {
-            if (args.next()) |r| rate = std.fmt.parseInt(u32, r, 10) catch rate;
+            i += 1;
+            if (i < args.len) rate = std.fmt.parseInt(u32, args[i], 10) catch rate;
         } else if (std.mem.eql(u8, a, "--mono")) {
             mono = true;
         } else if (std.mem.eql(u8, a, "--drift-ppm")) {
-            if (args.next()) |d| drift_ppm = std.fmt.parseFloat(f64, d) catch 0.0;
+            i += 1;
+            if (i < args.len) drift_ppm = std.fmt.parseFloat(f64, args[i]) catch 0.0;
         } else if (std.mem.eql(u8, a, "--format")) {
-            if (args.next()) |f| format_override = std.fmt.parseInt(u16, f, 10) catch null;
+            i += 1;
+            if (i < args.len) format_override = std.fmt.parseInt(u16, args[i], 10) catch null;
         } else if (std.mem.eql(u8, a, "--channels")) {
-            if (args.next()) |ch| channels_override = std.fmt.parseInt(u16, ch, 10) catch null;
+            i += 1;
+            if (i < args.len) channels_override = std.fmt.parseInt(u16, args[i], 10) catch null;
         } else if (std.mem.eql(u8, a, "--target")) {
-            if (args.next()) |t| target_name = t;
+            i += 1;
+            if (i < args.len) target_name = args[i];
         } else if (std.mem.eql(u8, a, "--version")) {
-            if (args.next()) |v| version_override = std.fmt.parseInt(u16, v, 10) catch null;
+            i += 1;
+            if (i < args.len) version_override = std.fmt.parseInt(u16, args[i], 10) catch null;
         } else if (std.mem.eql(u8, a, "--label")) {
-            if (args.next()) |l| label_name = l;
+            i += 1;
+            if (i < args.len) label_name = args[i];
         } else if (std.mem.eql(u8, a, "--class")) {
-            if (args.next()) |cl| class_name = cl;
+            i += 1;
+            if (i < args.len) class_name = args[i];
         } else {
             switch (pos) {
                 0 => seconds = std.fmt.parseFloat(f64, a) catch seconds,

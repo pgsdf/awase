@@ -43,9 +43,9 @@ pub fn build(b: *std.Build) void {
 
     // FreeBSD libpam (OpenPAM in base): -lpam.
     // FreeBSD login_cap: -lutil (contains login_cap, setusercontext).
-    exe.linkSystemLibrary("pam");
-    exe.linkSystemLibrary("util");
-    exe.linkLibC();
+    exe.root_module.linkSystemLibrary("pam", .{});
+    exe.root_module.linkSystemLibrary("util", .{});
+    exe.root_module.link_libc = true;
 
     b.installArtifact(exe);
 
@@ -72,8 +72,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    pam_tests.linkSystemLibrary("pam");
-    pam_tests.linkLibC();
+    pam_tests.root_module.linkSystemLibrary("pam", .{});
+    pam_tests.root_module.link_libc = true;
 
     const attribute_file_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    attribute_file_tests.linkLibC();
+    attribute_file_tests.root_module.link_libc = true;
 
     const user_enum_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -91,7 +91,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    user_enum_tests.linkLibC();
+    user_enum_tests.root_module.link_libc = true;
 
     const session_file_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -100,7 +100,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    session_file_tests.linkLibC();
+    session_file_tests.root_module.link_libc = true;
 
     const launch_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -109,9 +109,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    launch_tests.linkSystemLibrary("pam");
-    launch_tests.linkSystemLibrary("util");
-    launch_tests.linkLibC();
+    launch_tests.root_module.linkSystemLibrary("pam", .{});
+    launch_tests.root_module.linkSystemLibrary("util", .{});
+    launch_tests.root_module.link_libc = true;
 
     const keymap_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -128,7 +128,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    sysinfo_tests.linkLibC();
+    sysinfo_tests.root_module.link_libc = true;
 
     // ui.zig imports semadraw plus the other sibling modules via
     // relative @import. For the test build we expose semadraw as a
@@ -144,7 +144,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    ui_tests.linkLibC();
+    ui_tests.root_module.link_libc = true;
 
     const main_tests = b.addTest(.{
         .root_module = exe.root_module,
