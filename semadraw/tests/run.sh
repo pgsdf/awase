@@ -496,4 +496,85 @@ fi
 echo "SDCS gradient tests passed"
 
 echo ""
+echo "=== SDCS Pattern Tests (Stage B2, ADR 0017) ==="
+mkdir -p tests/out
+
+# Scene fixture (golden-hashed) plus determinism (two renders identical). The
+# scene pins the identity pattern on a FILL_RECT and a FILL_PATH, the
+# CTM-transformed pattern (section 5 coordinate space, CTM inverse), the rotated
+# pattern affine (pattern inverse), and all three extend modes.
+./zig-out/bin/sdcs_make_pattern tests/out/pattern.sdcs scene
+./zig-out/bin/sdcs_replay tests/out/pattern.sdcs tests/out/pattern.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/pattern.sdcs tests/out/pattern2.ppm 256 256
+if ! cmp -s tests/out/pattern.ppm tests/out/pattern2.ppm; then
+  echo "FAIL: pattern scene is nondeterministic"
+  exit 1
+fi
+
+hash_pattern=""
+if command -v sha256 >/dev/null 2>&1; then
+  hash_pattern=$(sha256 -q tests/out/pattern.ppm)
+elif command -v sha256sum >/dev/null 2>&1; then
+  hash_pattern=$(sha256sum tests/out/pattern.ppm | awk '{print $1}')
+fi
+
+pattern_golden=tests/golden/pattern.sha256
+if [ ! -f "$pattern_golden" ]; then
+  echo "$hash_pattern  pattern.ppm" > "$pattern_golden"
+  echo "created pattern golden at $pattern_golden"
+else
+  expected_pattern=$(awk '{print $1}' "$pattern_golden")
+  if [ "$hash_pattern" != "$expected_pattern" ]; then
+    echo "golden mismatch for pattern.ppm"
+    echo "expected: $expected_pattern"
+    echo "got:      $hash_pattern"
+    exit 1
+  fi
+fi
+
+# Invariant B2-1, FILL_RECT: a uniform-color tile fills byte-identically to the
+# solid FILL_RECT of that color.
+./zig-out/bin/sdcs_make_pattern tests/out/pat_eq_solid_rect.sdcs equiv-solid-rect
+./zig-out/bin/sdcs_make_pattern tests/out/pat_eq_pattern_rect.sdcs equiv-pattern-rect
+./zig-out/bin/sdcs_replay tests/out/pat_eq_solid_rect.sdcs tests/out/pat_eq_solid_rect.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/pat_eq_pattern_rect.sdcs tests/out/pat_eq_pattern_rect.ppm 256 256
+if ! cmp -s tests/out/pat_eq_solid_rect.ppm tests/out/pat_eq_pattern_rect.ppm; then
+  echo "FAIL: uniform-tile pattern FILL_RECT does not match solid FILL_RECT"
+  exit 1
+fi
+
+# Invariant B2-1, FILL_PATH: the same uniform-tile equivalence on a path.
+./zig-out/bin/sdcs_make_pattern tests/out/pat_eq_solid_path.sdcs equiv-solid-path
+./zig-out/bin/sdcs_make_pattern tests/out/pat_eq_pattern_path.sdcs equiv-pattern-path
+./zig-out/bin/sdcs_replay tests/out/pat_eq_solid_path.sdcs tests/out/pat_eq_solid_path.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/pat_eq_pattern_path.sdcs tests/out/pat_eq_pattern_path.ppm 256 256
+if ! cmp -s tests/out/pat_eq_solid_path.ppm tests/out/pat_eq_pattern_path.ppm; then
+  echo "FAIL: uniform-tile pattern FILL_PATH does not match solid FILL_PATH"
+  exit 1
+fi
+
+# Invariant: pad and repeat differ over the region beyond the tile.
+./zig-out/bin/sdcs_make_pattern tests/out/pat_ext_pad.sdcs extend-pad-full
+./zig-out/bin/sdcs_make_pattern tests/out/pat_ext_repeat.sdcs extend-repeat-full
+./zig-out/bin/sdcs_replay tests/out/pat_ext_pad.sdcs tests/out/pat_ext_pad.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/pat_ext_repeat.sdcs tests/out/pat_ext_repeat.ppm 256 256
+if cmp -s tests/out/pat_ext_pad.ppm tests/out/pat_ext_repeat.ppm; then
+  echo "FAIL: pad and repeat extend modes produced identical output"
+  exit 1
+fi
+
+# Invariant: after SET_SOURCE_NONE, a fill uses the inline color (matches a
+# solid fill that never set a source).
+./zig-out/bin/sdcs_make_pattern tests/out/pat_reset.sdcs reset
+./zig-out/bin/sdcs_make_pattern tests/out/pat_reset_ref.sdcs reset-ref
+./zig-out/bin/sdcs_replay tests/out/pat_reset.sdcs tests/out/pat_reset.ppm 256 256
+./zig-out/bin/sdcs_replay tests/out/pat_reset_ref.sdcs tests/out/pat_reset_ref.ppm 256 256
+if ! cmp -s tests/out/pat_reset.ppm tests/out/pat_reset_ref.ppm; then
+  echo "FAIL: SET_SOURCE_NONE did not return to the inline color"
+  exit 1
+fi
+
+echo "SDCS pattern tests passed"
+
+echo ""
 echo "=== All Tests Passed ==="
