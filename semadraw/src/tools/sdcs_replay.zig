@@ -1035,9 +1035,9 @@ fn pointInFilledPath(px: f32, py: f32, pts: []const FillPoint, contour_lens: []c
 
 const GradStop = struct { offset: f32, r: f32, g: f32, b: f32, a: f32 };
 
-const SourceKind = enum { none, linear, radial };
+const SourceKind = enum { none, linear, radial, pattern };
 
-const GradientSource = struct {
+const PaintSource = struct {
     kind: SourceKind = .none,
     extend: u32 = 0, // 0 pad, 1 repeat, 2 reflect
     // linear axis (user space)
@@ -1051,6 +1051,17 @@ const GradientSource = struct {
     radius: f32 = 1,
     stop_count: u32 = 0,
     stops: [256]GradStop = undefined,
+    // pattern (ADR 0017). pinv maps user space to texel space (the inverse
+    // of the pattern affine, precomputed at decode). ext_x and ext_y are the
+    // per-axis extend modes. tile is the inline straight-RGBA8 surface,
+    // row-major, top-left origin, tile_w * tile_h * 4 bytes, owned.
+    pinv: Transform2D = .{},
+    ext_x: u32 = 0,
+    ext_y: u32 = 0,
+    filter: u32 = 0,
+    tile_w: u32 = 0,
+    tile_h: u32 = 0,
+    tile: ?[]u8 = null,
 };
 
 // Inverse of a 2D affine. applyT maps user->device as
@@ -1087,7 +1098,7 @@ fn applyExtend(s: f32, mode: u32) f32 {
 
 // Resolve the gradient color at normalized parameter t in [0,1], interpolating
 // adjacent stops linearly in straight RGBA. Stops are monotonic by validation.
-fn resolveStops(src: *const GradientSource, t: f32) [4]u8 {
+fn resolveStops(src: *const PaintSource, t: f32) [4]u8 {
     const n = src.stop_count;
     const first = src.stops[0];
     if (t <= first.offset) return .{ clampU8(first.r), clampU8(first.g), clampU8(first.b), clampU8(first.a) };
@@ -1112,8 +1123,62 @@ fn resolveStops(src: *const GradientSource, t: f32) [4]u8 {
 }
 
 // Sample the source at a device-space pixel center. tinv maps device->user.
-fn sampleGradientColor(src: *const GradientSource, tinv: Transform2D, px: f32, py: f32) [4]u8 {
+// Fold a pattern-space coordinate to a texel index in [0, n) per the axis
+// extend mode (ADR 0017 section 5). Takes the f32 coordinate and floors it
+// internally, guarding the float-to-integer conversion against non-finite or
+// out-of-range values so an extreme pattern affine cannot panic the convert.
+fn foldTexelIndex(coord: f32, n: u32, mode: u32) u32 {
+    const nn: i64 = @intCast(n);
+    const fl = @floor(coord);
+    var k: i64 = 0;
+    if (!std.math.isFinite(fl)) {
+        k = 0;
+    } else if (fl <= -9.0e18) {
+        k = -9000000000000000000;
+    } else if (fl >= 9.0e18) {
+        k = 9000000000000000000;
+    } else {
+        k = @intFromFloat(fl);
+    }
+    switch (mode) {
+        1 => { // repeat: positive modulo, @mod with nn > 0 yields [0, nn)
+            return @intCast(@mod(k, nn));
+        },
+        2 => { // reflect: period 2N, mirror, edge texel duplicated at folds
+            const p2 = nn * 2;
+            const m = @mod(k, p2);
+            if (m < nn) return @intCast(m);
+            return @intCast(p2 - 1 - m);
+        },
+        else => { // pad: clamp to [0, N-1]
+            if (k < 0) return 0;
+            if (k >= nn) return @intCast(nn - 1);
+            return @intCast(k);
+        },
+    }
+}
+
+// Free a pattern source's owned tile, if any. Called before any source-setting
+// op replaces the register, and once after the decode loop.
+fn releaseSourceTile(src: *PaintSource, allocator: std.mem.Allocator) void {
+    if (src.tile) |t| {
+        allocator.free(t);
+        src.tile = null;
+    }
+}
+
+fn sampleSourceColor(src: *const PaintSource, tinv: Transform2D, px: f32, py: f32) [4]u8 {
     const u = applyT(tinv, px, py);
+    if (src.kind == .pattern) {
+        // user space -> texel space via the pattern inverse, then nearest
+        // (floor-based) texel selection with per-axis extend.
+        const p = applyT(src.pinv, u.x, u.y);
+        const i = foldTexelIndex(p.x, src.tile_w, src.ext_x);
+        const j = foldTexelIndex(p.y, src.tile_h, src.ext_y);
+        const idx: usize = (@as(usize, j) * @as(usize, src.tile_w) + @as(usize, i)) * 4;
+        const t = src.tile.?;
+        return .{ t[idx], t[idx + 1], t[idx + 2], t[idx + 3] };
+    }
     var s: f32 = 0;
     if (src.kind == .linear) {
         const dx = src.x1 - src.x0;
@@ -1133,7 +1198,7 @@ fn sampleGradientColor(src: *const GradientSource, tinv: Transform2D, px: f32, p
 // constant color. Since fbBlendPixel at full coverage is byte-identical to
 // simd.fillSpan, a single-color gradient reproduces the solid fill exactly.
 
-fn fbFillRectAASourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32) void {
+fn fbFillRectAASourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32) void {
     if (rw <= 0.0 or rh <= 0.0) return;
     const x1 = x;
     const y1 = y;
@@ -1162,7 +1227,7 @@ fn fbFillRectAASourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, 
             var ix: usize = interior_x0;
             while (ix < interior_x1) : (ix += 1) {
                 const idx: usize = (iy * w + ix) * 4;
-                const col = sampleGradientColor(src, tinv, @as(f32, @floatFromInt(ix)) + 0.5, @as(f32, @floatFromInt(iy)) + 0.5);
+                const col = sampleSourceColor(src, tinv, @as(f32, @floatFromInt(ix)) + 0.5, @as(f32, @floatFromInt(iy)) + 0.5);
                 fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
             }
         }
@@ -1178,7 +1243,7 @@ fn fbFillRectAASourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, 
             const coverage = simd.computeRectCoverageAA(px, py, x1, y1, x2, y2);
             if (coverage > 0.0) {
                 const idx: usize = (iy * w + ix) * 4;
-                const col = sampleGradientColor(src, tinv, px + 0.5, py + 0.5);
+                const col = sampleSourceColor(src, tinv, px + 0.5, py + 0.5);
                 if (coverage >= 1.0) {
                     fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
                 } else {
@@ -1189,7 +1254,7 @@ fn fbFillRectAASourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, 
     }
 }
 
-fn fbFillRectSourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32) void {
+fn fbFillRectSourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32) void {
     const ix0: isize = @intFromFloat(@floor(x));
     const iy0: isize = @intFromFloat(@floor(y));
     const ix1: isize = @intFromFloat(@ceil(x + rw));
@@ -1206,13 +1271,13 @@ fn fbFillRectSourced(rgba: []u8, w: usize, h: usize, x: f32, y: f32, rw: f32, rh
         var ix: usize = x0;
         while (ix < x1u) : (ix += 1) {
             const idx: usize = (iy * w + ix) * 4;
-            const col = sampleGradientColor(src, tinv, @as(f32, @floatFromInt(ix)) + 0.5, @as(f32, @floatFromInt(iy)) + 0.5);
+            const col = sampleSourceColor(src, tinv, @as(f32, @floatFromInt(ix)) + 0.5, @as(f32, @floatFromInt(iy)) + 0.5);
             fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], mode);
         }
     }
 }
 
-fn fbFillRectClippedAASourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
+fn fbFillRectClippedAASourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
     if (clips) |cs| {
         for (cs) |c| {
             const ix = @max(rx, c.x);
@@ -1229,7 +1294,7 @@ fn fbFillRectClippedAASourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, 
     }
 }
 
-fn fbFillRectClippedSourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const GradientSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
+fn fbFillRectClippedSourced(rgba: []u8, w: usize, h: usize, rx: f32, ry: f32, rw: f32, rh: f32, src: *const PaintSource, tinv: Transform2D, mode: u32, clips: ?[]const ClipRect) void {
     if (clips) |cs| {
         for (cs) |c| {
             const ix = @max(rx, c.x);
@@ -1267,7 +1332,7 @@ fn emitFilledPath(
     cb: f32,
     ca: f32,
     aa: bool,
-    source: ?*const GradientSource,
+    source: ?*const PaintSource,
     tinv: Transform2D,
 ) void {
     if (pts.len == 0) return;
@@ -1320,7 +1385,7 @@ fn emitFilledPath(
                 if (samples_inside > 0) {
                     const coverage: f32 = @as(f32, @floatFromInt(samples_inside)) / @as(f32, @floatFromInt(AA_SAMPLES));
                     if (source) |src| {
-                        const col = sampleGradientColor(src, tinv, base_px + 0.5, base_py + 0.5);
+                        const col = sampleSourceColor(src, tinv, base_px + 0.5, base_py + 0.5);
                         fbBlendPixelAA(rgba, idx, col[0], col[1], col[2], col[3], blend_mode, coverage);
                     } else {
                         fbBlendPixelAA(rgba, idx, r8, g8, b8, a8, blend_mode, coverage);
@@ -1332,7 +1397,7 @@ fn emitFilledPath(
                 if (clip_enabled and !pointInClips(spx, spy, clip_rects)) continue;
                 if (pointInFilledPath(spx, spy, pts, contour_lens, even_odd)) {
                     if (source) |src| {
-                        const col = sampleGradientColor(src, tinv, spx, spy);
+                        const col = sampleSourceColor(src, tinv, spx, spy);
                         fbBlendPixel(rgba, idx, col[0], col[1], col[2], col[3], blend_mode);
                     } else {
                         fbBlendPixel(rgba, idx, r8, g8, b8, a8, blend_mode);
@@ -1370,7 +1435,8 @@ pub fn main() !void {
     var t = Transform2D{};
     var blend_mode: u32 = 0;
     var aa_enabled: bool = false;
-    var current_source = GradientSource{};
+    var current_source = PaintSource{};
+    defer releaseSourceTile(&current_source, alloc);
 var stroke_join: StrokeJoin = .Miter;
 var stroke_cap: StrokeCap = .Butt;
 var miter_limit: f32 = 4.0; // SVG default
@@ -1486,12 +1552,15 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
             const r = lr.reader();
 
             if (cmd.opcode == sdcs.Op.RESET) {
+                releaseSourceTile(&current_source, alloc);
                 current_source.kind = .none;
             } else if (cmd.opcode == sdcs.Op.SET_BLEND) {
                 blend_mode = try readU32LE(r);
             } else if (cmd.opcode == sdcs.Op.SET_SOURCE_NONE) {
+                releaseSourceTile(&current_source, alloc);
                 current_source.kind = .none;
             } else if (cmd.opcode == sdcs.Op.SET_SOURCE_LINEAR_GRADIENT) {
+                releaseSourceTile(&current_source, alloc);
                 current_source.kind = .linear;
                 current_source.x0 = try readF32LE(r);
                 current_source.y0 = try readF32LE(r);
@@ -1512,6 +1581,7 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
                     };
                 }
             } else if (cmd.opcode == sdcs.Op.SET_SOURCE_RADIAL_GRADIENT) {
+                releaseSourceTile(&current_source, alloc);
                 current_source.kind = .radial;
                 current_source.cx = try readF32LE(r);
                 current_source.cy = try readF32LE(r);
@@ -1530,6 +1600,40 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
                         .a = try readF32LE(r),
                     };
                 }
+            } else if (cmd.opcode == sdcs.Op.SET_SOURCE_PATTERN) {
+                releaseSourceTile(&current_source, alloc);
+                if (pb < 44) return error.Protocol;
+                const aff_a = try readF32LE(r);
+                const aff_b = try readF32LE(r);
+                const aff_c = try readF32LE(r);
+                const aff_d = try readF32LE(r);
+                const aff_e = try readF32LE(r);
+                const aff_f = try readF32LE(r);
+                const ext_x = try readU32LE(r);
+                const ext_y = try readU32LE(r);
+                const filt = try readU32LE(r);
+                const tw = try readU32LE(r);
+                const th = try readU32LE(r);
+                // Defensive content checks; the encoder already enforces these.
+                if (tw < 1 or tw > 4096 or th < 1 or th > 4096) return error.Protocol;
+                if (ext_x > 2 or ext_y > 2) return error.Protocol;
+                if (filt != 0) return error.Protocol;
+                const tile_bytes: usize = @as(usize, tw) * @as(usize, th) * 4;
+                if (pb != 44 + tile_bytes) return error.Protocol;
+                // The affine must be invertible (encoder rejects det == 0).
+                const pat_affine = Transform2D{ .a = aff_a, .b = aff_b, .c = aff_c, .d = aff_d, .e = aff_e, .f = aff_f };
+                const pinv = invertT(pat_affine) orelse return error.Protocol;
+                const tile_buf = try alloc.alloc(u8, tile_bytes);
+                errdefer alloc.free(tile_buf);
+                try readExact(r, tile_buf);
+                current_source.kind = .pattern;
+                current_source.pinv = pinv;
+                current_source.ext_x = ext_x;
+                current_source.ext_y = ext_y;
+                current_source.filter = filt;
+                current_source.tile_w = tw;
+                current_source.tile_h = th;
+                current_source.tile = tile_buf;
             } else if (cmd.opcode == sdcs.Op.SET_ANTIALIAS) {
                 const aa_val = try readU32LE(r);
                 aa_enabled = (aa_val != 0);
@@ -1917,7 +2021,7 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                     p.* = .{ .x = tp.x, .y = tp.y };
                 }
 
-                const fp_src: ?*const GradientSource = if (current_source.kind != .none) &current_source else null;
+                const fp_src: ?*const PaintSource = if (current_source.kind != .none) &current_source else null;
                 const fp_tinv = if (fp_src != null) (invertT(t) orelse Transform2D{}) else Transform2D{};
                 emitFilledPath(rgba, w, h, clip_enabled, clip_rects.items, blend_mode, fpts, lens, fill_rule == 1, fcr, fcg, fcb, fca, aa_enabled, fp_src, fp_tinv);
 
@@ -2428,9 +2532,9 @@ test "applyExtend pad repeat reflect" {
     try testing.expectApproxEqAbs(@as(f32, 0.7), applyExtend(2.7, 2), 1e-6);
 }
 
-test "sampleGradientColor linear endpoints and midpoint" {
+test "sampleSourceColor linear endpoints and midpoint" {
     const testing = std.testing;
-    var src = GradientSource{};
+    var src = PaintSource{};
     src.kind = .linear;
     src.x0 = 0;
     src.y0 = 0;
@@ -2441,18 +2545,18 @@ test "sampleGradientColor linear endpoints and midpoint" {
     src.stops[0] = .{ .offset = 0, .r = 1, .g = 0, .b = 0, .a = 1 };
     src.stops[1] = .{ .offset = 1, .r = 0, .g = 0, .b = 1, .a = 1 };
     const id = Transform2D{};
-    const c0 = sampleGradientColor(&src, id, 0.5, 0.5);
+    const c0 = sampleSourceColor(&src, id, 0.5, 0.5);
     try testing.expect(c0[0] > 250 and c0[2] < 5);
-    const c1 = sampleGradientColor(&src, id, 99.5, 0.5);
+    const c1 = sampleSourceColor(&src, id, 99.5, 0.5);
     try testing.expect(c1[2] > 250 and c1[0] < 5);
-    const cm = sampleGradientColor(&src, id, 50.5, 0.5);
+    const cm = sampleSourceColor(&src, id, 50.5, 0.5);
     try testing.expect(cm[0] > 118 and cm[0] < 138);
     try testing.expect(cm[2] > 118 and cm[2] < 138);
 }
 
-test "sampleGradientColor radial center to edge" {
+test "sampleSourceColor radial center to edge" {
     const testing = std.testing;
-    var src = GradientSource{};
+    var src = PaintSource{};
     src.kind = .radial;
     src.cx = 50;
     src.cy = 50;
@@ -2462,9 +2566,9 @@ test "sampleGradientColor radial center to edge" {
     src.stops[0] = .{ .offset = 0, .r = 1, .g = 1, .b = 1, .a = 1 };
     src.stops[1] = .{ .offset = 1, .r = 0, .g = 0, .b = 0, .a = 1 };
     const id = Transform2D{};
-    const center = sampleGradientColor(&src, id, 50.5, 50.5);
+    const center = sampleSourceColor(&src, id, 50.5, 50.5);
     try testing.expect(center[0] > 245);
-    const edge = sampleGradientColor(&src, id, 100.5, 50.5);
+    const edge = sampleSourceColor(&src, id, 100.5, 50.5);
     try testing.expect(edge[0] < 10);
 }
 
@@ -2492,7 +2596,7 @@ test "single-color gradient path equals solid path (B1-3)" {
     };
     const lens = [_]u32{4};
     emitFilledPath(fb_solid[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0.25, 0.5, 0.75, 1.0, true, null, Transform2D{});
-    var src = GradientSource{};
+    var src = PaintSource{};
     src.kind = .linear;
     src.x0 = 0;
     src.y0 = 0;
@@ -2523,7 +2627,7 @@ test "single-color gradient rect equals solid rect (B1-3, FILL_RECT)" {
         fb_grad[i * 4 + 3] = 255;
     }
     fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(0.25), clampU8(0.5), clampU8(0.75), clampU8(1.0), 0, null);
-    var src = GradientSource{};
+    var src = PaintSource{};
     src.kind = .linear;
     src.x0 = 0;
     src.y0 = 0;
@@ -2535,4 +2639,133 @@ test "single-color gradient rect equals solid rect (B1-3, FILL_RECT)" {
     src.stops[1] = .{ .offset = 1, .r = 0.25, .g = 0.5, .b = 0.75, .a = 1 };
     fbFillRectClippedAASourced(fb_grad[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, null);
     try testing.expectEqualSlices(u8, fb_solid[0..], fb_grad[0..]);
+}
+
+test "foldTexelIndex pad repeat reflect at boundaries and negatives" {
+    const testing = std.testing;
+    // N = 3.
+    // pad: clamp to [0, 2].
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(-1.0, 3, 0));
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(0.5, 3, 0));
+    try testing.expectEqual(@as(u32, 2), foldTexelIndex(2.9, 3, 0));
+    try testing.expectEqual(@as(u32, 2), foldTexelIndex(3.0, 3, 0));
+    try testing.expectEqual(@as(u32, 2), foldTexelIndex(7.0, 3, 0));
+    // repeat: positive modulo, integer maps in range.
+    try testing.expectEqual(@as(u32, 2), foldTexelIndex(-1.0, 3, 1));
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(-3.0, 3, 1));
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(3.0, 3, 1));
+    try testing.expectEqual(@as(u32, 1), foldTexelIndex(4.5, 3, 1));
+    // reflect: mirror with edge duplication at folds.
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(-1.0, 3, 2));
+    try testing.expectEqual(@as(u32, 2), foldTexelIndex(2.0, 3, 2));
+    try testing.expectEqual(@as(u32, 2), foldTexelIndex(3.0, 3, 2));
+    try testing.expectEqual(@as(u32, 1), foldTexelIndex(4.0, 3, 2));
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(5.0, 3, 2));
+    try testing.expectEqual(@as(u32, 0), foldTexelIndex(6.0, 3, 2));
+}
+
+test "sampleSourceColor pattern nearest and extend" {
+    const testing = std.testing;
+    // 2x2 tile, row-major top-left: (0,0) red, (1,0) green, (0,1) blue, (1,1) white.
+    var tile = [_]u8{
+        255, 0,   0,   255, // (0,0)
+        0,   255, 0,   255, // (1,0)
+        0,   0,   255, 255, // (0,1)
+        255, 255, 255, 255, // (1,1)
+    };
+    var src = PaintSource{};
+    src.kind = .pattern;
+    src.pinv = Transform2D{}; // identity: user space == texel space
+    src.ext_x = 1; // repeat
+    src.ext_y = 1;
+    src.tile_w = 2;
+    src.tile_h = 2;
+    src.tile = tile[0..];
+    const id = Transform2D{};
+    // Pixel centers land inside each texel cell.
+    try testing.expectEqual([4]u8{ 255, 0, 0, 255 }, sampleSourceColor(&src, id, 0.5, 0.5));
+    try testing.expectEqual([4]u8{ 0, 255, 0, 255 }, sampleSourceColor(&src, id, 1.5, 0.5));
+    try testing.expectEqual([4]u8{ 0, 0, 255, 255 }, sampleSourceColor(&src, id, 0.5, 1.5));
+    try testing.expectEqual([4]u8{ 255, 255, 255, 255 }, sampleSourceColor(&src, id, 1.5, 1.5));
+    // Beyond the tile: repeat wraps (x=2.5 -> texel col 0).
+    try testing.expectEqual([4]u8{ 255, 0, 0, 255 }, sampleSourceColor(&src, id, 2.5, 0.5));
+    // Pad clamps instead (x=2.5 -> texel col 1).
+    src.ext_x = 0;
+    try testing.expectEqual([4]u8{ 0, 255, 0, 255 }, sampleSourceColor(&src, id, 2.5, 0.5));
+}
+
+test "single-color pattern equals solid path (B2-1)" {
+    const testing = std.testing;
+    const W = 16;
+    const H = 16;
+    var fb_solid: [W * H * 4]u8 = undefined;
+    var fb_pat: [W * H * 4]u8 = undefined;
+    for (0..W * H) |i| {
+        fb_solid[i * 4 + 0] = 16;
+        fb_solid[i * 4 + 1] = 32;
+        fb_solid[i * 4 + 2] = 48;
+        fb_solid[i * 4 + 3] = 255;
+        fb_pat[i * 4 + 0] = 16;
+        fb_pat[i * 4 + 1] = 32;
+        fb_pat[i * 4 + 2] = 48;
+        fb_pat[i * 4 + 3] = 255;
+    }
+    const sq = [_]FillPoint{
+        .{ .x = 2.3, .y = 2.7 },
+        .{ .x = 12.6, .y = 2.7 },
+        .{ .x = 12.6, .y = 12.4 },
+        .{ .x = 2.3, .y = 12.4 },
+    };
+    const lens = [_]u32{4};
+    const cr: f32 = 0.25;
+    const cg: f32 = 0.5;
+    const cb: f32 = 0.75;
+    const ca: f32 = 1.0;
+    emitFilledPath(fb_solid[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, cr, cg, cb, ca, true, null, Transform2D{});
+    // 1x1 uniform tile of the quantized solid color.
+    var tile = [_]u8{ clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca) };
+    var src = PaintSource{};
+    src.kind = .pattern;
+    src.pinv = Transform2D{};
+    src.ext_x = 1;
+    src.ext_y = 1;
+    src.tile_w = 1;
+    src.tile_h = 1;
+    src.tile = tile[0..];
+    emitFilledPath(fb_pat[0..], W, H, false, &[_]ClipRect{}, 0, sq[0..], lens[0..], false, 0, 0, 0, 1, true, &src, Transform2D{});
+    try testing.expectEqualSlices(u8, fb_solid[0..], fb_pat[0..]);
+}
+
+test "single-color pattern equals solid rect (B2-1, FILL_RECT)" {
+    const testing = std.testing;
+    const W = 16;
+    const H = 16;
+    var fb_solid: [W * H * 4]u8 = undefined;
+    var fb_pat: [W * H * 4]u8 = undefined;
+    for (0..W * H) |i| {
+        fb_solid[i * 4 + 0] = 16;
+        fb_solid[i * 4 + 1] = 32;
+        fb_solid[i * 4 + 2] = 48;
+        fb_solid[i * 4 + 3] = 255;
+        fb_pat[i * 4 + 0] = 16;
+        fb_pat[i * 4 + 1] = 32;
+        fb_pat[i * 4 + 2] = 48;
+        fb_pat[i * 4 + 3] = 255;
+    }
+    const cr: f32 = 0.30;
+    const cg: f32 = 0.55;
+    const cb: f32 = 0.80;
+    const ca: f32 = 1.0;
+    fbFillRectClippedAA(fb_solid[0..], W, H, 2.3, 2.7, 10.4, 9.6, clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca), 0, null);
+    var tile = [_]u8{ clampU8(cr), clampU8(cg), clampU8(cb), clampU8(ca) };
+    var src = PaintSource{};
+    src.kind = .pattern;
+    src.pinv = Transform2D{};
+    src.ext_x = 1;
+    src.ext_y = 1;
+    src.tile_w = 1;
+    src.tile_h = 1;
+    src.tile = tile[0..];
+    fbFillRectClippedAASourced(fb_pat[0..], W, H, 2.3, 2.7, 10.4, 9.6, &src, Transform2D{}, 0, null);
+    try testing.expectEqualSlices(u8, fb_solid[0..], fb_pat[0..]);
 }
