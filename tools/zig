@@ -1,0 +1,28 @@
+#!/bin/sh
+# zig - run the repository-local Zig toolchain.
+#
+# Resolves to sdk/zig/current/zig, bootstrapping it on first use, then
+# execs it with all arguments forwarded. This wrapper is the only Zig
+# the build should invoke; nothing depends on a system-installed
+# compiler. Swapping sdk/zig/current for a different Zig release changes
+# the compiler without touching this wrapper or any build script.
+#
+#   ./tools/zig version
+#   ./tools/zig build
+#   ./tools/zig build test
+set -eu
+
+# Resolve the repository root relative to this script's own location so
+# the wrapper behaves the same regardless of the caller's working
+# directory. tools/ sits directly under the repository root.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+zig_bin="$repo_root/sdk/zig/current/zig"
+
+# Vendor the toolchain on first use.
+if [ ! -x "$zig_bin" ]; then
+    "$script_dir/bootstrap.sh"
+fi
+
+exec "$zig_bin" "$@"

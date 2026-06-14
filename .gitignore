@@ -23,3 +23,6 @@ ad21-diagnose.sh
 ad22-diagnose.sh
 *.orig
 semadraw/tests/out/
+
+# Vendored Zig toolchain (fetched by tools/bootstrap.sh; never committed)
+/sdk/zig/
