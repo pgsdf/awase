@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed 2026-06-14. Pending operator review. Implements Stage C (path
-clipping) from the program ADR 0014, the last of the three stages that
-ADR 0014 opened (Stage A fill in ADR 0015, Stage B paint sources in ADR
-0016 and ADR 0017). It extends clipping from the existing union of
+Accepted 2026-06-14 (operator), with review revisions. Implements Stage C
+(path clipping) from the program ADR 0014, the last of the three stages
+that ADR 0014 opened (Stage A fill in ADR 0015, Stage B paint sources in
+ADR 0016 and ADR 0017). It extends clipping from the existing union of
 axis-aligned rectangles (`SET_CLIP_RECTS`) to an arbitrary path clip
 (`SET_CLIP_PATH`), taking the next free state-block opcode (0x000C)
 alongside `SET_CLIP_RECTS` (0x0002) and `CLEAR_CLIP` (0x0003). It reuses,
@@ -85,21 +85,34 @@ clears whichever kind is active and returns to none.
 
 Coordinate space. The clip path is authored in user space and resolved
 to device space by the current transform in effect at the time of
-`SET_CLIP_PATH`. The resulting device-space contours are the stored clip
-region. This matches `FILL_PATH`, which transforms its points by the
-draw-time transform, and it is what makes the central invariant hold:
+`SET_CLIP_PATH`. The transformed device-space contours become the stored
+clip region and remain unchanged until replaced or cleared. This matches
+`FILL_PATH`, which transforms its points by the draw-time transform, and
+it is what makes the central invariant hold:
 
-  Invariant C-1 (clip equals fill mask). For any path P, winding rule W,
-  and color C: setting the clip to (P, W) and then filling, with C, a
-  primitive that fully covers P paints exactly the pixels that filling P
-  with C under W would paint, byte for byte.
+  Invariant C-1 (clip equals fill mask). Let D be the device-space
+  contour produced by transforming a path P, under winding rule W, by the
+  transform active at the time of `SET_CLIP_PATH`. Setting the clip to
+  (P, W) and then filling, with color C, a primitive that fully covers D
+  paints exactly the pixels that filling D directly with C under W would
+  paint, byte for byte.
 
 C-1 is the anchor of the stage. It says a path clip clips to exactly the
-region the same path fills, with the same antialiased edge, so that
-"clip to this shape" and "fill this shape" cannot diverge. Authoring the
-clip in user space and baking it through the set-time transform is what
-lets C-1 hold across a non-identity transform: the clip and the fill see
-the same device-space contour.
+region the same contour fills, with the same antialiased edge, so that
+"clip to this shape" and "fill this shape" cannot diverge.
+
+The invariant is stated over the device-space contour D, not over the
+user-space path P, on purpose. `FILL_PATH` transforms its points by the
+transform active at draw time, while `SET_CLIP_PATH` transforms at set
+time. The two produce the same device-space contour only when the
+transform active at the fill equals the transform active when the clip
+was set. C-1 therefore holds when the clip and the equivalent fill are
+evaluated under the same transform state; it is not a claim about a fill
+performed under a later, different transform. Concretely, the sequence
+`SET_TRANSFORM(A); SET_CLIP_PATH(P); SET_TRANSFORM(B); FILL_PATH(P)` does
+not satisfy C-1, because the clip is baked under A and the fill is
+transformed under B; the device-space contours differ, and that is the
+intended behavior (see transform immutability, next paragraph).
 
 Because the clip is baked to device space when it is set, a later
 `SET_TRANSFORM_2D` does not move an installed clip. This is the standard
@@ -110,7 +123,10 @@ per-draw inverse.
 Known asymmetry. `SET_CLIP_RECTS` remains device-space and
 transform-naive; this ADR does not change it and does not retroactively
 make rectangle clips transform-aware. Path clips are transform-aware.
-Harmonizing the two is a possible later ADR and is out of scope here.
+Consumers should not assume the two clip kinds share a coordinate-space
+model, and an implementation must not silently transform rectangle clips
+to match path clips. Harmonizing the two is a possible later ADR and is
+out of scope here.
 
 Degenerate and empty clips. A clip path whose region is empty (for
 example a zero-area contour, or contours that the winding rule resolves
@@ -156,6 +172,23 @@ stores the device-space points, the per-contour lengths, and the winding
 rule as the active clip, with kind set to path. Any previously installed
 clip (rectangles or path) is released first.
 
+Normatively, the renderer stores only the transformed device-space
+contour. The original user-space coordinates are not retained, and the
+clip is not a live user-space object that re-resolves under a later
+transform. The path clip state is:
+
+```text
+struct ClipPath {
+    FillRule rule;
+    []Point  device_points;
+    []u32    contour_lengths;
+}
+```
+
+with no reference to the transform that produced `device_points`. This
+keeps the clip a fixed device-space region and forbids an implementation
+from accidentally treating it as transform-relative.
+
 Predicate. The per-sample clip test generalizes to a dispatch on the
 active clip kind:
 
@@ -177,9 +210,10 @@ fill under a rectangle clip is rendered by intersecting the two
 axis-aligned rectangles and filling the intersection, with no per-sample
 clip test. That fast path is valid only because a rectangle intersected
 with a rectangle is a rectangle. It does not apply to a path clip. Under
-a path clip, a rectangle fill falls back to the same per-sample path
-covered by `emitFilledPath`: for each pixel in the rectangle, count the
-sub-samples that lie inside the clip path, and paint at that coverage.
+a path clip, a rectangle fill falls back to the same per-sample coverage
+computation used by `emitFilledPath`: for each pixel in the rectangle,
+count the sub-samples that lie inside the clip path, and paint at that
+coverage.
 This fallback is not merely an implementation detail; it is what makes
 C-1 exact. The covering rectangle of C-1 contains the clip path P, so
 every sub-sample that lies inside P also lies inside the rectangle, and
@@ -199,6 +233,13 @@ identical color, identical blend yield identical bytes.
     65535.
   - exact length check: payload equals `8 + contour_count * 4 +
     total_points * 8`.
+
+The accumulated payload-length computation, and the running point total,
+must be performed in a type wide enough to avoid integer overflow (u64 or
+usize), not u32. Computing the expected length in 32 bits would let a
+malformed stream wrap the product around and pass a length check it
+should fail. This matches the overflow-safe accounting ADR 0017 requires
+for the pattern payload.
 
 Both live validators carry `SET_CLIP_PATH` in the variable-payload group,
 beside `SET_CLIP_RECTS`, `FILL_PATH`, the gradient sources, and the
@@ -244,14 +285,23 @@ pattern:
     with a non-identity transform, the transform is then reset, and a
     covering rectangle is filled; the clip must remain in the transformed
     device region.
-  - Invariant C-1, covering FILL_RECT (`cmp`): clip to a path P, fill a
-    full-canvas rectangle with color C, and confirm the result is
-    byte-identical to filling P with C directly. This is the central
-    equivalence and pins the rectangle-under-path-clip fill to the same
-    sampler as the path fill.
-  - Invariant C-1 on a multi-contour P (`cmp`): the same equivalence on a
-    path with a hole, so the clip predicate and the fill agree on the
-    winding parity, not just on a simple convex region.
+  - Transform immutability (`cmp`): establish a clip under transform A,
+    change the transform to B, draw, and confirm the result is
+    byte-identical to an equivalent rendering where B is never applied.
+    This proves the clip was baked at set time and is unaffected by later
+    transform changes, verifying the section 3 semantics directly rather
+    than indirectly through C-1.
+  - Invariant C-1, covering FILL_RECT (`cmp`): with the identity
+    transform in effect (so the device-space contour D equals the
+    authored path P), clip to P, fill a full-canvas rectangle with color
+    C, and confirm the result is byte-identical to filling P with C
+    directly under the same transform. This is the central equivalence
+    and pins the rectangle-under-path-clip fill to the same sampler as the
+    path fill.
+  - Invariant C-1 on a multi-contour P (`cmp`): the same equivalence,
+    under the same transform, on a path with a hole, so the clip
+    predicate and the fill agree on the winding parity, not just on a
+    simple convex region.
   - Clear restores unclipped drawing (`cmp`): clip to P, `CLEAR_CLIP`,
     fill a rectangle, and confirm the result is byte-identical to filling
     that rectangle with no clip ever set.
@@ -323,3 +373,16 @@ pattern:
 ## Revision history
 
   - 2026-06-14: initial draft (Proposed).
+  - 2026-06-14: operator review folded (Proposed). Tightened invariant
+    C-1 to the device-space contour D and the same-transform-state
+    condition, with the differing-transform sequence called out as
+    intended non-equivalence. Stated normatively that the renderer stores
+    only the baked device-space contour (with a ClipPath state sketch)
+    and not the user-space path. Required overflow-safe (u64 or usize)
+    payload-length accumulation in validation. Added a transform
+    immutability golden. Added a consumer note that the two clip kinds do
+    not share a coordinate-space model. Minor lifecycle wording.
+  - 2026-06-14: ratified (Accepted, operator). Second review pass: minor
+    editorial polish ("per-sample coverage computation" wording in
+    section 5, shortened the transform immutability test description). No
+    normative changes.
