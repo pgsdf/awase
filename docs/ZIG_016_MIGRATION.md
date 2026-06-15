@@ -252,9 +252,11 @@ All confirmed against the vendored stdlib:
    a. semainput (libsemainput): self-contained (imports only std), surface is the
       Class G ArrayList idiom across four lists, validated by 11 unit tests. The
       cleanest remaining target. [DONE, green 2026-06-15]
-   b. inputfs (inputdump): Class F (5 posix.write) and concurrency (3 sleep) in
+   b. inputfs (inputdump): Class F (4 posix.write) and concurrency (3 sleep) in
       the tool itself, plus its transitive dependency shared/src/input.zig, which
-      carries a large removed-surface count and must convert with it.
+      carries a large removed-surface count and converts with it.
+      [DONE, production green 2026-06-15; input.zig test scaffolding is Phase 2,
+      gated by shared's input_tests step]
    c. pgsd-sessiond.
 8. Implement the Class D socket boundary (compat.posix over posix.system.*),
    closing ADR shared 0001 criterion 3. Inventory the real socket-bearing closure
@@ -287,35 +289,45 @@ The authoritative signal is a bench result, not a grep result. States:
     Pending      Not yet migrated
     Blocked      Waiting on another class or an architectural decision
 
-chronofs and semainput have been benched green. chronofs is the end-to-end
-reference (compat.args, io, fs, sync, time, plus shared/clock); semainput
-(libsemainput, benched green 2026-06-15, 11/11) is the second independent
-validation, and a notably cheap one: its append and deinit sites were already on
-the 0.16 unmanaged ArrayList form from the earlier gesture work, so only the four
-.empty inits remained. That is a useful signal that some remaining subprojects
-may be closer to 0.16 than their raw surface counts suggest. shared is benched
-green
+chronofs, semainput, and inputfs have been benched green. chronofs is the
+end-to-end reference (compat.args, io, fs, sync, time, plus shared/clock);
+semainput (libsemainput, benched green 2026-06-15, 11/11) is the second
+independent validation, and a notably cheap one: its append and deinit sites were
+already on the 0.16 unmanaged ArrayList form from the earlier gesture work, so
+only the four .empty inits remained. inputfs (production, benched green
+2026-06-15) is the third: shared/src/input.zig converted via the clock.zig
+raw-posix route at scale (eight regions), and inputdump cleared a three-break
+cascade (console writes to compat.fs.stdout/stderr, arg-slice param types to
+const, and the removed std.time.nanoTimestamp to compat.time.nowMonotonic). No
+new boundary category appeared in any of the three; the only ADR activity was a
+scope clarification to 0002 (nowMonotonic). That is a useful signal that some
+remaining subprojects may be closer to 0.16 than their raw surface counts
+suggest. shared is benched green
 transitively through chronofs, but only for the parts chronofs exercises: the
-compat modules and shared/src/clock.zig. shared/src/input.zig is a separate
-shared file that is not yet converted (a large removed-surface count) and is the
-transitive blocker for inputfs; it is tracked on its own row below. audiofs is
-absent from this table by design: it is C, not a Zig migration target (see the
-survey note under the execution plan).
+compat modules and shared/src/clock.zig. shared/src/input.zig's production code is
+now converted and benched green through inputfs (the raw-posix route at scale);
+its test scaffolding (realpath, test createFileAbsolute and writeAll) is Phase 2,
+unconverted and gated by shared's input_tests step. audiofs is absent from this
+table by design: it is C, not a Zig migration target (see the survey note under
+the execution plan).
 
     Component        A alloc     B args      C link      E fs/io     F write     G list      concurrency   D sockets
     shared (compat)  n/a         n/a         n/a         Green       Green       n/a         Green         Pending
-    shared/input     n/a         n/a         n/a         Pending     Pending     n/a         Pending       n/a
+    shared/input     n/a         n/a         n/a         Green*      n/a         n/a         n/a           n/a
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
     semainput (lib)  n/a         n/a         n/a         n/a         n/a         Green       n/a           n/a
-    inputfs tools    Converted   Converted   n/a         n/a         Pending     n/a         Pending       n/a
+    inputfs tools    Green       Green       n/a         n/a         Green       n/a         Green         n/a
     semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Blocked
     semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Blocked
     pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       n/a
 
-"n/a" means the component has no site in that class. semainput (libsemainput) is
-a pure-logic library: its only 0.16 surface is the Class G ArrayList idiom, so
-every other class is n/a. inputfs's tool (inputdump) has no std.fs of its own
-(E is n/a); its Class E weight lives in the shared/input transitive dependency.
+"n/a" means the component has no site in that class. "Green*" on shared/input
+means its production code is benched green through inputfs, but its in-file test
+scaffolding is Phase 2 (unconverted, gated by shared's input_tests step), so the
+file is not yet green under that target. semainput (libsemainput) is a pure-logic
+library: its only 0.16 surface is the Class G ArrayList idiom, so every other
+class is n/a. inputfs's tool (inputdump) has no std.fs of its own (E is n/a); its
+Class E weight lived in the shared/input dependency, now converted.
 "Blocked" in the D column means the subproject cannot reach green until the
 compat.posix socket boundary is written (the direction is decided; only the
 implementation, sequenced under these subprojects, remains). semadraw C was
