@@ -71,8 +71,9 @@ pub fn safeSleep(nanoseconds: u64) void {
 }
 
 test "safeRead from /dev/null returns EOF" {
-    const fd = try posix.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
-    defer posix.close(fd);
+    const fd = posix.system.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
+    try std.testing.expect(fd >= 0);
+    defer _ = posix.system.close(fd);
 
     var buf: [16]u8 = undefined;
     const n = try safeRead(fd, &buf);
@@ -80,8 +81,9 @@ test "safeRead from /dev/null returns EOF" {
 }
 
 test "safeWrite to /dev/null succeeds" {
-    const fd = try posix.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0);
-    defer posix.close(fd);
+    const fd = posix.system.open("/dev/null", .{ .ACCMODE = .WRONLY }, 0);
+    try std.testing.expect(fd >= 0);
+    defer _ = posix.system.close(fd);
 
     const buf = "test\n";
     const n = try safeWrite(fd, buf);

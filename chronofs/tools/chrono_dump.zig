@@ -157,7 +157,7 @@ fn runReport(io: std.Io) void {
 
     const rate = clk.sampleRate();
     const t1 = clk.now();
-    std.Thread.sleep(REPORT_INTERVAL_MS * std.time.ns_per_ms);
+    compat.time.sleep(compat.time.Duration.fromMilliseconds(REPORT_INTERVAL_MS));
     const t2 = clk.now();
 
     const frate: f64 = if (rate > 0) @as(f64, @floatFromInt(rate)) else 48_000.0;
@@ -206,7 +206,7 @@ fn runFollow(io: std.Io) void {
                 last = t;
             }
         }
-        std.Thread.sleep(FOLLOW_INTERVAL_MS * std.time.ns_per_ms);
+        compat.time.sleep(compat.time.Duration.fromMilliseconds(FOLLOW_INTERVAL_MS));
     }
 }
 

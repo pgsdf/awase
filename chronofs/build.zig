@@ -49,6 +49,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    stream_mod.addImport("compat", compat_mod);
 
     const stream_tests = b.addTest(.{
         .root_module = stream_mod,

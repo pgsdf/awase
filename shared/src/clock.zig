@@ -83,6 +83,33 @@ const OFF_SAMPLES: usize = 12;
 /// ClockReader, and is available to standalone diagnostic tools. It is no
 /// longer wired into any production daemon (the production writer is
 /// the audiofs kernel module since F.4, ADR 0018).
+/// Raw open/size helpers. Zig 0.16 removed the std.fs.*Absolute wrappers and
+/// the std.posix.open/close/ftruncate/lseek wrappers, relocating file I/O under
+/// std.Io. clock.zig is a raw-descriptor and mmap subsystem (it already owns
+/// posix.mmap/munmap directly), so per ADR shared 0001 and 0002 it adapts to
+/// the surviving posix.system primitives rather than taking on std.Io and an Io
+/// handle. These keep the path null-termination and error check in one place;
+/// the public ClockReader/ClockWriter interfaces are unchanged.
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, 0);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn fileSize(fd: posix.fd_t) !u64 {
+    const end = posix.system.lseek(fd, 0, posix.SEEK.END);
+    if (end < 0) return error.SeekFailed;
+    return @intCast(end);
+}
+
 pub const ClockWriter = struct {
     map: []u8,
     fd: posix.fd_t,
@@ -90,27 +117,21 @@ pub const ClockWriter = struct {
     /// Open or create the clock file and mmap it.
     /// Creates /var/run/sema/ if absent.
     pub fn init(path: []const u8) !ClockWriter {
-        // Ensure parent directory exists.
+        // Ensure parent directory exists. Best effort: if it cannot be created
+        // (including because it already exists), a genuine failure surfaces at
+        // the open below.
         if (std.fs.path.dirname(path)) |dir_path| {
-            std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
-                error.PathAlreadyExists => {},
-                else => return err,
-            };
+            var dir_buf = posix.toPosixPath(dir_path) catch return error.NameTooLong;
+            _ = posix.system.mkdir(&dir_buf, 0o755);
         }
 
         // Open or create the file. Mode 0o600 per ADR 0013;
         // operators override via daemon's process group and umask.
-        const fd = try std.fs.createFileAbsolute(path, .{
-            .truncate = true,
-            .read = true,
-            .mode = 0o600,
-        });
-        errdefer posix.close(fd.handle);
+        const raw_fd = try openCreateRdwr(path, 0o600);
+        errdefer _ = posix.system.close(raw_fd);
 
         // Size the file.
-        try fd.setEndPos(CLOCK_SIZE);
-
-        const raw_fd = fd.handle;
+        if (posix.system.ftruncate(raw_fd, @intCast(CLOCK_SIZE)) != 0) return error.TruncateFailed;
 
         // Map it read-write.
         const map_raw = try posix.mmap(
@@ -140,7 +161,7 @@ pub const ClockWriter = struct {
 
     pub fn deinit(self: ClockWriter) void {
         posix.munmap(@alignCast(self.map));
-        posix.close(self.fd);
+        _ = posix.system.close(self.fd);
     }
 
     /// Called when a stream begins. Sets sample_rate and marks the clock valid.
@@ -194,10 +215,9 @@ pub const ClockReader = struct {
 
     /// Attempt to open the clock file. Does not fail if absent.
     pub fn init(path: []const u8) ClockReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1 };
         };
-        const raw_fd = file.handle;
 
         // Defensive size check before mmap. mmap with a length larger
         // than the backing file's size succeeds, but reads past the
@@ -208,12 +228,12 @@ pub const ClockReader = struct {
         // every byte read past the actual file end is a fault. Treat
         // "file too short" identically to "file does not exist" so the
         // caller's existing wall-clock-fallback path takes over.
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
         if (end_pos < @as(u64, CLOCK_SIZE)) {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
@@ -225,7 +245,7 @@ pub const ClockReader = struct {
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
 
@@ -235,7 +255,7 @@ pub const ClockReader = struct {
         const magic = std.mem.readInt(u32, map[OFF_MAGIC..][0..4], .little);
         if (magic != CLOCK_MAGIC or map[OFF_VERSION] != CLOCK_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
@@ -244,7 +264,7 @@ pub const ClockReader = struct {
 
     pub fn deinit(self: ClockReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) _ = posix.system.close(self.fd);
     }
 
     /// True if the clock file is open, valid, and at least one audio stream
