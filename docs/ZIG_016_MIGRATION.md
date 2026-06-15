@@ -295,7 +295,12 @@ All confirmed against the vendored stdlib:
    the boundary is ratified; this is the principal remaining architectural
    milestone, and the only gating item left is this boundary, not any individual
    subproject. Implementation order per the ADR: (a) land compat.posix itself
-   (the verb wrappers, no consumer yet); (b) prove it on the smallest closure,
+   (the verb wrappers, no consumer yet) [DONE, green 2026-06-15, 2/2 via
+   ../tools/zig test src/compat/posix.zig: a surface test that forces every
+   wrapper to be analyzed and a socketpair send/read round-trip that runs the
+   data path; the one bench adjustment was owning a ShutdownHow enum mapped
+   through the surviving posix.SHUT, since 0.16 removed posix.ShutdownHow with
+   the wrapper]; (b) prove it on the smallest closure,
    semasound/src/tone_client.zig (socket + connect); (c) the other clients
    (semadraw client/connection, client/remote_connection); (d) the servers
    (semadraw ipc/socket_server, ipc/tcp_server; semasound main); (e) ipc/shm.zig
@@ -381,7 +386,7 @@ happens to build. audiofs is absent from this table by design: it is C, not a Zi
 migration target (see the survey note under the execution plan).
 
     Component        A alloc     B args      C link      E fs/io     F write     G list      concurrency   D sockets
-    shared (compat)  n/a         n/a         n/a         Green       Green       n/a         Green         Pending
+    shared (compat)  n/a         n/a         n/a         Green       Green       n/a         Green         Green
     shared/clock     n/a         n/a         n/a         Green       Green       n/a         Green         n/a
     shared/input     n/a         n/a         n/a         Green       n/a         n/a         n/a           n/a
     shared/session   n/a         n/a         n/a         Green       Green       n/a         n/a           n/a
@@ -389,8 +394,8 @@ migration target (see the survey note under the execution plan).
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
     semainput (lib)  n/a         n/a         n/a         n/a         n/a         Green       n/a           n/a
     inputfs tools    Green       Green       n/a         n/a         Green       n/a         Green         n/a
-    semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Blocked
-    semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Blocked
+    semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Pending
+    semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Pending
     pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       Blocked*
 
 "n/a" means the component has no site in that class. The shared module rows
@@ -402,16 +407,20 @@ Every file in shared/src is now green. semainput (libsemainput) is a pure-logic
 library: its only 0.16 surface is the Class G ArrayList idiom, so every other
 class is n/a. inputfs's tool (inputdump) has no std.fs of its own (E is n/a); its
 Class E weight lived in the shared/input dependency, now converted.
-"Blocked" in the D column means the subproject cannot reach green until the
-compat.posix socket boundary is written (the direction is decided; only the
-implementation, sequenced under these subprojects, remains). "Blocked*" on
-pgsd-sessiond is a transitive block, not an owned one: it has no sockets of its
-own (its only socket-adjacent tokens are path strings and a getifaddrs C
-interop in sysinfo.zig), but its executable imports the semadraw client, and
-semadraw.client.connect reaches the removed posix.socket / connect / close /
-write. The 2026-06-15 survey reclassified it from "last socket-free unit" to
-Blocked on this basis; it is kept as one coherent unit behind compat.posix
-rather than split into green leaves and a blocked exe, since a daemon whose exe
-cannot link is not a useful planning milestone. semadraw C was
+The D column for the socket-bearing subprojects (semasound, semadraw) read
+Blocked until the compat.posix boundary was written; it landed green on
+2026-06-15 (the shared (compat) D cell is now Green), so those rows are now
+Pending: the architectural blocker is resolved and what remains is the routine
+migration of their seven socket files to the boundary, sequenced in execution
+plan step 9. "Blocked*" on pgsd-sessiond is a transitive block, not an owned one:
+it has no sockets of its own (its only socket-adjacent tokens are path strings
+and a getifaddrs C interop in sysinfo.zig), but its executable imports the
+semadraw client, and semadraw.client.connect reaches the removed posix.socket /
+connect / close / write. The 2026-06-15 survey reclassified it from "last
+socket-free unit" to Blocked on this basis; with the boundary now landed, the
+remaining gate is no longer the missing decision but semadraw's own pending
+migration, after which pgsd-sessiond follows as a routine leaf pass. It is kept
+as one coherent unit rather than split into green leaves and a blocked exe, since
+a daemon whose exe cannot link is not a useful planning milestone. semadraw C was
 0.16-correct before this pass and is marked Converted on that basis; it has not
 been re-benched as a green subproject.
