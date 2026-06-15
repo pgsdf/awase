@@ -24,6 +24,7 @@
 //     a health signal.
 
 const std = @import("std");
+const compat = @import("compat");
 
 pub const Predictor = struct {
     // Three coupled coefficients, tuned as a stability envelope (not three
@@ -111,7 +112,7 @@ pub const Predictor = struct {
 };
 
 fn envF64(name: []const u8, dflt: f64) f64 {
-    const v = std.posix.getenv(name) orelse return dflt;
+    const v = compat.args.getenv(name) orelse return dflt;
     return std.fmt.parseFloat(f64, v) catch dflt;
 }
 

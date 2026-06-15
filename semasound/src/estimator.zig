@@ -30,10 +30,11 @@
 // authority (ADR 0007); local production is what we steer.
 
 const std = @import("std");
+const compat = @import("compat");
 const predictor_mod = @import("predictor.zig");
 
 fn envF64(name: []const u8, dflt: f64) f64 {
-    const v = std.posix.getenv(name) orelse return dflt;
+    const v = compat.args.getenv(name) orelse return dflt;
     return std.fmt.parseFloat(f64, v) catch dflt;
 }
 

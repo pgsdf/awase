@@ -1,9 +1,15 @@
-//! Process-argument compatibility.
+//! Process-input compatibility.
 //!
 //! Zig 0.16 removed std.process.argsAlloc/argsFree/args(); arguments now arrive
 //! through main's std.process.Init parameter as a std.process.Args. Awase tools
 //! were written around argv as a random-access slice (positional access plus
 //! len), so this restores that shape over the new forward iterator.
+//!
+//! 0.16 also removed std.posix.getenv. Environment variables are the other
+//! process-input channel, so their acquisition lives here too (see getenv):
+//! this module owns both process-startup inputs, argv and environment, behind
+//! one surface (ADR shared 0001, process-input ownership). Call sites must not
+//! reach into std.c.getenv or other process-environment APIs directly.
 
 const std = @import("std");
 
@@ -57,6 +63,22 @@ pub fn iterator(args: std.process.Args) Iterator {
     return .{ .inner = std.process.Args.Iterator.init(args) };
 }
 
+/// Acquire an environment variable by name, or null when it is unset.
+///
+/// The sibling of argument acquisition: 0.16 removed std.posix.getenv, and
+/// env access is process-input acquisition, so it lives behind this surface
+/// rather than as scattered std.c.getenv calls. FreeBSD always links libc, so
+/// this reads the libc environment directly. The returned slice points into
+/// the process environment block; callers use it read-only and do not free it.
+pub fn getenv(name: []const u8) ?[]const u8 {
+    var keybuf: [256]u8 = undefined;
+    if (name.len >= keybuf.len) return null;
+    @memcpy(keybuf[0..name.len], name);
+    keybuf[name.len] = 0;
+    const raw = std.c.getenv(keybuf[0..name.len :0].ptr) orelse return null;
+    return std.mem.span(raw);
+}
+
 // Not wired into any build test step yet; runs only under an explicit
 // `zig test` of this file. Exercises the collection over a synthetic argv.
 test "collect argv into a slice" {
@@ -67,4 +89,8 @@ test "collect argv into a slice" {
     try std.testing.expectEqual(@as(usize, 3), owned.argv.len);
     try std.testing.expectEqualStrings("prog", owned.argv[0]);
     try std.testing.expectEqualStrings("beta", owned.argv[2]);
+}
+
+test "getenv returns null for an unset variable" {
+    try std.testing.expect(getenv("AWASE_DEFINITELY_UNSET_ENV_VAR_42") == null);
 }

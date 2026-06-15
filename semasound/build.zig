@@ -70,12 +70,14 @@ pub fn build(b: *std.Build) void {
     // Unit tests: the pure/verifiable modules.
     const test_step = b.step("test", "Run semasound tests");
     inline for (.{ "src/mixer.zig", "src/protocol.zig", "src/ring.zig", "src/resampler.zig", "src/predictor.zig", "src/estimator.zig", "src/election.zig", "src/target.zig", "src/policy.zig", "src/events.zig", "src/state.zig" }) |path| {
+        const tmod = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = target,
+            .optimize = optimize,
+        });
+        tmod.addImport("compat", compat_mod);
         const t = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path(path),
-                .target = target,
-                .optimize = optimize,
-            }),
+            .root_module = tmod,
         });
         test_step.dependOn(&b.addRunArtifact(t).step);
     }

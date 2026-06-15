@@ -45,7 +45,7 @@ pub const Ctx = struct {
 };
 
 fn windowMs() u64 {
-    const v = std.posix.getenv("SEMASOUND_WINDOW_MS") orelse return WINDOW_MS_DEFAULT;
+    const v = compat.args.getenv("SEMASOUND_WINDOW_MS") orelse return WINDOW_MS_DEFAULT;
     return std.fmt.parseInt(u64, v, 10) catch WINDOW_MS_DEFAULT;
 }
 
