@@ -47,6 +47,7 @@
 // discipline, and 0007-bench-test-protocol.md for testing.
 
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const pam = @import("pam.zig");
 const user_enum = @import("user_enum.zig");
@@ -266,7 +267,7 @@ const ArgError = error{
 // --help short-circuits with std.process.exit because help printing is
 // inherently an I/O action; that's fine in a CLI tool's main path.
 // Tests don't invoke parseArgs with --help.
-fn parseArgs(argv: [][:0]u8) ArgError!Args {
+fn parseArgs(argv: []const [:0]const u8) ArgError!Args {
     var args = Args{};
     var i: usize = 1;
     while (i < argv.len) : (i += 1) {
@@ -331,7 +332,7 @@ fn parseArgs(argv: [][:0]u8) ArgError!Args {
 // Called from main(), never from tests. The argv slice is for showing
 // the offending flag in UnknownFlag/UnexpectedPositional messages; pass
 // the argv that caused the error.
-fn printArgError(err: ArgError, argv: [][:0]u8) void {
+fn printArgError(err: ArgError, argv: []const [:0]const u8) void {
     switch (err) {
         ArgError.MissingUserValue => {
             std.debug.print("ERROR: --user requires a value\n", .{});
@@ -608,16 +609,17 @@ fn selectService() [:0]const u8 {
 // Main
 // =============================================================================
 
-pub fn main() u8 {
+pub fn main(init: std.process.Init.Minimal) u8 {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const argv = std.process.argsAlloc(alloc) catch {
+    const argv_owned = compat.args.alloc(alloc, init.args) catch {
         std.debug.print("ERROR: failed to allocate argv\n", .{});
         return EXIT_INTERNAL;
     };
-    defer std.process.argsFree(alloc, argv);
+    defer argv_owned.deinit(alloc);
+    const argv = argv_owned.argv;
 
     const args = parseArgs(argv) catch |err| {
         printArgError(err, argv);

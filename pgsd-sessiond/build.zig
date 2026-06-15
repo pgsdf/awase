@@ -29,6 +29,14 @@ pub fn build(b: *std.Build) void {
     });
     const semadraw_mod = semadraw_dep.module("semadraw");
 
+    // shared/src/compat.zig: Awase compatibility boundary over churning std
+    // APIs. shared has no build.zig, so it is referenced by path like elsewhere.
+    const compat_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "pgsd-sessiond",
         .root_module = b.createModule(.{
@@ -37,6 +45,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "semadraw", .module = semadraw_mod },
+                .{ .name = "compat", .module = compat_mod },
             },
         }),
     });

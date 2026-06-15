@@ -10,6 +10,7 @@
 // publish_ts staleness in `state`).
 
 const std = @import("std");
+const compat = @import("compat");
 
 const RUN_BASE = "/var/run/sema/audio";
 const FILES = [_][]const u8{
@@ -48,10 +49,11 @@ fn eventSeq(line: []const u8) u64 {
     return std.fmt.parseInt(u64, rest[0..sp], 10) catch 0;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var follow = false;
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    const args_owned = try compat.args.alloc(std.heap.page_allocator, init.args);
+    defer args_owned.deinit(std.heap.page_allocator);
+    const args = args_owned.argv;
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "-f")) follow = true;
     }

@@ -26,6 +26,7 @@
 //   - connect/create-surface failure: error to stderr, exit 1.
 
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const semadraw_client = @import("semadraw_client");
 const protocol = semadraw_client.protocol;
@@ -64,10 +65,8 @@ const Args = struct {
     height: f32 = 300.0,
 };
 
-fn parseArgs(allocator: std.mem.Allocator) !Args {
+fn parseArgs(iter: *compat.args.Iterator) !Args {
     var args = Args{};
-    var iter = try std.process.argsWithAllocator(allocator);
-    defer iter.deinit();
     _ = iter.next(); // skip argv[0]
 
     while (iter.next()) |arg| {
@@ -312,12 +311,13 @@ fn formatGesturePayload(buf: []u8, payload: GesturePayload) ![]const u8 {
 // Main
 // ============================================================================
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator) catch |err| {
+    var arg_iter = compat.args.iterator(init.args);
+    const args = parseArgs(&arg_iter) catch |err| {
         writeErr("argument error: {}\nrun with --help for usage\n", .{err});
         std.process.exit(2);
     };

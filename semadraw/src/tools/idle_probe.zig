@@ -32,6 +32,7 @@
 //   - connect or query failure: error to stderr, exit 1; bad args exit 2.
 
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const semadraw_client = @import("semadraw_client");
 
@@ -70,10 +71,8 @@ const Args = struct {
     help: bool = false,
 };
 
-fn parseArgs(allocator: std.mem.Allocator) !Args {
+fn parseArgs(iter: *compat.args.Iterator) !Args {
     var result = Args{};
-    var iter = try std.process.argsWithAllocator(allocator);
-    defer iter.deinit();
     _ = iter.next(); // skip argv[0]
 
     while (iter.next()) |arg| {
@@ -93,12 +92,13 @@ fn parseArgs(allocator: std.mem.Allocator) !Args {
     return result;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = parseArgs(allocator) catch |err| {
+    var arg_iter = compat.args.iterator(init.args);
+    const args = parseArgs(&arg_iter) catch |err| {
         writeErr("argument error: {}\nrun with --help for usage\n", .{err});
         std.process.exit(2);
     };

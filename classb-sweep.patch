@@ -1,0 +1,1418 @@
+diff --git a/inputfs/build.zig b/inputfs/build.zig
+index ffeb1a1..22a95a8 100644
+--- a/inputfs/build.zig
++++ b/inputfs/build.zig
+@@ -11,6 +11,13 @@ pub fn build(b: *std.Build) void {
+         .optimize = optimize,
+     });
+ 
++    // shared/src/compat.zig: Awase compatibility boundary over churning std APIs.
++    const compat_mod = b.createModule(.{
++        .root_source_file = b.path("../shared/src/compat.zig"),
++        .target = target,
++        .optimize = optimize,
++    });
++
+     // inputdump: the canonical CLI for reading inputfs publication
+     // regions (state, events, focus). Subcommands: state, events,
+     // watch, devices. Lands in C.4; replaces the C.2/C.3
+@@ -23,6 +30,7 @@ pub fn build(b: *std.Build) void {
+             .optimize = optimize,
+             .imports = &.{
+                 .{ .name = "input", .module = shared_input_mod },
++                .{ .name = "compat", .module = compat_mod },
+             },
+         }),
+     });
+diff --git a/inputfs/tools/inputdump.zig b/inputfs/tools/inputdump.zig
+index 46f87f6..355284f 100644
+--- a/inputfs/tools/inputdump.zig
++++ b/inputfs/tools/inputdump.zig
+@@ -16,6 +16,7 @@
+ // the full option list.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const input = @import("input");
+ 
+ // ============================================================================
+@@ -1142,13 +1143,14 @@ fn runWatch(opts: Options) !void {
+ // main
+ // ============================================================================
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const allocator = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(allocator);
+-    defer std.process.argsFree(allocator, args);
++    const args_owned = try compat.args.alloc(allocator, init.args);
++    defer args_owned.deinit(allocator);
++    const args = args_owned.argv;
+ 
+     const opts = parseArgs(args);
+ 
+diff --git a/pgsd-sessiond/build.zig b/pgsd-sessiond/build.zig
+index 8453a06..914249f 100644
+--- a/pgsd-sessiond/build.zig
++++ b/pgsd-sessiond/build.zig
+@@ -29,6 +29,14 @@ pub fn build(b: *std.Build) void {
+     });
+     const semadraw_mod = semadraw_dep.module("semadraw");
+ 
++    // shared/src/compat.zig: Awase compatibility boundary over churning std
++    // APIs. shared has no build.zig, so it is referenced by path like elsewhere.
++    const compat_mod = b.createModule(.{
++        .root_source_file = b.path("../shared/src/compat.zig"),
++        .target = target,
++        .optimize = optimize,
++    });
++
+     const exe = b.addExecutable(.{
+         .name = "pgsd-sessiond",
+         .root_module = b.createModule(.{
+@@ -37,6 +45,7 @@ pub fn build(b: *std.Build) void {
+             .optimize = optimize,
+             .imports = &.{
+                 .{ .name = "semadraw", .module = semadraw_mod },
++                .{ .name = "compat", .module = compat_mod },
+             },
+         }),
+     });
+diff --git a/pgsd-sessiond/src/main.zig b/pgsd-sessiond/src/main.zig
+index e01b86a..4048c67 100644
+--- a/pgsd-sessiond/src/main.zig
++++ b/pgsd-sessiond/src/main.zig
+@@ -47,6 +47,7 @@
+ // discipline, and 0007-bench-test-protocol.md for testing.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const pam = @import("pam.zig");
+ const user_enum = @import("user_enum.zig");
+@@ -266,7 +267,7 @@ const ArgError = error{
+ // --help short-circuits with std.process.exit because help printing is
+ // inherently an I/O action; that's fine in a CLI tool's main path.
+ // Tests don't invoke parseArgs with --help.
+-fn parseArgs(argv: [][:0]u8) ArgError!Args {
++fn parseArgs(argv: []const [:0]const u8) ArgError!Args {
+     var args = Args{};
+     var i: usize = 1;
+     while (i < argv.len) : (i += 1) {
+@@ -331,7 +332,7 @@ fn parseArgs(argv: [][:0]u8) ArgError!Args {
+ // Called from main(), never from tests. The argv slice is for showing
+ // the offending flag in UnknownFlag/UnexpectedPositional messages; pass
+ // the argv that caused the error.
+-fn printArgError(err: ArgError, argv: [][:0]u8) void {
++fn printArgError(err: ArgError, argv: []const [:0]const u8) void {
+     switch (err) {
+         ArgError.MissingUserValue => {
+             std.debug.print("ERROR: --user requires a value\n", .{});
+@@ -608,16 +609,17 @@ fn selectService() [:0]const u8 {
+ // Main
+ // =============================================================================
+ 
+-pub fn main() u8 {
++pub fn main(init: std.process.Init.Minimal) u8 {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const argv = std.process.argsAlloc(alloc) catch {
++    const argv_owned = compat.args.alloc(alloc, init.args) catch {
+         std.debug.print("ERROR: failed to allocate argv\n", .{});
+         return EXIT_INTERNAL;
+     };
+-    defer std.process.argsFree(alloc, argv);
++    defer argv_owned.deinit(alloc);
++    const argv = argv_owned.argv;
+ 
+     const args = parseArgs(argv) catch |err| {
+         printArgError(err, argv);
+diff --git a/semadraw/build.zig b/semadraw/build.zig
+index b58e95e..61140f7 100644
+--- a/semadraw/build.zig
++++ b/semadraw/build.zig
+@@ -52,6 +52,14 @@ pub fn build(b: *std.Build) void {
+         .optimize = optimize,
+     });
+ 
++    // shared/src/compat.zig: Awase compatibility boundary over churning std
++    // APIs (process args here; the std.posix socket shim joins later).
++    const compat_mod = b.createModule(.{
++        .root_source_file = b.path("../shared/src/compat.zig"),
++        .target = target,
++        .optimize = optimize,
++    });
++
+     // SIMD acceleration module
+     const simd_mod = b.createModule(.{
+         .root_source_file = b.path("src/simd.zig"),
+@@ -78,6 +86,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_dump.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_dump.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_dump.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_dump);
+ 
+     const sdcs_make_test = b.addExecutable(.{
+@@ -90,6 +99,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_make_test.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_make_test.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_make_test.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_make_test);
+ 
+     const sdcs_make_overlap = b.addExecutable(.{
+@@ -102,6 +112,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_make_overlap.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_make_overlap.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_make_overlap.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_make_overlap);
+ 
+     const sdcs_make_fractional = b.addExecutable(.{
+@@ -114,6 +125,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_make_fractional.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_make_fractional.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_make_fractional.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_make_fractional);
+ 
+     const sdcs_make_clip = b.addExecutable(.{
+@@ -126,6 +138,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_make_clip.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_make_clip.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_make_clip.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_make_clip);
+ 
+     const sdcs_make_transform = b.addExecutable(.{
+@@ -138,6 +151,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_make_transform.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_make_transform.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_make_transform.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_make_transform);
+ 
+     const sdcs_make_blend = b.addExecutable(.{
+@@ -150,6 +164,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_make_blend.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_make_blend.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_make_blend.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_make_blend);
+ 	const sdcs_make_stroke = b.addExecutable(.{
+ 	    .name = "sdcs_make_stroke",
+@@ -161,6 +176,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_stroke.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_stroke.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_stroke.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_stroke);
+ 
+ 	const sdcs_make_line = b.addExecutable(.{
+@@ -173,6 +189,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_line.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_line.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_line.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_line);
+ 
+ 	const sdcs_make_join = b.addExecutable(.{
+@@ -185,6 +202,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_join.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_join.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_join.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_join);
+ 
+ 	const sdcs_make_join_round = b.addExecutable(.{
+@@ -197,6 +215,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_join_round.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_join_round.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_join_round.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_join_round);
+ 
+ 	const sdcs_make_cap = b.addExecutable(.{
+@@ -209,6 +228,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_cap.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_cap.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_cap.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_cap);
+ 
+ 	const sdcs_make_cap_round = b.addExecutable(.{
+@@ -221,6 +241,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_cap_round.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_cap_round.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_cap_round.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_cap_round);
+ 
+ 	const sdcs_make_miter_limit = b.addExecutable(.{
+@@ -233,6 +254,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_miter_limit.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_miter_limit.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_miter_limit.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_miter_limit);
+ 
+ 	const sdcs_make_diagonal = b.addExecutable(.{
+@@ -245,6 +267,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_diagonal.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_diagonal.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_diagonal.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_diagonal);
+ 
+ 	const sdcs_make_blit = b.addExecutable(.{
+@@ -257,6 +280,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_blit.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_blit.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_blit.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_blit);
+ 
+ 	const sdcs_make_curves = b.addExecutable(.{
+@@ -269,6 +293,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_curves.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_curves.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_curves.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_curves);
+ 
+ 	const sdcs_make_path = b.addExecutable(.{
+@@ -281,6 +306,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_path.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_path.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_path.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_path);
+ 
+ 	const sdcs_make_text = b.addExecutable(.{
+@@ -293,6 +319,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_text.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_text.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_text.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_text);
+ 
+ 	const sdcs_make_glyph = b.addExecutable(.{
+@@ -305,6 +332,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_glyph.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_glyph.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_glyph.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_glyph);
+ 
+ 	// AD-21 sub-item 4: cursor sprite generator. Run offline to
+@@ -321,6 +349,7 @@ pub fn build(b: *std.Build) void {
+ 	});
+ 	sdcs_make_cursor.root_module.addImport("semadraw", semadraw_mod);
+ 	sdcs_make_cursor.root_module.addImport("sdcs", sdcs_mod);
++	sdcs_make_cursor.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_cursor);
+ 
+ 	const sdcs_make_aa = b.addExecutable(.{
+@@ -332,6 +361,7 @@ pub fn build(b: *std.Build) void {
+ 	    }),
+ 	});
+ 	sdcs_make_aa.root_module.addImport("semadraw", semadraw_mod);
++	sdcs_make_aa.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_aa);
+ 
+ 	const sdcs_make_fill = b.addExecutable(.{
+@@ -343,6 +373,7 @@ pub fn build(b: *std.Build) void {
+ 	    }),
+ 	});
+ 	sdcs_make_fill.root_module.addImport("semadraw", semadraw_mod);
++	sdcs_make_fill.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_fill);
+ 
+ 	const sdcs_make_gradient = b.addExecutable(.{
+@@ -354,6 +385,7 @@ pub fn build(b: *std.Build) void {
+ 	    }),
+ 	});
+ 	sdcs_make_gradient.root_module.addImport("semadraw", semadraw_mod);
++	sdcs_make_gradient.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_gradient);
+ 
+ 	const sdcs_make_pattern = b.addExecutable(.{
+@@ -365,6 +397,7 @@ pub fn build(b: *std.Build) void {
+ 	    }),
+ 	});
+ 	sdcs_make_pattern.root_module.addImport("semadraw", semadraw_mod);
++	sdcs_make_pattern.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_pattern);
+ 
+ 	const sdcs_make_demo = b.addExecutable(.{
+@@ -376,6 +409,7 @@ pub fn build(b: *std.Build) void {
+ 	    }),
+ 	});
+ 	sdcs_make_demo.root_module.addImport("semadraw", semadraw_mod);
++	sdcs_make_demo.root_module.addImport("compat", compat_mod);
+ 	b.installArtifact(sdcs_make_demo);
+ 
+     const sdcs_replay = b.addExecutable(.{
+@@ -389,6 +423,7 @@ pub fn build(b: *std.Build) void {
+     sdcs_replay.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_replay.root_module.addImport("sdcs", sdcs_mod);
+     sdcs_replay.root_module.addImport("simd", simd_mod);
++    sdcs_replay.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_replay);
+ 
+     // Test tool for malformed inputs
+@@ -415,6 +450,7 @@ pub fn build(b: *std.Build) void {
+     });
+     sdcs_fuzz.root_module.addImport("semadraw", semadraw_mod);
+     sdcs_fuzz.root_module.addImport("sdcs", sdcs_mod);
++    sdcs_fuzz.root_module.addImport("compat", compat_mod);
+     b.installArtifact(sdcs_fuzz);
+ 
+     // IPC protocol module (for semadrawd and clients)
+@@ -762,6 +798,7 @@ pub fn build(b: *std.Build) void {
+             },
+         }),
+     });
++    semadrawd.root_module.addImport("compat", compat_mod);
+     b.installArtifact(semadrawd);
+ 
+     // Client library modules
+@@ -832,6 +869,7 @@ pub fn build(b: *std.Build) void {
+             },
+         }),
+     });
++    gesture_inspect.root_module.addImport("compat", compat_mod);
+     b.installArtifact(gesture_inspect);
+ 
+     // idle_probe - D-11 (ADR 0013) bench helper. Connects to semadrawd
+@@ -850,6 +888,7 @@ pub fn build(b: *std.Build) void {
+             },
+         }),
+     });
++    idle_probe.root_module.addImport("compat", compat_mod);
+     b.installArtifact(idle_probe);
+ 
+     // Terminal emulator modules
+@@ -913,6 +952,7 @@ pub fn build(b: *std.Build) void {
+         }),
+     });
+     semadraw_term.root_module.link_libc = true;
++    semadraw_term.root_module.addImport("compat", compat_mod);
+     b.installArtifact(semadraw_term);
+ 
+     // semadraw-demo graphics demo
+@@ -928,6 +968,7 @@ pub fn build(b: *std.Build) void {
+             },
+         }),
+     });
++    semadraw_demo.root_module.addImport("compat", compat_mod);
+     b.installArtifact(semadraw_demo);
+ 
+     // Hello — minimal App framework example
+diff --git a/semadraw/src/apps/graphics_demo/main.zig b/semadraw/src/apps/graphics_demo/main.zig
+index 3a4daae..bae1076 100644
+--- a/semadraw/src/apps/graphics_demo/main.zig
++++ b/semadraw/src/apps/graphics_demo/main.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const client = @import("semadraw_client");
+ const semadraw = @import("semadraw");
+@@ -12,13 +13,14 @@ pub const std_options = std.Options{
+ const WIDTH: f32 = 400;
+ const HEIGHT: f32 = 300;
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const allocator = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(allocator);
+-    defer std.process.argsFree(allocator, args);
++    const args_owned = try compat.args.alloc(allocator, init.args);
++    defer args_owned.deinit(allocator);
++    const args = args_owned.argv;
+ 
+     var socket_path: ?[]const u8 = null;
+ 
+diff --git a/semadraw/src/apps/term/main.zig b/semadraw/src/apps/term/main.zig
+index 08e1ca9..5628d4f 100644
+--- a/semadraw/src/apps/term/main.zig
++++ b/semadraw/src/apps/term/main.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const client = @import("semadraw_client");
+ const screen = @import("screen");
+@@ -359,13 +360,14 @@ const TermState = struct {
+ // main
+ // ============================================================================
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const allocator = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(allocator);
+-    defer std.process.argsFree(allocator, args);
++    const args_owned = try compat.args.alloc(allocator, init.args);
++    defer args_owned.deinit(allocator);
++    const args = args_owned.argv;
+ 
+     var config = Config{};
+     var i: usize = 1;
+diff --git a/semadraw/src/daemon/semadrawd.zig b/semadraw/src/daemon/semadrawd.zig
+index 1e90143..127da1a 100644
+--- a/semadraw/src/daemon/semadrawd.zig
++++ b/semadraw/src/daemon/semadrawd.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const protocol = @import("protocol");
+ const socket_server = @import("socket_server");
+@@ -2904,7 +2905,7 @@ fn dropPrivileges() !void {
+     });
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     // Ignore SIGPIPE to prevent daemon from dying when clients disconnect
+     // This is standard practice for server applications
+     const act = posix.Sigaction{
+@@ -2918,8 +2919,9 @@ pub fn main() !void {
+     defer _ = gpa.deinit();
+     const allocator = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(allocator);
+-    defer std.process.argsFree(allocator, args);
++    const args_owned = try compat.args.alloc(allocator, init.args);
++    defer args_owned.deinit(allocator);
++    const args = args_owned.argv;
+ 
+     var config = Config{};
+ 
+diff --git a/semadraw/src/tools/gesture_inspect.zig b/semadraw/src/tools/gesture_inspect.zig
+index 6848745..caa5b2a 100644
+--- a/semadraw/src/tools/gesture_inspect.zig
++++ b/semadraw/src/tools/gesture_inspect.zig
+@@ -26,6 +26,7 @@
+ //   - connect/create-surface failure: error to stderr, exit 1.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const semadraw_client = @import("semadraw_client");
+ const protocol = semadraw_client.protocol;
+@@ -64,10 +65,8 @@ const Args = struct {
+     height: f32 = 300.0,
+ };
+ 
+-fn parseArgs(allocator: std.mem.Allocator) !Args {
++fn parseArgs(iter: *compat.args.Iterator) !Args {
+     var args = Args{};
+-    var iter = try std.process.argsWithAllocator(allocator);
+-    defer iter.deinit();
+     _ = iter.next(); // skip argv[0]
+ 
+     while (iter.next()) |arg| {
+@@ -312,12 +311,13 @@ fn formatGesturePayload(buf: []u8, payload: GesturePayload) ![]const u8 {
+ // Main
+ // ============================================================================
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const allocator = gpa.allocator();
+ 
+-    const args = parseArgs(allocator) catch |err| {
++    var arg_iter = compat.args.iterator(init.args);
++    const args = parseArgs(&arg_iter) catch |err| {
+         writeErr("argument error: {}\nrun with --help for usage\n", .{err});
+         std.process.exit(2);
+     };
+diff --git a/semadraw/src/tools/idle_probe.zig b/semadraw/src/tools/idle_probe.zig
+index f5f45a3..3b24686 100644
+--- a/semadraw/src/tools/idle_probe.zig
++++ b/semadraw/src/tools/idle_probe.zig
+@@ -32,6 +32,7 @@
+ //   - connect or query failure: error to stderr, exit 1; bad args exit 2.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const semadraw_client = @import("semadraw_client");
+ 
+@@ -70,10 +71,8 @@ const Args = struct {
+     help: bool = false,
+ };
+ 
+-fn parseArgs(allocator: std.mem.Allocator) !Args {
++fn parseArgs(iter: *compat.args.Iterator) !Args {
+     var result = Args{};
+-    var iter = try std.process.argsWithAllocator(allocator);
+-    defer iter.deinit();
+     _ = iter.next(); // skip argv[0]
+ 
+     while (iter.next()) |arg| {
+@@ -93,12 +92,13 @@ fn parseArgs(allocator: std.mem.Allocator) !Args {
+     return result;
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const allocator = gpa.allocator();
+ 
+-    const args = parseArgs(allocator) catch |err| {
++    var arg_iter = compat.args.iterator(init.args);
++    const args = parseArgs(&arg_iter) catch |err| {
+         writeErr("argument error: {}\nrun with --help for usage\n", .{err});
+         std.process.exit(2);
+     };
+diff --git a/semadraw/src/tools/sdcs_dump.zig b/semadraw/src/tools/sdcs_dump.zig
+index 9e13bc2..d92ae36 100644
+--- a/semadraw/src/tools/sdcs_dump.zig
++++ b/semadraw/src/tools/sdcs_dump.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const sdcs = @import("sdcs");
+ 
+ fn readExact(r: anytype, buf: []u8) !void {
+@@ -27,13 +28,14 @@ fn opcodeName(op: u16) []const u8 {
+     };
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} file.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_fuzz.zig b/semadraw/src/tools/sdcs_fuzz.zig
+index 0b52db8..1eff1b0 100644
+--- a/semadraw/src/tools/sdcs_fuzz.zig
++++ b/semadraw/src/tools/sdcs_fuzz.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const sdcs = @import("sdcs");
+ 
+ /// Fuzzing entry point for SDCS validator.
+@@ -18,11 +19,12 @@ const sdcs = @import("sdcs");
+ ///   ./sdcs_fuzz <input_file>
+ ///   Exits 0 on valid input, 1 on validation error, 2 on crash/panic.
+ 
+-pub fn main() !void {
+-    const args = std.process.argsAlloc(std.heap.page_allocator) catch {
++pub fn main(init: std.process.Init.Minimal) !void {
++    const args_owned = compat.args.alloc(std.heap.page_allocator, init.args) catch {
+         return;
+     };
+-    defer std.process.argsFree(std.heap.page_allocator, args);
++    defer args_owned.deinit(std.heap.page_allocator);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.debug.print("Usage: {s} <input_file>\n", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_aa.zig b/semadraw/src/tools/sdcs_make_aa.zig
+index 1193d8e..2bbf434 100644
+--- a/semadraw/src/tools/sdcs_make_aa.zig
++++ b/semadraw/src/tools/sdcs_make_aa.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} output.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_blend.zig b/semadraw/src/tools/sdcs_make_blend.zig
+index 207eeff..feb0c5d 100644
+--- a/semadraw/src/tools/sdcs_make_blend.zig
++++ b/semadraw/src/tools/sdcs_make_blend.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_blit.zig b/semadraw/src/tools/sdcs_make_blit.zig
+index d1959b0..caef322 100644
+--- a/semadraw/src/tools/sdcs_make_blit.zig
++++ b/semadraw/src/tools/sdcs_make_blit.zig
+@@ -1,15 +1,17 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ /// Test generator for BLIT_IMAGE.
+ /// Creates small procedural images and blits them at various positions.
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_cap.zig b/semadraw/src/tools/sdcs_make_cap.zig
+index 0edfda5..898ef1e 100644
+--- a/semadraw/src/tools/sdcs_make_cap.zig
++++ b/semadraw/src/tools/sdcs_make_cap.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_cap_round.zig b/semadraw/src/tools/sdcs_make_cap_round.zig
+index fac5b5e..ba8338a 100644
+--- a/semadraw/src/tools/sdcs_make_cap_round.zig
++++ b/semadraw/src/tools/sdcs_make_cap_round.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_clip.zig b/semadraw/src/tools/sdcs_make_clip.zig
+index a8173a6..bd05255 100644
+--- a/semadraw/src/tools/sdcs_make_clip.zig
++++ b/semadraw/src/tools/sdcs_make_clip.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ const Point = semadraw.Encoder.Point;
+@@ -96,13 +97,14 @@ fn emitScene(enc: *semadraw.Encoder) !void {
+     }
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} output.sdcs [variant]", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_cursor.zig b/semadraw/src/tools/sdcs_make_cursor.zig
+index 8bd504f..ec13707 100644
+--- a/semadraw/src/tools/sdcs_make_cursor.zig
++++ b/semadraw/src/tools/sdcs_make_cursor.zig
+@@ -22,6 +22,7 @@
+ /// then commit the regenerated .sdcs file.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ /// Sprite dimensions. The surface is logically this size; the cursor's
+@@ -60,13 +61,14 @@ const row_width = [ROWS]u32{
+     4,  // row 15: tail end
+ };
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+         return error.InvalidArgument;
+diff --git a/semadraw/src/tools/sdcs_make_curves.zig b/semadraw/src/tools/sdcs_make_curves.zig
+index 3f3866a..c9c3b23 100644
+--- a/semadraw/src/tools/sdcs_make_curves.zig
++++ b/semadraw/src/tools/sdcs_make_curves.zig
+@@ -1,15 +1,17 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ /// Test generator for Bezier curves (quadratic and cubic).
+ /// Creates various curve shapes to test the curve rendering implementation.
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_demo.zig b/semadraw/src/tools/sdcs_make_demo.zig
+index e23ab11..7a85e65 100644
+--- a/semadraw/src/tools/sdcs_make_demo.zig
++++ b/semadraw/src/tools/sdcs_make_demo.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} output.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_diagonal.zig b/semadraw/src/tools/sdcs_make_diagonal.zig
+index cc96105..5f3266f 100644
+--- a/semadraw/src/tools/sdcs_make_diagonal.zig
++++ b/semadraw/src/tools/sdcs_make_diagonal.zig
+@@ -1,15 +1,17 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ /// Test generator for non-axis-aligned (diagonal) lines.
+ /// Demonstrates STROKE_LINE v2 with arbitrary angles.
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_fill.zig b/semadraw/src/tools/sdcs_make_fill.zig
+index 66f1490..afcc17b 100644
+--- a/semadraw/src/tools/sdcs_make_fill.zig
++++ b/semadraw/src/tools/sdcs_make_fill.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ const Point = semadraw.Encoder.Point;
+@@ -51,13 +52,14 @@ fn emitScene(enc: *semadraw.Encoder) !void {
+     try enc.fillPath(&.{tri[0..]}, .nonzero, 0.55, 0.40, 0.80, 1.0);
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} output.sdcs [variant]", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_fractional.zig b/semadraw/src/tools/sdcs_make_fractional.zig
+index 647e489..3e508e2 100644
+--- a/semadraw/src/tools/sdcs_make_fractional.zig
++++ b/semadraw/src/tools/sdcs_make_fractional.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_glyph.zig b/semadraw/src/tools/sdcs_make_glyph.zig
+index da9630f..ad788bf 100644
+--- a/semadraw/src/tools/sdcs_make_glyph.zig
++++ b/semadraw/src/tools/sdcs_make_glyph.zig
+@@ -10,6 +10,7 @@
+ /// the golden hash in tests/golden/golden.sha256.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ // ============================================================================
+@@ -103,13 +104,14 @@ fn charIndex(c: u8) u32 {
+     };
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+         return error.InvalidArgument;
+diff --git a/semadraw/src/tools/sdcs_make_gradient.zig b/semadraw/src/tools/sdcs_make_gradient.zig
+index 99aed06..4dcb2ab 100644
+--- a/semadraw/src/tools/sdcs_make_gradient.zig
++++ b/semadraw/src/tools/sdcs_make_gradient.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ const Point = semadraw.Encoder.Point;
+@@ -89,13 +90,14 @@ fn emitScene(enc: *semadraw.Encoder) !void {
+     try enc.setSourceNone();
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} output.sdcs [variant]", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_join.zig b/semadraw/src/tools/sdcs_make_join.zig
+index 2635f2b..ec36eab 100644
+--- a/semadraw/src/tools/sdcs_make_join.zig
++++ b/semadraw/src/tools/sdcs_make_join.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_join_round.zig b/semadraw/src/tools/sdcs_make_join_round.zig
+index 6b4c9e5..dc02539 100644
+--- a/semadraw/src/tools/sdcs_make_join_round.zig
++++ b/semadraw/src/tools/sdcs_make_join_round.zig
+@@ -1,17 +1,19 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ // Minimal generator for a round join.
+ //
+ // Produces a small SDCS stream containing two connected STROKE_LINE commands that
+ // meet at a right angle with StrokeJoin.Round enabled.
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len != 2) {
+         std.log.err("usage: {s} <out.sdcs>", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_line.zig b/semadraw/src/tools/sdcs_make_line.zig
+index ea2892c..4b2c287 100644
+--- a/semadraw/src/tools/sdcs_make_line.zig
++++ b/semadraw/src/tools/sdcs_make_line.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_miter_limit.zig b/semadraw/src/tools/sdcs_make_miter_limit.zig
+index 6c2fcaf..0d3a863 100644
+--- a/semadraw/src/tools/sdcs_make_miter_limit.zig
++++ b/semadraw/src/tools/sdcs_make_miter_limit.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_overlap.zig b/semadraw/src/tools/sdcs_make_overlap.zig
+index 7fe3823..eab5253 100644
+--- a/semadraw/src/tools/sdcs_make_overlap.zig
++++ b/semadraw/src/tools/sdcs_make_overlap.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_path.zig b/semadraw/src/tools/sdcs_make_path.zig
+index 436946d..7944fb2 100644
+--- a/semadraw/src/tools/sdcs_make_path.zig
++++ b/semadraw/src/tools/sdcs_make_path.zig
+@@ -1,15 +1,17 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ /// Test generator for STROKE_PATH (polyline paths).
+ /// Creates various path shapes to test the path rendering implementation.
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_pattern.zig b/semadraw/src/tools/sdcs_make_pattern.zig
+index 5efa348..9975037 100644
+--- a/semadraw/src/tools/sdcs_make_pattern.zig
++++ b/semadraw/src/tools/sdcs_make_pattern.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ const Point = semadraw.Encoder.Point;
+@@ -99,13 +100,14 @@ fn emitScene(enc: *semadraw.Encoder) !void {
+     try enc.setSourceNone();
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} output.sdcs [variant]", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_stroke.zig b/semadraw/src/tools/sdcs_make_stroke.zig
+index b0592a2..b810141 100644
+--- a/semadraw/src/tools/sdcs_make_stroke.zig
++++ b/semadraw/src/tools/sdcs_make_stroke.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_test.zig b/semadraw/src/tools/sdcs_make_test.zig
+index b6a4f76..6be61eb 100644
+--- a/semadraw/src/tools/sdcs_make_test.zig
++++ b/semadraw/src/tools/sdcs_make_test.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_text.zig b/semadraw/src/tools/sdcs_make_text.zig
+index cc59803..09cd349 100644
+--- a/semadraw/src/tools/sdcs_make_text.zig
++++ b/semadraw/src/tools/sdcs_make_text.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+ /// Simple 5x7 bitmap font data for uppercase letters A-Z and digits 0-9.
+@@ -122,13 +123,14 @@ fn charToGlyphIndex(c: u8) ?u32 {
+ }
+ 
+ /// Test generator for DRAW_GLYPH_RUN (text rendering with glyph atlas).
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_make_transform.zig b/semadraw/src/tools/sdcs_make_transform.zig
+index f1d1b33..e52a767 100644
+--- a/semadraw/src/tools/sdcs_make_transform.zig
++++ b/semadraw/src/tools/sdcs_make_transform.zig
+@@ -1,13 +1,15 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const semadraw = @import("semadraw");
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 2) {
+         std.log.err("usage: {s} out.sdcs", .{args[0]});
+diff --git a/semadraw/src/tools/sdcs_replay.zig b/semadraw/src/tools/sdcs_replay.zig
+index 162c54d..e0ebf35 100644
+--- a/semadraw/src/tools/sdcs_replay.zig
++++ b/semadraw/src/tools/sdcs_replay.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const compat = @import("compat");
+ const sdcs = @import("sdcs");
+ const simd = @import("simd");
+ 
+@@ -1519,13 +1520,14 @@ fn emitFilledPath(
+     }
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var gpa = std.heap.DebugAllocator(.{}){};
+     defer _ = gpa.deinit();
+     const alloc = gpa.allocator();
+ 
+-    const args = try std.process.argsAlloc(alloc);
+-    defer std.process.argsFree(alloc, args);
++    const args_owned = try compat.args.alloc(alloc, init.args);
++    defer args_owned.deinit(alloc);
++    const args = args_owned.argv;
+ 
+     if (args.len < 5) {
+         std.log.err("usage: {s} file.sdcs out.ppm width height", .{args[0]});
+diff --git a/semasound/build.zig b/semasound/build.zig
+index ec93a27..4a60e3d 100644
+--- a/semasound/build.zig
++++ b/semasound/build.zig
+@@ -6,6 +6,13 @@ pub fn build(b: *std.Build) void {
+     const target = b.standardTargetOptions(.{});
+     const optimize = b.standardOptimizeOption(.{});
+ 
++    // shared/src/compat.zig: Awase compatibility boundary over churning std APIs.
++    const compat_mod = b.createModule(.{
++        .root_source_file = b.path("../shared/src/compat.zig"),
++        .target = target,
++        .optimize = optimize,
++    });
++
+     const exe = b.addExecutable(.{
+         .name = "semasound",
+         .root_module = b.createModule(.{
+@@ -25,6 +32,7 @@ pub fn build(b: *std.Build) void {
+             .optimize = optimize,
+         }),
+     });
++    tone.root_module.addImport("compat", compat_mod);
+     b.installArtifact(tone);
+ 
+     // F.5.e (ADR 0027 Decision 5): the read-only surface inspector.
+@@ -36,6 +44,7 @@ pub fn build(b: *std.Build) void {
+             .optimize = optimize,
+         }),
+     });
++    dump.root_module.addImport("compat", compat_mod);
+     b.installArtifact(dump);
+ 
+     const run_cmd = b.addRunArtifact(exe);
+diff --git a/semasound/src/semasound_dump.zig b/semasound/src/semasound_dump.zig
+index d2c8b84..cb7b5a7 100644
+--- a/semasound/src/semasound_dump.zig
++++ b/semasound/src/semasound_dump.zig
+@@ -10,6 +10,7 @@
+ // publish_ts staleness in `state`).
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ 
+ const RUN_BASE = "/var/run/sema/audio";
+ const FILES = [_][]const u8{
+@@ -48,10 +49,11 @@ fn eventSeq(line: []const u8) u64 {
+     return std.fmt.parseInt(u64, rest[0..sp], 10) catch 0;
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var follow = false;
+-    const args = try std.process.argsAlloc(std.heap.page_allocator);
+-    defer std.process.argsFree(std.heap.page_allocator, args);
++    const args_owned = try compat.args.alloc(std.heap.page_allocator, init.args);
++    defer args_owned.deinit(std.heap.page_allocator);
++    const args = args_owned.argv;
+     for (args[1..]) |a| {
+         if (std.mem.eql(u8, a, "-f")) follow = true;
+     }
+diff --git a/semasound/src/tone_client.zig b/semasound/src/tone_client.zig
+index 5652c18..38008e4 100644
+--- a/semasound/src/tone_client.zig
++++ b/semasound/src/tone_client.zig
+@@ -22,6 +22,7 @@
+ //                (criterion 7). Default gap point is mid-stream.
+ 
+ const std = @import("std");
++const compat = @import("compat");
+ const posix = std.posix;
+ const protocol = @import("protocol.zig");
+ 
+@@ -33,7 +34,7 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
+     }
+ }
+ 
+-pub fn main() !void {
++pub fn main(init: std.process.Init.Minimal) !void {
+     var seconds: f64 = 3.0;
+     var freq: f64 = 750.0;
+     var amp: f64 = 3000.0; // peak per channel; raise to match a multi-client sum
+@@ -59,8 +60,9 @@ pub fn main() !void {
+     var label_name: []const u8 = "";
+     var class_name: []const u8 = "";
+ 
+-    const args = try std.process.argsAlloc(std.heap.page_allocator);
+-    defer std.process.argsFree(std.heap.page_allocator, args);
++    const args_owned = try compat.args.alloc(std.heap.page_allocator, init.args);
++    defer args_owned.deinit(std.heap.page_allocator);
++    const args = args_owned.argv;
+     var pos: usize = 0;
+     var i: usize = 1;
+     while (i < args.len) : (i += 1) {
+diff --git a/shared/src/compat/args.zig b/shared/src/compat/args.zig
+index 42590bd..5fbaa80 100644
+--- a/shared/src/compat/args.zig
++++ b/shared/src/compat/args.zig
+@@ -36,6 +36,27 @@ pub fn alloc(gpa: std.mem.Allocator, args: std.process.Args) !Argv {
+     return .{ .argv = out };
+ }
+ 
++/// Forward iterator over the process arguments, for tools that parse with
++/// look-ahead rather than random access. Wrapping keeps callers off
++/// std.process directly, so a future change to argument delivery stays inside
++/// this boundary. FreeBSD: construction is allocator-free and needs no deinit;
++/// argv[0] is included (skip it if undesired).
++pub const Iterator = struct {
++    inner: std.process.Args.Iterator,
++
++    pub fn next(self: *Iterator) ?[:0]const u8 {
++        return self.inner.next();
++    }
++
++    pub fn skip(self: *Iterator) bool {
++        return self.inner.skip();
++    }
++};
++
++pub fn iterator(args: std.process.Args) Iterator {
++    return .{ .inner = std.process.Args.Iterator.init(args) };
++}
++
+ // Not wired into any build test step yet; runs only under an explicit
+ // `zig test` of this file. Exercises the collection over a synthetic argv.
+ test "collect argv into a slice" {

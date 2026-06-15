@@ -52,6 +52,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/compat.zig: Awase compatibility boundary over churning std
+    // APIs (process args here; the std.posix socket shim joins later).
+    const compat_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // SIMD acceleration module
     const simd_mod = b.createModule(.{
         .root_source_file = b.path("src/simd.zig"),
@@ -78,6 +86,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_dump.root_module.addImport("semadraw", semadraw_mod);
     sdcs_dump.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_dump.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_dump);
 
     const sdcs_make_test = b.addExecutable(.{
@@ -90,6 +99,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_make_test.root_module.addImport("semadraw", semadraw_mod);
     sdcs_make_test.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_make_test.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_make_test);
 
     const sdcs_make_overlap = b.addExecutable(.{
@@ -102,6 +112,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_make_overlap.root_module.addImport("semadraw", semadraw_mod);
     sdcs_make_overlap.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_make_overlap.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_make_overlap);
 
     const sdcs_make_fractional = b.addExecutable(.{
@@ -114,6 +125,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_make_fractional.root_module.addImport("semadraw", semadraw_mod);
     sdcs_make_fractional.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_make_fractional.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_make_fractional);
 
     const sdcs_make_clip = b.addExecutable(.{
@@ -126,6 +138,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_make_clip.root_module.addImport("semadraw", semadraw_mod);
     sdcs_make_clip.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_make_clip.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_make_clip);
 
     const sdcs_make_transform = b.addExecutable(.{
@@ -138,6 +151,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_make_transform.root_module.addImport("semadraw", semadraw_mod);
     sdcs_make_transform.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_make_transform.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_make_transform);
 
     const sdcs_make_blend = b.addExecutable(.{
@@ -150,6 +164,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_make_blend.root_module.addImport("semadraw", semadraw_mod);
     sdcs_make_blend.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_make_blend.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_make_blend);
 	const sdcs_make_stroke = b.addExecutable(.{
 	    .name = "sdcs_make_stroke",
@@ -161,6 +176,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_stroke.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_stroke.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_stroke.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_stroke);
 
 	const sdcs_make_line = b.addExecutable(.{
@@ -173,6 +189,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_line.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_line.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_line.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_line);
 
 	const sdcs_make_join = b.addExecutable(.{
@@ -185,6 +202,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_join.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_join.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_join.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_join);
 
 	const sdcs_make_join_round = b.addExecutable(.{
@@ -197,6 +215,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_join_round.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_join_round.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_join_round.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_join_round);
 
 	const sdcs_make_cap = b.addExecutable(.{
@@ -209,6 +228,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_cap.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_cap.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_cap.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_cap);
 
 	const sdcs_make_cap_round = b.addExecutable(.{
@@ -221,6 +241,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_cap_round.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_cap_round.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_cap_round.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_cap_round);
 
 	const sdcs_make_miter_limit = b.addExecutable(.{
@@ -233,6 +254,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_miter_limit.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_miter_limit.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_miter_limit.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_miter_limit);
 
 	const sdcs_make_diagonal = b.addExecutable(.{
@@ -245,6 +267,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_diagonal.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_diagonal.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_diagonal.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_diagonal);
 
 	const sdcs_make_blit = b.addExecutable(.{
@@ -257,6 +280,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_blit.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_blit.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_blit.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_blit);
 
 	const sdcs_make_curves = b.addExecutable(.{
@@ -269,6 +293,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_curves.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_curves.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_curves.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_curves);
 
 	const sdcs_make_path = b.addExecutable(.{
@@ -281,6 +306,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_path.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_path.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_path.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_path);
 
 	const sdcs_make_text = b.addExecutable(.{
@@ -293,6 +319,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_text.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_text.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_text.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_text);
 
 	const sdcs_make_glyph = b.addExecutable(.{
@@ -305,6 +332,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_glyph.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_glyph.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_glyph.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_glyph);
 
 	// AD-21 sub-item 4: cursor sprite generator. Run offline to
@@ -321,6 +349,7 @@ pub fn build(b: *std.Build) void {
 	});
 	sdcs_make_cursor.root_module.addImport("semadraw", semadraw_mod);
 	sdcs_make_cursor.root_module.addImport("sdcs", sdcs_mod);
+	sdcs_make_cursor.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_cursor);
 
 	const sdcs_make_aa = b.addExecutable(.{
@@ -332,6 +361,7 @@ pub fn build(b: *std.Build) void {
 	    }),
 	});
 	sdcs_make_aa.root_module.addImport("semadraw", semadraw_mod);
+	sdcs_make_aa.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_aa);
 
 	const sdcs_make_fill = b.addExecutable(.{
@@ -343,6 +373,7 @@ pub fn build(b: *std.Build) void {
 	    }),
 	});
 	sdcs_make_fill.root_module.addImport("semadraw", semadraw_mod);
+	sdcs_make_fill.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_fill);
 
 	const sdcs_make_gradient = b.addExecutable(.{
@@ -354,6 +385,7 @@ pub fn build(b: *std.Build) void {
 	    }),
 	});
 	sdcs_make_gradient.root_module.addImport("semadraw", semadraw_mod);
+	sdcs_make_gradient.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_gradient);
 
 	const sdcs_make_pattern = b.addExecutable(.{
@@ -365,6 +397,7 @@ pub fn build(b: *std.Build) void {
 	    }),
 	});
 	sdcs_make_pattern.root_module.addImport("semadraw", semadraw_mod);
+	sdcs_make_pattern.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_pattern);
 
 	const sdcs_make_demo = b.addExecutable(.{
@@ -376,6 +409,7 @@ pub fn build(b: *std.Build) void {
 	    }),
 	});
 	sdcs_make_demo.root_module.addImport("semadraw", semadraw_mod);
+	sdcs_make_demo.root_module.addImport("compat", compat_mod);
 	b.installArtifact(sdcs_make_demo);
 
     const sdcs_replay = b.addExecutable(.{
@@ -389,6 +423,7 @@ pub fn build(b: *std.Build) void {
     sdcs_replay.root_module.addImport("semadraw", semadraw_mod);
     sdcs_replay.root_module.addImport("sdcs", sdcs_mod);
     sdcs_replay.root_module.addImport("simd", simd_mod);
+    sdcs_replay.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_replay);
 
     // Test tool for malformed inputs
@@ -415,6 +450,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_fuzz.root_module.addImport("semadraw", semadraw_mod);
     sdcs_fuzz.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_fuzz.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_fuzz);
 
     // IPC protocol module (for semadrawd and clients)
@@ -762,6 +798,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    semadrawd.root_module.addImport("compat", compat_mod);
     b.installArtifact(semadrawd);
 
     // Client library modules
@@ -832,6 +869,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    gesture_inspect.root_module.addImport("compat", compat_mod);
     b.installArtifact(gesture_inspect);
 
     // idle_probe - D-11 (ADR 0013) bench helper. Connects to semadrawd
@@ -850,6 +888,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    idle_probe.root_module.addImport("compat", compat_mod);
     b.installArtifact(idle_probe);
 
     // Terminal emulator modules
@@ -913,6 +952,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     semadraw_term.root_module.link_libc = true;
+    semadraw_term.root_module.addImport("compat", compat_mod);
     b.installArtifact(semadraw_term);
 
     // semadraw-demo graphics demo
@@ -928,6 +968,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    semadraw_demo.root_module.addImport("compat", compat_mod);
     b.installArtifact(semadraw_demo);
 
     // Hello — minimal App framework example

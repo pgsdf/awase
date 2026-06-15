@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const sdcs = @import("sdcs");
 
 /// Fuzzing entry point for SDCS validator.
@@ -18,11 +19,12 @@ const sdcs = @import("sdcs");
 ///   ./sdcs_fuzz <input_file>
 ///   Exits 0 on valid input, 1 on validation error, 2 on crash/panic.
 
-pub fn main() !void {
-    const args = std.process.argsAlloc(std.heap.page_allocator) catch {
+pub fn main(init: std.process.Init.Minimal) !void {
+    const args_owned = compat.args.alloc(std.heap.page_allocator, init.args) catch {
         return;
     };
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    defer args_owned.deinit(std.heap.page_allocator);
+    const args = args_owned.argv;
 
     if (args.len < 2) {
         std.debug.print("Usage: {s} <input_file>\n", .{args[0]});

@@ -11,6 +11,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/compat.zig: Awase compatibility boundary over churning std APIs.
+    const compat_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // inputdump: the canonical CLI for reading inputfs publication
     // regions (state, events, focus). Subcommands: state, events,
     // watch, devices. Lands in C.4; replaces the C.2/C.3
@@ -23,6 +30,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "input", .module = shared_input_mod },
+                .{ .name = "compat", .module = compat_mod },
             },
         }),
     });

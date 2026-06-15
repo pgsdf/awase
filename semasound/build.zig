@@ -6,6 +6,13 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // shared/src/compat.zig: Awase compatibility boundary over churning std APIs.
+    const compat_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/compat.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "semasound",
         .root_module = b.createModule(.{
@@ -25,6 +32,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    tone.root_module.addImport("compat", compat_mod);
     b.installArtifact(tone);
 
     // F.5.e (ADR 0027 Decision 5): the read-only surface inspector.
@@ -36,6 +44,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    dump.root_module.addImport("compat", compat_mod);
     b.installArtifact(dump);
 
     const run_cmd = b.addRunArtifact(exe);

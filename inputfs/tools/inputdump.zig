@@ -16,6 +16,7 @@
 // the full option list.
 
 const std = @import("std");
+const compat = @import("compat");
 const input = @import("input");
 
 // ============================================================================
@@ -1142,13 +1143,14 @@ fn runWatch(opts: Options) !void {
 // main
 // ============================================================================
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args_owned = try compat.args.alloc(allocator, init.args);
+    defer args_owned.deinit(allocator);
+    const args = args_owned.argv;
 
     const opts = parseArgs(args);
 

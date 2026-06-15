@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const semadraw = @import("semadraw");
 
 /// Simple 5x7 bitmap font data for uppercase letters A-Z and digits 0-9.
@@ -122,13 +123,14 @@ fn charToGlyphIndex(c: u8) ?u32 {
 }
 
 /// Test generator for DRAW_GLYPH_RUN (text rendering with glyph atlas).
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args_owned = try compat.args.alloc(alloc, init.args);
+    defer args_owned.deinit(alloc);
+    const args = args_owned.argv;
 
     if (args.len < 2) {
         std.log.err("usage: {s} out.sdcs", .{args[0]});

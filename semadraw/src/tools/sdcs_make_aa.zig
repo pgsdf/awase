@@ -1,13 +1,15 @@
 const std = @import("std");
+const compat = @import("compat");
 const semadraw = @import("semadraw");
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args_owned = try compat.args.alloc(alloc, init.args);
+    defer args_owned.deinit(alloc);
+    const args = args_owned.argv;
 
     if (args.len < 2) {
         std.log.err("usage: {s} output.sdcs", .{args[0]});

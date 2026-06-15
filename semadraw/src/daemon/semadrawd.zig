@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const protocol = @import("protocol");
 const socket_server = @import("socket_server");
@@ -2904,7 +2905,7 @@ fn dropPrivileges() !void {
     });
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     // Ignore SIGPIPE to prevent daemon from dying when clients disconnect
     // This is standard practice for server applications
     const act = posix.Sigaction{
@@ -2918,8 +2919,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args_owned = try compat.args.alloc(allocator, init.args);
+    defer args_owned.deinit(allocator);
+    const args = args_owned.argv;
 
     var config = Config{};
 

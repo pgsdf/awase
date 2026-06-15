@@ -22,6 +22,7 @@
 //                (criterion 7). Default gap point is mid-stream.
 
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 
@@ -33,7 +34,7 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
     }
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init.Minimal) !void {
     var seconds: f64 = 3.0;
     var freq: f64 = 750.0;
     var amp: f64 = 3000.0; // peak per channel; raise to match a multi-client sum
@@ -59,8 +60,9 @@ pub fn main() !void {
     var label_name: []const u8 = "";
     var class_name: []const u8 = "";
 
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    const args_owned = try compat.args.alloc(std.heap.page_allocator, init.args);
+    defer args_owned.deinit(std.heap.page_allocator);
+    const args = args_owned.argv;
     var pos: usize = 0;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {

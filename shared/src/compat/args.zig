@@ -36,6 +36,27 @@ pub fn alloc(gpa: std.mem.Allocator, args: std.process.Args) !Argv {
     return .{ .argv = out };
 }
 
+/// Forward iterator over the process arguments, for tools that parse with
+/// look-ahead rather than random access. Wrapping keeps callers off
+/// std.process directly, so a future change to argument delivery stays inside
+/// this boundary. FreeBSD: construction is allocator-free and needs no deinit;
+/// argv[0] is included (skip it if undesired).
+pub const Iterator = struct {
+    inner: std.process.Args.Iterator,
+
+    pub fn next(self: *Iterator) ?[:0]const u8 {
+        return self.inner.next();
+    }
+
+    pub fn skip(self: *Iterator) bool {
+        return self.inner.skip();
+    }
+};
+
+pub fn iterator(args: std.process.Args) Iterator {
+    return .{ .inner = std.process.Args.Iterator.init(args) };
+}
+
 // Not wired into any build test step yet; runs only under an explicit
 // `zig test` of this file. Exercises the collection over a synthetic argv.
 test "collect argv into a slice" {
