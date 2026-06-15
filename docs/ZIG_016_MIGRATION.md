@@ -267,7 +267,9 @@ All confirmed against the vendored stdlib:
       green only for the four module targets (compat, clock, input, session) that
       the shared test step happens to build. It is hidden from cd shared &&
       ../tools/zig build test because shared/build.zig has no audio target and no
-      other unit currently imports it. [Pending, ratification 2026-06-15]
+      other unit currently imports it. [DONE, green 2026-06-15, 10/10 via
+      ../tools/zig test src/audio.zig; conversion was production-only (both
+      readers to the raw-posix idiom), tests are in-memory and were untouched]
    (pgsd-sessiond is no longer in this step. The 2026-06-15 graph survey
    established that its executable imports the semadraw client, whose connect path
    uses posix.socket / posix.connect / posix.close / posix.write, all removed in
@@ -353,10 +355,13 @@ because no green subproject imported it. The 2026-06-15 graph survey corrected a
 standing assumption here: pgsd-sessiond, long treated as session.zig's first
 production consumer, does not import shared/session.zig at all. It has its own
 src/session_file.zig, an independent implementation, so the two no longer move
-together. The remaining unconverted file in shared/src is audio.zig (Class E
-only, socket-free, ten self-contained test blocks, standalone-benchable); it is
-absent from cd shared && ../tools/zig build test because shared/build.zig has no
-audio target. audiofs is absent from this table by design: it is C, not a Zig
+together. The last unconverted file in shared/src was audio.zig (Class E only,
+socket-free, ten in-memory test blocks); it was converted on the raw-posix idiom
+and benched green 2026-06-15 (10/10 via ../tools/zig test src/audio.zig), since
+shared/build.zig has no audio target to reach it under the aggregate test step.
+With that, shared is complete in the literal sense: every file in shared/src is
+converted and benched, not green only for the four module targets the test step
+happens to build. audiofs is absent from this table by design: it is C, not a Zig
 migration target (see the survey note under the execution plan).
 
     Component        A alloc     B args      C link      E fs/io     F write     G list      concurrency   D sockets
@@ -364,7 +369,7 @@ migration target (see the survey note under the execution plan).
     shared/clock     n/a         n/a         n/a         Green       Green       n/a         Green         n/a
     shared/input     n/a         n/a         n/a         Green       n/a         n/a         n/a           n/a
     shared/session   n/a         n/a         n/a         Green       Green       n/a         n/a           n/a
-    shared/audio     n/a         n/a         n/a         Pending     n/a         n/a         n/a           n/a
+    shared/audio     n/a         n/a         n/a         Green       n/a         n/a         n/a           n/a
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
     semainput (lib)  n/a         n/a         n/a         n/a         n/a         Green       n/a           n/a
     inputfs tools    Green       Green       n/a         n/a         Green       n/a         Green         n/a
@@ -374,9 +379,10 @@ migration target (see the survey note under the execution plan).
 
 "n/a" means the component has no site in that class. The shared module rows
 (compat, clock, input, session) are all green under cd shared && ../tools/zig
-build test; shared/audio is the one Pending exception, socket-free and
-standalone-benchable but not built by that test step (no audio target in
-shared/build.zig). semainput (libsemainput) is a pure-logic
+build test; shared/audio is converted and benched green on its own
+(../tools/zig test src/audio.zig, 10/10), even though that file is socket-free
+and not built by the aggregate test step (no audio target in shared/build.zig).
+Every file in shared/src is now green. semainput (libsemainput) is a pure-logic
 library: its only 0.16 surface is the Class G ArrayList idiom, so every other
 class is n/a. inputfs's tool (inputdump) has no std.fs of its own (E is n/a); its
 Class E weight lived in the shared/input dependency, now converted.
