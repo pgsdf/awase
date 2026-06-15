@@ -53,6 +53,12 @@ pub const SendError = error{ WouldBlock, SendFailed };
 pub const SendmsgError = error{SendmsgFailed};
 pub const RecvmsgError = error{RecvmsgFailed};
 
+// shutdown owns its direction enum rather than depending on a std type: 0.16
+// removed posix.ShutdownHow along with the wrapper. The values map through the
+// surviving posix.SHUT constants, so nothing is hardcoded and the call site
+// keeps reading compat.posix.shutdown(fd, .both).
+pub const ShutdownHow = enum { recv, send, both };
+
 pub fn socket(domain: u32, sock_type: u32, protocol: u32) SocketError!posix.socket_t {
     const rc = system.socket(@intCast(domain), @intCast(sock_type), @intCast(protocol));
     if (rc == -1) return error.SocketFailed;
@@ -98,11 +104,11 @@ pub fn connect(fd: posix.socket_t, addr: *const posix.sockaddr, len: posix.sockl
     if (rc == -1) return error.ConnectFailed;
 }
 
-pub fn shutdown(fd: posix.socket_t, how: posix.ShutdownHow) ShutdownError!void {
+pub fn shutdown(fd: posix.socket_t, how: ShutdownHow) ShutdownError!void {
     const h: c_int = switch (how) {
-        .recv => 0,
-        .send => 1,
-        .both => 2,
+        .recv => posix.SHUT.RD,
+        .send => posix.SHUT.WR,
+        .both => posix.SHUT.RDWR,
     };
     const rc = system.shutdown(fd, h);
     if (rc == -1) return error.ShutdownFailed;
