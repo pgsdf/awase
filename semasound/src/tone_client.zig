@@ -29,8 +29,10 @@ const protocol = @import("protocol.zig");
 fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
     var off: usize = 0;
     while (off < bytes.len) {
-        const n = try posix.write(fd, bytes[off..]);
-        off += n;
+        const slice = bytes[off..];
+        const n = posix.system.write(fd, slice.ptr, slice.len);
+        if (n < 0) return error.WriteFailed;
+        off += @intCast(n);
     }
 }
 
@@ -109,14 +111,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
     }
 
-    const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    defer posix.close(fd);
+    const fd = try compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    defer _ = posix.system.close(fd);
     var addr: posix.sockaddr.un = .{
         .family = posix.AF.UNIX,
         .path = [_]u8{0} ** 104,
     };
     @memcpy(addr.path[0..protocol.SOCKET_PATH.len], protocol.SOCKET_PATH);
-    try posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
+    try compat.posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
 
     var target_buf = [_]u8{0} ** 16;
     const tn = if (target_name.len > 16) target_name[0..16] else target_name;
