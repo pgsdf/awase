@@ -59,6 +59,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    semadraw_mod.addImport("compat", compat_mod);
 
     // SIMD acceleration module
     const simd_mod = b.createModule(.{
@@ -437,6 +438,7 @@ pub fn build(b: *std.Build) void {
     });
     sdcs_test_malformed.root_module.addImport("semadraw", semadraw_mod);
     sdcs_test_malformed.root_module.addImport("sdcs", sdcs_mod);
+    sdcs_test_malformed.root_module.addImport("compat", compat_mod);
     b.installArtifact(sdcs_test_malformed);
 
     // Fuzzing harness
@@ -473,6 +475,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "session", .module = session_mod },
         },
     });
@@ -492,6 +495,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "protocol", .module = ipc_protocol_mod },
         },
     });
@@ -501,6 +505,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "protocol", .module = ipc_protocol_mod },
         },
     });
@@ -510,6 +515,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    ipc_shm_mod.addImport("compat", compat_mod);
 
     const client_session_mod = b.createModule(.{
         .root_source_file = b.path("src/daemon/client_session.zig"),
@@ -554,6 +560,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "backend", .module = backend_mod },
         },
     });
@@ -576,6 +583,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "backend", .module = backend_mod },
             .{ .name = "evdev", .module = evdev_mod },
         },
@@ -701,6 +709,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "backend", .module = backend_mod },
             .{ .name = "input", .module = shared_input_mod },
         },
@@ -715,6 +724,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "backend", .module = backend_mod },
         },
     });
@@ -738,6 +748,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "shared_clock", .module = shared_clock_mod },
         },
     });
@@ -747,6 +758,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "damage", .module = damage_mod },
             .{ .name = "frame_scheduler", .module = frame_scheduler_mod },
             .{ .name = "backend", .module = backend_mod },
@@ -807,6 +819,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "protocol", .module = ipc_protocol_mod },
         },
     });
@@ -816,6 +829,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
             .{ .name = "protocol", .module = ipc_protocol_mod },
         },
     });
@@ -921,6 +935,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    term_pty_mod.addImport("compat", compat_mod);
 
     const term_renderer_mod = b.createModule(.{
         .root_source_file = b.path("src/apps/term/renderer.zig"),
@@ -1042,6 +1057,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "protocol", .module = ipc_protocol_mod },
+                .{ .name = "compat", .module = compat_mod },
             },
         }),
     });

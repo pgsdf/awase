@@ -54,6 +54,18 @@ raw-posix rather than compat.fs (settled per-file in Phase 3).
 Bench: `zig build` must still fail only on removed surface, not on module
 resolution. No "no module named compat" errors is the Phase 0 pass condition.
 
+### Phase 0 verification artifact (permanent record)
+
+After the wiring diff lands, a verification artifact is generated *from* the
+post-wiring build.zig (parsed, not hand-written, so the record cannot drift from
+the file): every module that now imports compat and every exe/test target that
+wires compat, emitted as an observed list, plus the module-resolution bench
+result. This makes the closing of the semasound-style wiring gap an intentional,
+recorded act rather than an incidental side effect, and gives a later reader a
+fixed point to check the wiring against. The bench for this phase is narrow by
+design: it proves module resolution (no "no module named compat"), not
+conversion, because no source has changed yet.
+
 ## Phase 1 - Shared-partition canaries (validated by `zig build test`)
 
 Convert the two shared files that carry surface, so the test step exercises them
