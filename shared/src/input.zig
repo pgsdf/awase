@@ -1504,27 +1504,71 @@ pub const SmoothingReader = struct {
 
 const testing = std.testing;
 
+// Test-only raw-posix fixture helpers. The tests exercise production code that
+// sits on posix.system plus mmap (ADR shared 0001), so fixtures use the same
+// primitives rather than threading an Io handle through std.Io.File. The one
+// std.Io call retained is tmp.dir.realPath: there is no raw-posix way to resolve
+// a TmpDir's path.
+fn testCreateWrite(path: []const u8, bytes: []const u8) !void {
+    const fd = try openCreateRdwr(path, 0o600);
+    defer _ = posix.system.close(fd);
+    if (bytes.len > 0) _ = posix.system.write(fd, bytes.ptr, bytes.len);
+}
+
+fn testFileSize(path: []const u8) !u64 {
+    const fd = try openReadOnly(path);
+    defer _ = posix.system.close(fd);
+    return fileSize(fd);
+}
+
+fn testRemove(path: []const u8) !void {
+    var pz = try posix.toPosixPath(path);
+    _ = posix.system.unlink(&pz);
+}
+
+fn testExists(path: []const u8) bool {
+    const fd = openReadOnly(path) catch return false;
+    _ = posix.system.close(fd);
+    return true;
+}
+
 fn tmpStatePath(tmp: *std.testing.TmpDir, buf: []u8) ![]u8 {
     var p_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = try tmp.dir.realpath(".", &p_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const p_len = try tmp.dir.realPath(io, &p_buf);
+    const p = p_buf[0..p_len];
     return std.fmt.bufPrint(buf, "{s}/state", .{p});
 }
 
 fn tmpEventsPath(tmp: *std.testing.TmpDir, buf: []u8) ![]u8 {
     var p_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = try tmp.dir.realpath(".", &p_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const p_len = try tmp.dir.realPath(io, &p_buf);
+    const p = p_buf[0..p_len];
     return std.fmt.bufPrint(buf, "{s}/events", .{p});
 }
 
 fn tmpFocusPath(tmp: *std.testing.TmpDir, buf: []u8) ![]u8 {
     var p_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = try tmp.dir.realpath(".", &p_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const p_len = try tmp.dir.realPath(io, &p_buf);
+    const p = p_buf[0..p_len];
     return std.fmt.bufPrint(buf, "{s}/focus", .{p});
 }
 
 fn tmpSmoothingPath(tmp: *std.testing.TmpDir, buf: []u8) ![]u8 {
     var p_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const p = try tmp.dir.realpath(".", &p_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const p_len = try tmp.dir.realPath(io, &p_buf);
+    const p = p_buf[0..p_len];
     return std.fmt.bufPrint(buf, "{s}/smoothing", .{p});
 }
 
@@ -1549,15 +1593,20 @@ test "ensureParents creates nested missing directories" {
     defer tmp.cleanup();
 
     var p_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &p_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const tmp_len = try tmp.dir.realPath(io, &p_buf);
+    const tmp_path = p_buf[0..tmp_len];
     var full_buf: [std.fs.max_path_bytes]u8 = undefined;
     const nested_path = try std.fmt.bufPrint(&full_buf, "{s}/a/b/c/file", .{tmp_path});
 
     try ensureParents(nested_path);
 
     // Confirm a/b/c exists.
-    var d = try tmp.dir.openDir("a/b/c", .{});
-    d.close();
+    var abc_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const abc_path = try std.fmt.bufPrint(&abc_buf, "{s}/a/b/c", .{tmp_path});
+    try testing.expect(testExists(abc_path));
 }
 
 test "state writer creates file at expected size" {
@@ -1569,10 +1618,8 @@ test "state writer creates file at expected size" {
     var w = try StateWriter.init(path);
     defer w.deinit();
 
-    var f = try tmp.dir.openFile("state", .{});
-    defer f.close();
-    const stat = try f.stat();
-    try testing.expectEqual(@as(u64, STATE_SIZE), stat.size);
+    const sz = try testFileSize(path);
+    try testing.expectEqual(@as(u64, STATE_SIZE), sz);
 }
 
 test "state reader rejects absent file gracefully" {
@@ -1587,9 +1634,7 @@ test "state reader rejects wrong magic" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try tmpStatePath(&tmp, &buf);
 
-    var f = try tmp.dir.createFile("state", .{});
-    try f.writeAll(&[_]u8{0} ** STATE_SIZE);
-    f.close();
+    try testCreateWrite(path, &[_]u8{0} ** STATE_SIZE);
 
     const r = StateReader.init(path);
     defer r.deinit();
@@ -1608,8 +1653,7 @@ test "state reader rejects truncated file (smaller than STATE_SIZE)" {
     const path = try tmpStatePath(&tmp, &buf);
 
     // Zero-byte file (truncate but no setEndPos).
-    var f0 = try tmp.dir.createFile("state", .{});
-    f0.close();
+    try testCreateWrite(path, &[_]u8{});
 
     const r0 = StateReader.init(path);
     defer r0.deinit();
@@ -1618,10 +1662,8 @@ test "state reader rejects truncated file (smaller than STATE_SIZE)" {
     try testing.expect(r0.fd == -1);
 
     // Partial file: some bytes, but less than STATE_SIZE.
-    try tmp.dir.deleteFile("state");
-    var f1 = try tmp.dir.createFile("state", .{});
-    try f1.writeAll(&[_]u8{0} ** 100);
-    f1.close();
+    try testRemove(path);
+    try testCreateWrite(path, &[_]u8{0} ** 100);
 
     const r1 = StateReader.init(path);
     defer r1.deinit();
@@ -1630,10 +1672,8 @@ test "state reader rejects truncated file (smaller than STATE_SIZE)" {
     try testing.expect(r1.fd == -1);
 
     // Exactly STATE_SIZE - 1 bytes: still rejected.
-    try tmp.dir.deleteFile("state");
-    var f2 = try tmp.dir.createFile("state", .{});
-    try f2.writeAll(&[_]u8{0} ** (STATE_SIZE - 1));
-    f2.close();
+    try testRemove(path);
+    try testCreateWrite(path, &[_]u8{0} ** (STATE_SIZE - 1));
 
     const r2 = StateReader.init(path);
     defer r2.deinit();
@@ -1774,10 +1814,8 @@ test "events writer creates file at expected size" {
     var w = try EventRingWriter.init(path);
     defer w.deinit();
 
-    var f = try tmp.dir.openFile("events", .{});
-    defer f.close();
-    const stat = try f.stat();
-    try testing.expectEqual(@as(u64, EVENTS_SIZE), stat.size);
+    const sz = try testFileSize(path);
+    try testing.expectEqual(@as(u64, EVENTS_SIZE), sz);
 }
 
 test "events writer/reader single publish drains" {
@@ -1909,10 +1947,8 @@ test "focus writer creates file at expected size" {
     var w = try FocusWriter.init(path);
     defer w.deinit();
 
-    var f = try tmp.dir.openFile("focus", .{});
-    defer f.close();
-    const stat = try f.stat();
-    try testing.expectEqual(@as(u64, FOCUS_SIZE), stat.size);
+    const sz = try testFileSize(path);
+    try testing.expectEqual(@as(u64, FOCUS_SIZE), sz);
 }
 
 test "focus writer/reader round-trip with surface map" {
@@ -1988,10 +2024,8 @@ test "smoothing writer creates file at expected size" {
     var w = try SmoothingWriter.init(path);
     defer w.deinit();
 
-    var f = try tmp.dir.openFile("smoothing", .{});
-    defer f.close();
-    const stat = try f.stat();
-    try testing.expectEqual(@as(u64, SMOOTHING_SIZE), stat.size);
+    const sz = try testFileSize(path);
+    try testing.expectEqual(@as(u64, SMOOTHING_SIZE), sz);
 }
 
 test "smoothing reader returns invalid before markValid" {
@@ -2143,13 +2177,11 @@ test "smoothing reader rejects wrong magic" {
     // Create a file at the right size but with the wrong magic
     // bytes. The reader's init must reject and return a closed
     // reader with map = null.
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
     var bytes = [_]u8{0} ** SMOOTHING_SIZE;
     // Wrong magic: anything other than INSM (0x494E534D).
     std.mem.writeInt(u32, bytes[0..4], 0xDEADBEEF, .little);
     bytes[SM_OFF_VERSION] = SMOOTHING_VERSION;
-    try f.writeAll(&bytes);
-    f.close();
+    try testCreateWrite(path, &bytes);
 
     const r = SmoothingReader.init(path);
     defer r.deinit();
