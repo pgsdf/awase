@@ -99,7 +99,7 @@ fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
 
 fn openReadOnly(path: []const u8) !posix.fd_t {
     var path_buf = try posix.toPosixPath(path);
-    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, 0);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
     if (fd < 0) return error.OpenFailed;
     return fd;
 }
@@ -137,7 +137,7 @@ pub const ClockWriter = struct {
         const map_raw = try posix.mmap(
             null,
             CLOCK_SIZE,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
@@ -240,7 +240,7 @@ pub const ClockReader = struct {
         const map_raw = posix.mmap(
             null,
             CLOCK_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
