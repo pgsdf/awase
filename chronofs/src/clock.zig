@@ -180,8 +180,13 @@ test "Clock wraps ClockReader correctly" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const tmp_len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     var full_buf: [std.fs.max_path_bytes]u8 = undefined;
     const clock_path = try std.fmt.bufPrint(&full_buf, "{s}/clock", .{tmp_path});
 
