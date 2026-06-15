@@ -112,7 +112,7 @@ pub const MsgHeader = extern struct {
         if (buf.len < SIZE) return error.BufferTooSmall;
         const type_val = std.mem.readInt(u16, buf[0..2], .little);
         return .{
-            .msg_type = std.meta.intToEnum(MsgType, type_val) catch return error.InvalidMsgType,
+            .msg_type = std.enums.fromInt(MsgType, type_val) orelse return error.InvalidMsgType,
             .flags = std.mem.readInt(u16, buf[2..4], .little),
             .length = std.mem.readInt(u32, buf[4..8], .little),
         };
@@ -616,7 +616,7 @@ pub const ErrorReplyMsg = extern struct {
         if (buf.len < SIZE) return error.BufferTooSmall;
         const code_val = std.mem.readInt(u32, buf[0..4], .little);
         return .{
-            .code = std.meta.intToEnum(ErrorCode, code_val) catch .internal_error,
+            .code = std.enums.fromInt(ErrorCode, code_val) orelse .internal_error,
             .context = std.mem.readInt(u32, buf[4..8], .little),
         };
     }

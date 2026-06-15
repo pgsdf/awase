@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const compat = @import("compat");
 const protocol = @import("protocol");
 
 const log = std.log.scoped(.semadraw_client);
@@ -127,12 +128,12 @@ pub const Connection = struct {
         // child without this. Other clients (term, hello) don't
         // currently fork+exec, but adding CLOEXEC here is the
         // right hygiene regardless.
-        self.fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
+        self.fd = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
             self.state = .error_state;
             return err;
         };
         errdefer {
-            posix.close(self.fd);
+            _ = posix.system.close(self.fd);
             self.fd = -1;
         }
 
@@ -146,7 +147,7 @@ pub const Connection = struct {
         }
         @memcpy(addr.path[0..path_bytes.len], path_bytes);
 
-        posix.connect(self.fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch |err| {
+        compat.posix.connect(self.fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch |err| {
             self.state = .error_state;
             return err;
         };
@@ -188,7 +189,7 @@ pub const Connection = struct {
         if (self.fd >= 0) {
             // Send disconnect message (best effort)
             self.sendMessage(.disconnect, &.{}) catch {};
-            posix.close(self.fd);
+            _ = posix.system.close(self.fd);
             self.fd = -1;
         }
         self.state = .disconnected;
@@ -637,10 +638,13 @@ pub const Connection = struct {
     fn sendAll(self: *Self, data: []const u8) !void {
         var sent: usize = 0;
         while (sent < data.len) {
-            const n = posix.write(self.fd, data[sent..]) catch |err| {
-                if (err == error.WouldBlock) continue;
-                return err;
-            };
+            const chunk = data[sent..];
+            const rc = posix.system.write(self.fd, chunk.ptr, chunk.len);
+            if (rc < 0) {
+                if (posix.errno(rc) == .AGAIN) continue;
+                return error.WriteFailed;
+            }
+            const n: usize = @intCast(rc);
             if (n == 0) return error.BrokenPipe;
             sent += n;
         }

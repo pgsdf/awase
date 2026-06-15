@@ -31,6 +31,8 @@ each checked against sdk/zig/current/lib/std), not a preconceived list.
     std.posix.kevent               2   removed -> posix.system.kevent                          [NEW]
     std.io.fixedBufferStream       3   removed -> std.Io.Writer.fixed (RESOLVED below)          [NEW]
     std.io.limitedReader           0   comment-only in sdcs_replay; no real call site
+    std.meta.intToEnum             2   removed -> std.enums.fromInt (orelse, not catch)        [BENCH-FOUND]
+    ArrayList(T){} init            4   Class G -> .empty (encoder 1, sdcs_replay 3)            [BENCH-FOUND]
 
 ### Signature change (same symbol, changed shape)
 
@@ -51,6 +53,25 @@ each checked against sdk/zig/current/lib/std), not a preconceived list.
 
 The two families a Class D (socket-only) inventory would have missed: kqueue/kevent
 and the std.io reader overhaul. Both are bounded (see ledger 1).
+
+### Census methodology correction (Phase 0 bench feedback)
+
+The Phase 0 bench found two surfaces this census missed, both from token-extraction
+blind spots, recorded so the same gaps are not repeated:
+
+1. **Construction forms are invisible to a `std.X.Y` token grep.** `ArrayList(T){}`
+   has no `.member` after the type, so the Class G init change was never tallied.
+   Fix: the census must grep container construction forms explicitly
+   (`ArrayList(...)\{\}`, `(...).init`, `= .\{\}`) alongside the member tokens.
+2. **Do not rubber-stamp a family as stable.** std.meta.* was assumed stable;
+   std.meta.intToEnum is removed (-> std.enums.fromInt). Every member found must be
+   checked against the vendored stdlib, including families that "look stable."
+
+A third lesson, from verifying the above: a `pub fn NAME` grep returns false
+"MISSING" for `pub inline fn` and `pub const` re-export forms. readInt/writeInt
+(pub inline fn) and parseFloat (pub const re-export) briefly looked removed and are
+not. A "MISSING" result is verified by checking declaration form before it is
+believed, the same bench-is-authority discipline applied to absence as to presence.
 
 ## Per-file census (boundary-exposed files; carry-forward tags)
 
@@ -87,8 +108,11 @@ wiring in semadraw; see D1).
     tools/sdcs_make_*.zig (26)     P    b    fs.cwd(1 each)                        each EXE: wired
     apps/graphics_demo/main.zig    P    b    fs.File(1)                            semadraw_demo EXE: wired
 
-simd.zig, ipc/protocol.zig, backend/inputfs_translate.zig (the other shared files)
-carry no removed surface: clean.
+simd.zig and backend/inputfs_translate.zig (shared) carry no removed surface.
+ipc/protocol.zig (shared) was wrongly listed clean in the first census pass; the
+Phase 0 bench found 2 std.meta.intToEnum sites in it. The shared partition
+therefore has THREE files with work: connection.zig (sockets), sdcs.zig (fs.File),
+protocol.zig (meta.intToEnum). All three gate `zig build test`.
 
 ## The three ledgers
 
