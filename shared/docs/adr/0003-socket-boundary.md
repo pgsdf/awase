@@ -2,17 +2,17 @@
 
 ## Status
 
-Proposed (draft for operator review), drafted 2026-06-15 during the Zig 0.15.2 to
-0.16.0 migration; revised 2026-06-15 per operator review, pending ratification.
-Review revisions in this round: the error model made an explicit AD-6 ownership
-decision (compat.posix owns a small Awase-owned error surface rather than
-reproducing the historical std.posix error sets, Decision 6); the accept4 form
-recorded as the owned shape with no parallel three-argument variant unless a call
-site requires it (Decision 6); a handle-type convention fixed (socket_t for
-socket handles including the socketpair output, fd_t reserved for generic
-descriptor APIs, Decision 6); and the setsockopt exclusion tied back to the 0001
-scope rule that surviving APIs stay outside compat.* until removal or instability
-justifies ownership (Decision 2). The third ADR in the shared series and the instance that closes
+Accepted 2026-06-15 (operator), with review revisions: the error model made an
+explicit AD-6 ownership decision (compat.posix owns a small Awase-owned error
+surface rather than reproducing the historical std.posix error sets, and Decision
+6 records this as the one decision in the ADR that defines a new contract rather
+than relocating an existing one); the accept4 form recorded as the owned shape
+with no parallel three-argument variant unless a call site requires it (Decision
+6); a handle-type convention fixed (socket_t for socket handles including the
+socketpair output, fd_t reserved for generic descriptor APIs, Decision 6); and
+the setsockopt exclusion tied back to the 0001 scope rule that surviving APIs stay
+outside compat.* until removal or instability justifies ownership (Decision 2).
+The third ADR in the shared series and the instance that closes
 shared 0001 criterion 3 (the socket boundary). Like 0002, it was surfaced rather
 than anticipated: the filesystem, console, concurrency, and timing boundaries
 established under 0001 and 0002 held through the chronofs, inputfs, semainput, and
@@ -22,9 +22,10 @@ owned is the socket-wrapper family (Class D). 0001 deliberately deferred this
 instance until the socket-free units cleared and the pure socket surface was
 visible. It is now visible: a 2026-06-15 graph survey inventoried the entire
 socket closure across semadraw and semasound. Per ADR-before-code, no compat.posix
-module lands before this ratification. The closure gate is semadraw, semasound,
-and pgsd-sessiond building and benching green under the vendored toolchain through
-this boundary.
+module landed before this ratification; the work it authorizes lands next under
+the normal forward-only, operator-ratified flow. The closure gate is semadraw,
+semasound, and pgsd-sessiond building and benching green under the vendored
+toolchain through this boundary.
 
 ## Context
 

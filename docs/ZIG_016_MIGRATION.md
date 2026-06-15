@@ -147,7 +147,7 @@ step.
 Sites: pgsd-sessiond/build.zig (13 conversions). semadraw/build.zig was already
 0.16-correct.
 
-### Class D: std.posix socket layer removed   [DIRECTION DECIDED, implementation pending]
+### Class D: std.posix socket layer removed   [ADR 0003 RATIFIED, implementation pending]
 
 The medium-level std.posix socket functions (socket, bind, listen, accept,
 connect, shutdown, recv, sendmsg/recvmsg, socketpair) are removed; setsockopt and
@@ -160,13 +160,26 @@ posix.connect 4, posix.listen 3, posix.bind 3, posix.accept 3, posix.shutdown 1,
 posix.recv 1. Files: semadraw (client/connection, remote_connection, ipc/shm,
 ipc/socket_server, ipc/tcp_server), semasound (main, tone_client).
 
-Direction, now decided (it was the open question in the prior revision): an
-Awase-owned socket shim, compat.posix, over the raw posix.system.* surface,
-consistent with the boundary discipline and AD-6 (option 3). This is the
-principal remaining closure criterion of ADR 0001 (criterion 3: socket boundary
-implemented and all current socket consumers migrated). chronofs has no sockets,
-so implementation waits for the socket-bearing subprojects (semadraw, semasound);
-shm.zig SCM_RIGHTS is the hardest site.
+Direction, now ratified as shared ADR 0003 (socket boundary, compat.posix,
+Accepted 2026-06-15): an Awase-owned socket shim over the raw posix.system.*
+surface, consistent with the boundary discipline and AD-6. A 2026-06-15 graph
+survey produced the authoritative inventory the ADR carries: the socket closure
+is concentrated in seven files (semadraw client/connection, client/
+remote_connection, ipc/socket_server, ipc/tcp_server, ipc/shm; semasound main,
+tone_client), nearly the whole verb family is removed (socket, socketpair, bind,
+listen, accept, connect, shutdown, sendmsg, recvmsg, send; only setsockopt
+survives and stays outside the boundary by the 0001 scope rule), and the
+supporting types survive at posix.* (sockaddr with un/in, AF, SOCK, SO, SCM, MSG,
+msghdr/msghdr_const, iovec/iovec_const). cmsghdr left posix.* but shm.zig sources
+it from a local @cImport, so SCM_RIGHTS reduces to the two removed verbs sendmsg
+and recvmsg over a surviving msghdr, with the CMSG arithmetic already locally
+owned. The ADR fixes verb ownership (not transport abstraction), an AD-6
+Awase-owned error contract, the accept4 owned form, the socket_t handle
+convention, and the seven-file migration order. This closes the principal
+remaining closure criterion of ADR 0001 (criterion 3). chronofs and all of shared
+have no sockets, so implementation begins with compat.posix itself, then proves
+on the smallest consumer (semasound tone_client) before the rest; shm.zig
+SCM_RIGHTS is the last and most careful site.
 
 ### Class E: filesystem and I/O relocated under std.Io   [DONE for shared and chronofs; dominant surface]
 
@@ -276,23 +289,26 @@ All confirmed against the vendored stdlib:
    0.16 and owned by the compat.posix boundary. It owns no sockets itself and does
    not import shared/session.zig, but its exe closure is not socket-free, so it is
    Blocked and moves to step 9.)
-8. Implement the Class D socket boundary (compat.posix over posix.system.*),
-   closing ADR shared 0001 criterion 3. This is the principal remaining
-   architectural milestone of the migration: the survey work has shown that the
-   only gating item left is this boundary, not any individual subproject. Survey
-   the real socket-bearing closure first (semadraw and semasound socket usage),
-   then design the shim with descriptor passing as a first-class concern from the
-   outset: SCM_RIGHTS ancillary data (shm.zig) and the cmsg / msghdr surface are
-   designed in from the start, not bolted on after basic socket creation. Do not
-   begin this until the socket-free units above are exhausted (shared/audio
-   included).
-9. Migrate the socket-bearing subprojects through compat.posix, in dependency
-   order: semadraw (the largest remaining surface: Class D sockets, the encoder
-   seek and backfill path, sdcs.zig validation, Class E breadth, Class G),
-   semasound, then pgsd-sessiond. pgsd-sessiond is gated solely by its transitive
-   semadraw client dependency (semadraw.client.connect); it owns no sockets, so
-   once semadraw is green its own remaining surface (Class E/F/G and concurrency
-   in the leaf files) is a routine pass.
+8. Implement the Class D socket boundary, compat.posix over posix.system.*, per
+   shared ADR 0003 (Accepted 2026-06-15), closing ADR shared 0001 criterion 3.
+   The survey is done (its inventory is in the Class D section and ADR 0003) and
+   the boundary is ratified; this is the principal remaining architectural
+   milestone, and the only gating item left is this boundary, not any individual
+   subproject. Implementation order per the ADR: (a) land compat.posix itself
+   (the verb wrappers, no consumer yet); (b) prove it on the smallest closure,
+   semasound/src/tone_client.zig (socket + connect); (c) the other clients
+   (semadraw client/connection, client/remote_connection); (d) the servers
+   (semadraw ipc/socket_server, ipc/tcp_server; semasound main); (e) ipc/shm.zig
+   last, the SCM_RIGHTS path (sendmsg/recvmsg over surviving msghdr, ancillary
+   machinery unchanged). The error contract is AD-6 Awase-owned, so each file
+   carries an error-handling pass, not a pure verb substitution.
+9. After the seven files are migrated and benched, the socket-bearing subprojects
+   build green in dependency order: semadraw (the largest remaining surface: Class
+   D sockets, the encoder seek and backfill path, sdcs.zig validation, Class E
+   breadth, Class G), then semasound, then pgsd-sessiond. pgsd-sessiond is gated
+   solely by its transitive semadraw client dependency (semadraw.client.connect);
+   it owns no sockets, so once semadraw is green its own remaining surface (Class
+   E/F/G and concurrency in the leaf files) is a routine pass.
 10. Aggregate verification: full ./tools/zig build green plus subsystem benches.
 
 Survey result (2026-06-15): audiofs is a C kernel module and associated C
