@@ -388,10 +388,10 @@ pub const GestureRecognizer = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return .{
             .allocator = allocator,
-            .contacts = .{},
-            .device_states = .{},
-            .click_history = .{},
-            .pending = .{},
+            .contacts = .empty,
+            .device_states = .empty,
+            .click_history = .empty,
+            .pending = .empty,
         };
     }
 
