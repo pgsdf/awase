@@ -143,13 +143,11 @@ echo "=== Checking dependencies ==="
 # present get no entry.
 MISSING_PKGS=""
 
-if ! check_dep zig; then
-    MISSING_PKGS="$MISSING_PKGS zig"
-fi
-if command -v zig >/dev/null 2>&1; then
-    ZIG_VER=$(zig version 2>/dev/null | head -1)
-    echo "      version: $ZIG_VER"
-fi
+# The Zig compiler is vendored at sdk/zig/current and invoked only through
+# tools/zig (bootstrapped on first use); the build never uses a system Zig,
+# so it is not a pkg dependency. Report the pinned toolchain version.
+ZIG_VER=$("$SCRIPT_DIR/tools/zig" version 2>/dev/null | head -1)
+echo "  ok  vendored zig $ZIG_VER (sdk/zig/current)"
 
 # AD-20: s6 supervision suite. The s6 package provides all five
 # binaries (svscan, svc, svstat, svok, log); a single pkg install
@@ -585,7 +583,7 @@ build_sub() {
     echo ""
     echo "--- Building $name ---"
     cd "$dir"
-    zig build -Doptimize=ReleaseSafe "$@"
+    "$SCRIPT_DIR/tools/zig" build -Doptimize=ReleaseSafe "$@"
     cd "$SCRIPT_DIR"
 }
 
