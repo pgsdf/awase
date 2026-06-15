@@ -48,7 +48,7 @@ fn printFile(io: std.Io, dirpath: []const u8, name: []const u8) void {
         std.debug.print("  {s}: <absent>\n", .{name});
         return;
     };
-    const content = std.mem.trimRight(u8, buf[0..n], "\n");
+    const content = std.mem.trimEnd(u8, buf[0..n], "\n");
     if (content.len == 0) {
         std.debug.print("  {s}: <empty>\n", .{name});
     } else if (std.mem.indexOfScalar(u8, content, '\n') == null) {

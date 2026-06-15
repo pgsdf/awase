@@ -157,13 +157,13 @@ fn readFull(fd: posix.fd_t, buf: []u8) !void {
 fn handleAccept(conn: posix.fd_t, id: u32) void {
     var hello: protocol.Hello = undefined;
     readFull(conn, std.mem.asBytes(&hello)) catch {
-        posix.system.close(conn);
+        _ = posix.system.close(conn);
         return;
     };
     if (!protocol.helloIsAcceptable(hello)) {
         writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
         writeBytes(conn, "error: F.5.b accepts 16-bit mono/stereo at a supported rate\n") catch {};
-        posix.system.close(conn);
+        _ = posix.system.close(conn);
         return;
     }
     // F.5.c (ADR 0025 Decision 3): resolve the Hello's target. Empty routes
@@ -173,7 +173,7 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
     const requested = target_mod.find(&g_targets, tname) orelse {
         writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
         writeBytes(conn, "error: unknown target\n") catch {};
-        posix.system.close(conn);
+        _ = posix.system.close(conn);
         return;
     };
 
@@ -217,7 +217,7 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
             policy_state.writeLastEvaluation(requested.name, label, class, "deny");
             writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
             writeBytes(conn, "error: denied by policy\n") catch {};
-            posix.system.close(conn);
+            _ = posix.system.close(conn);
             std.debug.print("semasound: policy: denied label={s} class={s} on {s}\n", .{ label, class, requested.name });
             return;
         }
@@ -245,7 +245,7 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
     }
     const c = tgt.set.add(conn, id) orelse {
         writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
-        posix.system.close(conn);
+        _ = posix.system.close(conn);
         return;
     };
     // Set the client's input format and install a resampler unless the input
