@@ -246,15 +246,36 @@ All confirmed against the vendored stdlib:
 5. Prove the boundary end to end on the smallest socket-free subproject:
    chronofs (compat.args, io, fs, sync, time, plus shared/clock).      [DONE, green]
 6. Reconcile this notebook to the proven state.                        [this revision]
-7. audiofs consumes the already-converted shared/clock (F.4 clock writer).
-8. Per-subproject port in dependency order, each benched green before the next:
-   shared [done] -> chronofs [done] -> audiofs -> semadraw -> semasound ->
-   semainput -> pgsd-sessiond. semadraw is the largest remaining surface
-   (Class D sockets, the encoder seek and backfill path, sdcs.zig validation,
-   Class E breadth, Class G).
-9. Implement the Class D socket boundary (compat.posix over posix.system.*) under
-   the socket-bearing subprojects, closing ADR 0001 criterion 3.
+7. Migrate the remaining socket-free Zig units, smallest transitive closure
+   first (the chronofs lesson: the useful unit is the smallest closure under the
+   vendored toolchain, not the fewest files), each benched green before the next:
+   a. semainput (libsemainput): self-contained (imports only std), surface is the
+      Class G ArrayList idiom across four lists, validated by 11 unit tests. The
+      cleanest remaining target.
+   b. inputfs (inputdump): Class F (5 posix.write) and concurrency (3 sleep) in
+      the tool itself, plus its transitive dependency shared/src/input.zig, which
+      carries a large removed-surface count and must convert with it.
+   c. pgsd-sessiond.
+8. Implement the Class D socket boundary (compat.posix over posix.system.*),
+   closing ADR shared 0001 criterion 3. Inventory the real socket-bearing closure
+   first; the hard case is descriptor passing (SCM_RIGHTS in shm.zig) and
+   ancillary data, not basic socket creation. Do not begin this until the
+   socket-free units above are exhausted.
+9. Migrate the socket-bearing subprojects through compat.posix: semadraw (the
+   largest remaining surface: Class D sockets, the encoder seek and backfill path,
+   sdcs.zig validation, Class E breadth, Class G) and semasound.
 10. Aggregate verification: full ./tools/zig build green plus subsystem benches.
+
+Survey result (2026-06-15): audiofs is a C kernel module and associated C
+tooling. It is not a Zig migration target and therefore has no Zig 0.16 stdlib
+surface. Its relationship to the migration is limited to validation of the shared
+clock-file format consumed by shared/src/clock.zig: the magic, version, and size
+constants agree on both sides (the C side AUDIOFS_CLOCK_* in audiofs.c, the Zig
+side CLOCK_* in shared/src/clock.zig), duplicated rather than generated, which is
+AD-55 gen_constants territory. audiofs was removed from the migration sequence
+and reclassified as a format-interop concern, beside the migration rather than
+inside it. The F.4 clock-writer feature work is C and is not gated by this
+migration.
 
 ## Component status
 
@@ -267,22 +288,29 @@ The authoritative signal is a bench result, not a grep result. States:
     Blocked      Waiting on another class or an architectural decision
 
 Only chronofs has been benched green end to end. shared is benched green
-transitively through chronofs (its compat modules and clock are exercised by the
-chronofs build and tests); its socket boundary (compat.posix) is not yet written.
-Every other subproject carries the applied A, B, and C work as Converted, not
-Green, because it has not been built and benched as a whole under 0.16.0.
+transitively through chronofs, but only for the parts chronofs exercises: the
+compat modules and shared/src/clock.zig. shared/src/input.zig is a separate
+shared file that is not yet converted (a large removed-surface count) and is the
+transitive blocker for inputfs; it is tracked on its own row below. audiofs is
+absent from this table by design: it is C, not a Zig migration target (see the
+survey note under the execution plan).
 
     Component        A alloc     B args      C link      E fs/io     F write     G list      concurrency   D sockets
-    shared           n/a         n/a         n/a         Green       Green       n/a         Green         Pending
+    shared (compat)  n/a         n/a         n/a         Green       Green       n/a         Green         Pending
+    shared/input     n/a         n/a         n/a         Pending     Pending     n/a         Pending       n/a
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
-    inputfs tools    Converted   Converted   n/a         Pending     Pending     n/a         Pending       n/a
+    semainput (lib)  n/a         n/a         n/a         n/a         n/a         Pending     n/a           n/a
+    inputfs tools    Converted   Converted   n/a         n/a         Pending     n/a         Pending       n/a
     semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Blocked
     semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Blocked
-    semainput        n/a         Converted   n/a         Pending     Pending     n/a         Pending       n/a
     pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       n/a
 
-"n/a" means the component has no site in that class. "Blocked" in the D column
-means the subproject cannot reach green until the compat.posix socket boundary is
-written (the direction is decided; only the implementation, sequenced under these
-subprojects, remains). semadraw C was 0.16-correct before this pass and is marked
-Converted on that basis; it has not been re-benched as a green subproject.
+"n/a" means the component has no site in that class. semainput (libsemainput) is
+a pure-logic library: its only 0.16 surface is the Class G ArrayList idiom, so
+every other class is n/a. inputfs's tool (inputdump) has no std.fs of its own
+(E is n/a); its Class E weight lives in the shared/input transitive dependency.
+"Blocked" in the D column means the subproject cannot reach green until the
+compat.posix socket boundary is written (the direction is decided; only the
+implementation, sequenced under these subprojects, remains). semadraw C was
+0.16-correct before this pass and is marked Converted on that basis; it has not
+been re-benched as a green subproject.
