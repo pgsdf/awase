@@ -31,7 +31,9 @@ pub fn readOrCreate(path: []const u8) !u64 {
         // File missing, unreadable, or contains invalid data — generate fresh.
     }
 
-    const token = std.crypto.random.int(u64);
+    var token_bytes: [8]u8 = undefined;
+    posix.system.arc4random_buf(&token_bytes, token_bytes.len);
+    const token = std.mem.readInt(u64, &token_bytes, .little);
     try writeToken(path, token);
     return token;
 }
