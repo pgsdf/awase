@@ -18,6 +18,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // shared/src/posix_safe.zig: AD-6 safe wrappers over posix.system.* for fd
+    // reads and writes. posix.write was removed in 0.16; safeWrite backs the
+    // tool's stdout/stderr path.
+    const posix_safe_mod = b.createModule(.{
+        .root_source_file = b.path("../shared/src/posix_safe.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // inputdump: the canonical CLI for reading inputfs publication
     // regions (state, events, focus). Subcommands: state, events,
     // watch, devices. Lands in C.4; replaces the C.2/C.3
@@ -31,6 +40,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "input", .module = shared_input_mod },
                 .{ .name = "compat", .module = compat_mod },
+                .{ .name = "posix_safe", .module = posix_safe_mod },
             },
         }),
     });

@@ -18,6 +18,7 @@
 const std = @import("std");
 const compat = @import("compat");
 const input = @import("input");
+const posix_safe = @import("posix_safe");
 
 // ============================================================================
 // Output sink
@@ -35,20 +36,20 @@ fn writeOut(comptime fmt: []const u8, args: anytype) void {
         // message rather than write uninitialized bytes. A truncation
         // marker keeps the failure visible but avoids leaking stack.
         const marker = "<inputdump: output truncated>\n";
-        _ = std.posix.write(std.posix.STDOUT_FILENO, marker) catch {};
+        _ = posix_safe.safeWrite(std.posix.STDOUT_FILENO, marker) catch {};
         return;
     };
-    _ = std.posix.write(std.posix.STDOUT_FILENO, slice) catch {};
+    _ = posix_safe.safeWrite(std.posix.STDOUT_FILENO, slice) catch {};
 }
 
 fn writeErr(comptime fmt: []const u8, args: anytype) void {
     var buf: [4096]u8 = undefined;
     const slice = std.fmt.bufPrint(&buf, fmt, args) catch {
         const marker = "<inputdump: error message truncated>\n";
-        _ = std.posix.write(std.posix.STDERR_FILENO, marker) catch {};
+        _ = posix_safe.safeWrite(std.posix.STDERR_FILENO, marker) catch {};
         return;
     };
-    _ = std.posix.write(std.posix.STDERR_FILENO, slice) catch {};
+    _ = posix_safe.safeWrite(std.posix.STDERR_FILENO, slice) catch {};
 }
 
 // ============================================================================
@@ -536,7 +537,7 @@ fn runState(opts: Options) !void {
 
     var prev = initial;
     while (true) {
-        std.Thread.sleep(opts.interval_ms * std.time.ns_per_ms);
+        compat.time.sleep(compat.time.Duration.fromMilliseconds(opts.interval_ms));
         const snap = try reader.snapshot();
         if (!stateChanged(prev, snap)) continue;
         if (opts.json) {
@@ -809,7 +810,7 @@ fn runEvents(opts: Options) !void {
     }
 
     while (true) {
-        std.Thread.sleep(opts.interval_ms * std.time.ns_per_ms);
+        compat.time.sleep(compat.time.Duration.fromMilliseconds(opts.interval_ms));
         const result = try reader.drain(&buf);
         if (result.overrun) {
             stats.overruns += 1;
@@ -1107,7 +1108,7 @@ fn runWatch(opts: Options) !void {
     event_reader.last_consumed = event_reader.writerSeq();
 
     while (true) {
-        std.Thread.sleep(opts.interval_ms * std.time.ns_per_ms);
+        compat.time.sleep(compat.time.Duration.fromMilliseconds(opts.interval_ms));
 
         // Drain new events.
         const result = try event_reader.drain(&buf);

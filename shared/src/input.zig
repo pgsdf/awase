@@ -70,6 +70,30 @@ fn atomicU64PtrConst(map: []const u8, off: usize) *const u64 {
 /// as needed. Unlike `std.fs.makeDirAbsolute`, this handles the case where
 /// multiple parents are missing (e.g. neither `/var/run/sema` nor
 /// `/var/run/sema/input` exists yet on a fresh boot).
+/// Raw-posix file helpers (ADR shared 0001/0002): this region library maps
+/// shared memory directly via posix.mmap/munmap, so it adapts to the surviving
+/// posix.system primitives rather than taking on std.Io. Mirrors the helpers in
+/// shared/src/clock.zig; path null-termination and the error check live here.
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn fileSize(fd: posix.fd_t) !u64 {
+    const end = posix.system.lseek(fd, 0, posix.SEEK.END);
+    if (end < 0) return error.SeekFailed;
+    return @intCast(end);
+}
+
 fn ensureParents(path: []const u8) !void {
     const dir = std.fs.path.dirname(path) orelse return;
     var i: usize = 0;
@@ -80,10 +104,8 @@ fn ensureParents(path: []const u8) !void {
         // Find end of this component.
         while (i < dir.len and dir[i] != '/') : (i += 1) {}
         const partial = dir[0..i];
-        std.fs.makeDirAbsolute(partial) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
+        var dir_buf = posix.toPosixPath(partial) catch return error.NameTooLong;
+        _ = posix.system.mkdir(&dir_buf, 0o755);
     }
 }
 
@@ -228,20 +250,15 @@ pub const StateWriter = struct {
 
         // Mode 0o600 per ADR 0013; operators relax via daemon's
         // process group and umask, not code.
-        const file = try std.fs.createFileAbsolute(path, .{
-            .truncate = true,
-            .read = true,
-            .mode = 0o600,
-        });
-        errdefer posix.close(file.handle);
+        const raw_fd = try openCreateRdwr(path, 0o600);
+        errdefer _ = posix.system.close(raw_fd);
 
-        try file.setEndPos(STATE_SIZE);
+        if (posix.system.ftruncate(raw_fd, @intCast(STATE_SIZE)) != 0) return error.TruncateFailed;
 
-        const raw_fd = file.handle;
         const map_raw = try posix.mmap(
             null,
             STATE_SIZE,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
@@ -265,7 +282,7 @@ pub const StateWriter = struct {
 
     pub fn deinit(self: StateWriter) void {
         posix.munmap(@alignCast(self.map));
-        posix.close(self.fd);
+        _ = posix.system.close(self.fd);
     }
 
     /// Mark the region live. Call once after enumeration completes.
@@ -425,10 +442,9 @@ pub const StateReader = struct {
     fd: posix.fd_t,
 
     pub fn init(path: []const u8) StateReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1 };
         };
-        const raw_fd = file.handle;
 
         // Defensive: confirm the file is at least STATE_SIZE bytes
         // before mmap-ing. mmap with a length larger than the file
@@ -444,24 +460,24 @@ pub const StateReader = struct {
         // The right behaviour for the reader is: treat "file too short"
         // identically to "file does not exist" — return an empty
         // StateReader so the caller's existing retry path takes over.
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
         if (end_pos < @as(u64, STATE_SIZE)) {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
         const map_raw = posix.mmap(
             null,
             STATE_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
 
@@ -469,7 +485,7 @@ pub const StateReader = struct {
         const magic = std.mem.readInt(u32, map[STATE_OFF_MAGIC..][0..4], .little);
         if (magic != STATE_MAGIC or map[STATE_OFF_VERSION] != STATE_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
@@ -478,7 +494,7 @@ pub const StateReader = struct {
 
     pub fn deinit(self: StateReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) _ = posix.system.close(self.fd);
     }
 
     pub fn isValid(self: StateReader) bool {
@@ -724,20 +740,15 @@ pub const EventRingWriter = struct {
 
         // Mode 0o600 per ADR 0013; operators relax via daemon's
         // process group and umask, not code.
-        const file = try std.fs.createFileAbsolute(path, .{
-            .truncate = true,
-            .read = true,
-            .mode = 0o600,
-        });
-        errdefer posix.close(file.handle);
+        const raw_fd = try openCreateRdwr(path, 0o600);
+        errdefer _ = posix.system.close(raw_fd);
 
-        try file.setEndPos(EVENTS_SIZE);
+        if (posix.system.ftruncate(raw_fd, @intCast(EVENTS_SIZE)) != 0) return error.TruncateFailed;
 
-        const raw_fd = file.handle;
         const map_raw = try posix.mmap(
             null,
             EVENTS_SIZE,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
@@ -763,7 +774,7 @@ pub const EventRingWriter = struct {
 
     pub fn deinit(self: EventRingWriter) void {
         posix.munmap(@alignCast(self.map));
-        posix.close(self.fd);
+        _ = posix.system.close(self.fd);
     }
 
     pub fn markValid(self: EventRingWriter) void {
@@ -822,34 +833,33 @@ pub const EventRingReader = struct {
     last_consumed: u64,
 
     pub fn init(path: []const u8) EventRingReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         };
-        const raw_fd = file.handle;
 
         // Defensive size check before mmap. See StateReader.init for
         // the rationale: an mmap larger than the backing file's size
         // succeeds, but reads past the file's end fault SIGBUS/SIGSEGV.
         // Common during bringup when semainputd has created the file
         // (truncate=true → 0 bytes) but not yet called setEndPos.
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         };
         if (end_pos < @as(u64, EVENTS_SIZE)) {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         }
 
         const map_raw = posix.mmap(
             null,
             EVENTS_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         };
 
@@ -857,7 +867,7 @@ pub const EventRingReader = struct {
         const magic = std.mem.readInt(u32, map[EV_OFF_MAGIC..][0..4], .little);
         if (magic != EVENTS_MAGIC or map[EV_OFF_VERSION] != EVENTS_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         }
 
@@ -866,7 +876,7 @@ pub const EventRingReader = struct {
 
     pub fn deinit(self: EventRingReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) _ = posix.system.close(self.fd);
     }
 
     pub fn isValid(self: EventRingReader) bool {
@@ -1018,20 +1028,15 @@ pub const FocusWriter = struct {
 
         // Mode 0o600 per ADR 0013; operators relax via daemon's
         // process group and umask, not code.
-        const file = try std.fs.createFileAbsolute(path, .{
-            .truncate = true,
-            .read = true,
-            .mode = 0o600,
-        });
-        errdefer posix.close(file.handle);
+        const raw_fd = try openCreateRdwr(path, 0o600);
+        errdefer _ = posix.system.close(raw_fd);
 
-        try file.setEndPos(FOCUS_SIZE);
+        if (posix.system.ftruncate(raw_fd, @intCast(FOCUS_SIZE)) != 0) return error.TruncateFailed;
 
-        const raw_fd = file.handle;
         const map_raw = try posix.mmap(
             null,
             FOCUS_SIZE,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
@@ -1057,7 +1062,7 @@ pub const FocusWriter = struct {
 
     pub fn deinit(self: FocusWriter) void {
         posix.munmap(@alignCast(self.map));
-        posix.close(self.fd);
+        _ = posix.system.close(self.fd);
     }
 
     pub fn markValid(self: FocusWriter) void {
@@ -1115,30 +1120,29 @@ pub const FocusReader = struct {
     fd: posix.fd_t,
 
     pub fn init(path: []const u8) FocusReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1 };
         };
-        const raw_fd = file.handle;
 
         // Defensive size check before mmap. See StateReader.init.
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
         if (end_pos < @as(u64, FOCUS_SIZE)) {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
         const map_raw = posix.mmap(
             null,
             FOCUS_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
 
@@ -1146,7 +1150,7 @@ pub const FocusReader = struct {
         const magic = std.mem.readInt(u32, map[FOCUS_OFF_MAGIC..][0..4], .little);
         if (magic != FOCUS_MAGIC or map[FOCUS_OFF_VERSION] != FOCUS_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
@@ -1155,7 +1159,7 @@ pub const FocusReader = struct {
 
     pub fn deinit(self: FocusReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) _ = posix.system.close(self.fd);
     }
 
     pub fn isValid(self: FocusReader) bool {
@@ -1292,20 +1296,15 @@ pub const SmoothingWriter = struct {
         try ensureParents(path);
 
         // Mode 0o600 per ADR 0013; same rationale as FocusWriter.
-        const file = try std.fs.createFileAbsolute(path, .{
-            .truncate = true,
-            .read = true,
-            .mode = 0o600,
-        });
-        errdefer posix.close(file.handle);
+        const raw_fd = try openCreateRdwr(path, 0o600);
+        errdefer _ = posix.system.close(raw_fd);
 
-        try file.setEndPos(SMOOTHING_SIZE);
+        if (posix.system.ftruncate(raw_fd, @intCast(SMOOTHING_SIZE)) != 0) return error.TruncateFailed;
 
-        const raw_fd = file.handle;
         const map_raw = try posix.mmap(
             null,
             SMOOTHING_SIZE,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
@@ -1329,7 +1328,7 @@ pub const SmoothingWriter = struct {
 
     pub fn deinit(self: SmoothingWriter) void {
         posix.munmap(@alignCast(self.map));
-        posix.close(self.fd);
+        _ = posix.system.close(self.fd);
     }
 
     pub fn markValid(self: SmoothingWriter) void {
@@ -1389,29 +1388,28 @@ pub const SmoothingReader = struct {
     fd: posix.fd_t,
 
     pub fn init(path: []const u8) SmoothingReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1 };
         };
-        const raw_fd = file.handle;
 
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
         if (end_pos < @as(u64, SMOOTHING_SIZE)) {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
         const map_raw = posix.mmap(
             null,
             SMOOTHING_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
 
@@ -1419,7 +1417,7 @@ pub const SmoothingReader = struct {
         const magic = std.mem.readInt(u32, map[SM_OFF_MAGIC..][0..4], .little);
         if (magic != SMOOTHING_MAGIC or map[SM_OFF_VERSION] != SMOOTHING_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            _ = posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
@@ -1428,7 +1426,7 @@ pub const SmoothingReader = struct {
 
     pub fn deinit(self: SmoothingReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) _ = posix.system.close(self.fd);
     }
 
     pub fn isValid(self: SmoothingReader) bool {
