@@ -1,13 +1,13 @@
-# Installing UTF on a fresh FreeBSD system
+# Installing Awase on a fresh FreeBSD system
 
-This document walks through installing UTF on a clean FreeBSD 15
+This document walks through installing Awase on a clean FreeBSD 15
 machine. Each step has a verification check; do not proceed until
 the check passes. The hazards section at the end names the things
 that have actually broken installs in the past.
 
 The high-level shape is: install FreeBSD, mount `/var/run` as
 tmpfs, install build dependencies, optionally build the PGSD
-kernel, build UTF userland, install UTF, load kernel modules
+kernel, build awase userland, install awase, load kernel modules
 manually (not from loader.conf), start daemons.
 
 ## Prerequisites
@@ -45,11 +45,11 @@ mount | grep /var/run
 ```
 
 Expect a line `tmpfs on /var/run (tmpfs, ...)`. If absent, do not
-proceed; UTF will not work correctly on a non-tmpfs `/var/run`.
+proceed; awase will not work correctly on a non-tmpfs `/var/run`.
 
 ## Step 2 — Install build and runtime dependencies
 
-Zig 0.15 or newer for the userland build, plus `gmake`/`rsync` for
+Zig 0.16 or newer for the userland build, plus `gmake`/`rsync` for
 the kernel modules, plus `s6` for the daemon supervision tree
 (introduced in AD-20):
 
@@ -87,14 +87,13 @@ zig version
 which s6-svscan
 ```
 
-`zig version` must report `0.15.x` or newer. If it reports `0.14.x`
-or older, the build will fail with errors about unrecognized syntax.
+`zig version` must report `0.16.x` or newer. Otherwise, the build will fail with errors about unrecognized syntax.
 `which s6-svscan` must print `/usr/local/bin/s6-svscan`. If absent,
 `install.sh` will fail at the dependency check in Step 6.
 
 ## Step 3 — Clone UTF
 
-The canonical location for the UTF source tree on a deployed system
+The canonical location for the awase source tree on a deployed system
 is `/usr/local/src/UTF/`. This aligns with FreeBSD's `hier(7)`
 convention: `/usr/local/src/` is the reserved area for source of
 locally-installed third-party software, parallel to
@@ -116,9 +115,9 @@ runs under `sudo` to deploy the build artifacts to system
 locations. There is no requirement that the source tree itself
 be owned by root.
 
-A developer working on UTF rather than deploying it may prefer
+A developer working on awase rather than deploying it may prefer
 to clone elsewhere (a home directory, a workspace folder). All
-UTF scripts use `SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"` to
+awase scripts use `SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"` to
 resolve paths relative to themselves, so no script has a
 hardcoded source location and any checkout location works
 correctly. The `/usr/local/src/UTF/` recommendation is for
@@ -137,7 +136,7 @@ Expect to see `README.md`, `BACKLOG.md`, `install.sh`, `drawfs/`,
 
 ## Step 3.5 — Configure backend selection
 
-UTF's semadraw compositor has several optional backends — Vulkan,
+Awase's semadraw compositor has several optional backends — Vulkan,
 X11, Wayland, and bsdinput. On a fresh FreeBSD install without
 the supporting ports, attempting to build any of these fails with
 "unable to find dynamic system library" errors. The fix is to
@@ -185,7 +184,7 @@ Expect to see the current configuration printed. If the file
 does not exist, configure.sh tells you so; do not proceed
 until `.config` is written.
 
-## Step 4 — Build UTF userland
+## Step 4 — Build awase userland
 
 The top-level `build.sh` builds every userland Zig subproject:
 `semasound`, `chronofs`, and `semadraw`. The `semainput` subproject
@@ -218,7 +217,7 @@ drawfs and inputfs are FreeBSD kernel modules, built against
 `/usr/src` via per-module helper scripts. The full build sequence
 runs as part of `install.sh` in step 6, so for a normal install
 you can skip this step. To build the modules without installing
-the rest of UTF (for development iteration):
+the rest of awase (for development iteration):
 
 ```
 sudo sh drawfs/build.sh install
