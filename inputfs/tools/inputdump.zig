@@ -18,7 +18,6 @@
 const std = @import("std");
 const compat = @import("compat");
 const input = @import("input");
-const posix_safe = @import("posix_safe");
 
 // ============================================================================
 // Output sink
@@ -36,20 +35,20 @@ fn writeOut(comptime fmt: []const u8, args: anytype) void {
         // message rather than write uninitialized bytes. A truncation
         // marker keeps the failure visible but avoids leaking stack.
         const marker = "<inputdump: output truncated>\n";
-        _ = posix_safe.safeWrite(std.posix.STDOUT_FILENO, marker) catch {};
+        compat.fs.stdout().writeAll(marker) catch {};
         return;
     };
-    _ = posix_safe.safeWrite(std.posix.STDOUT_FILENO, slice) catch {};
+    compat.fs.stdout().writeAll(slice) catch {};
 }
 
 fn writeErr(comptime fmt: []const u8, args: anytype) void {
     var buf: [4096]u8 = undefined;
     const slice = std.fmt.bufPrint(&buf, fmt, args) catch {
         const marker = "<inputdump: error message truncated>\n";
-        _ = posix_safe.safeWrite(std.posix.STDERR_FILENO, marker) catch {};
+        compat.fs.stderr().writeAll(marker) catch {};
         return;
     };
-    _ = posix_safe.safeWrite(std.posix.STDERR_FILENO, slice) catch {};
+    compat.fs.stderr().writeAll(slice) catch {};
 }
 
 // ============================================================================
