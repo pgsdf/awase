@@ -23,3 +23,4 @@ pub const io = @import("compat/io.zig");
 pub const fs = @import("compat/fs.zig");
 pub const sync = @import("compat/sync.zig");
 pub const time = @import("compat/time.zig");
+pub const posix = @import("compat/posix.zig");
