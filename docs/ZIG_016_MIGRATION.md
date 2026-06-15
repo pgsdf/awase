@@ -15,12 +15,22 @@ sdk/zig/current). This notebook records the breaking changes encountered moving
 the source tree from 0.15.2 to 0.16.0, the confirmed before/after for each, and
 the per-component port status.
 
-What began as a mechanical toolchain bump did not stay mechanical. The 0.16 cycle
-reworked precisely the standard-library surfaces Awase leans on, all at once, and
-the recurring shape (a stable local interface over a volatile std surface) became
-ADR shared 0001. The concurrency and timing surface, where the volatile
-replacement would inject an Io dependency rather than only change shape, became
-ADR shared 0002. The migration exposed those boundaries; it did not invent them.
+The toolchain upgrade itself was mechanical. The resulting breakage exposed a
+recurring pattern of standard-library volatility (a stable local interface over a
+volatile std surface), which led to the compatibility-boundary architecture
+captured in ADR shared 0001. The concurrency and timing surface, where the
+volatile replacement would inject an Io dependency rather than only change shape,
+led to ADR shared 0002. The migration exposed those boundaries; it did not invent
+them.
+
+## Milestone: chronofs (reference implementation)
+
+Chronofs is the first complete subproject migrated and benched under the vendored
+Zig 0.16.0 toolchain. It serves as the reference implementation of ADR shared
+0001 and ADR shared 0002. The migration validated the compatibility-boundary
+approach: subsequent failures surfaced only in unconverted standard-library
+surfaces and not within the converted boundary modules themselves. That is
+architectural evidence, not merely project status.
 
 ## Methodology (read this first)
 
@@ -89,6 +99,11 @@ The first full build surfaced four classes (A through D). Clearing them, and the
 carrying chronofs to green, uncovered three more (E, F, G) plus the concurrency
 and timing rework and a set of smaller sub-surfaces, each of which had been
 masked behind an earlier error. The complete picture:
+
+Counts in the classes below are snapshots from the last full inventory pass and
+are used for sizing only. Bench results take precedence over inventory counts;
+treat any number as historical unless it has been re-grepped after the chronofs
+work.
 
 ### Class A: std.heap.GeneralPurposeAllocator removed   [DONE, bench-confirmed]
 
@@ -243,15 +258,31 @@ All confirmed against the vendored stdlib:
 
 ## Component status
 
-    Component        A alloc   B args   C link    E fs/io   F write   G list   concurrency   D sockets
-    shared           n/a       n/a      n/a       done      done      n/a      done          pending (compat.posix)
-    chronofs         done      done     n/a       done      done      n/a      done          n/a
-    inputfs tools    done      done     n/a       pending   pending   n/a      pending       n/a
-    semasound        n/a       done     n/a       pending   pending   n/a      pending       pending
-    semadraw         done      done     already   pending   pending   pending  pending       pending
-    semainput        n/a       done     n/a       pending   pending   n/a      pending       n/a
-    pgsd-sessiond    done      done     done      pending   pending   n/a      pending       n/a
+The authoritative signal is a bench result, not a grep result. States:
 
-"n/a" means the component had no site in that class. "already" means it was
-0.16-correct before this pass. "done" is converted and, for shared and chronofs,
-bench-confirmed green. "pending" awaits its per-subproject pass.
+    State        Meaning
+    Green        Builds and benches successfully under vendored 0.16.0
+    Converted    Migration changes applied but not yet re-benched
+    Pending      Not yet migrated
+    Blocked      Waiting on another class or an architectural decision
+
+Only chronofs has been benched green end to end. shared is benched green
+transitively through chronofs (its compat modules and clock are exercised by the
+chronofs build and tests); its socket boundary (compat.posix) is not yet written.
+Every other subproject carries the applied A, B, and C work as Converted, not
+Green, because it has not been built and benched as a whole under 0.16.0.
+
+    Component        A alloc     B args      C link      E fs/io     F write     G list      concurrency   D sockets
+    shared           n/a         n/a         n/a         Green       Green       n/a         Green         Pending
+    chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
+    inputfs tools    Converted   Converted   n/a         Pending     Pending     n/a         Pending       n/a
+    semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Blocked
+    semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Blocked
+    semainput        n/a         Converted   n/a         Pending     Pending     n/a         Pending       n/a
+    pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       n/a
+
+"n/a" means the component has no site in that class. "Blocked" in the D column
+means the subproject cannot reach green until the compat.posix socket boundary is
+written (the direction is decided; only the implementation, sequenced under these
+subprojects, remains). semadraw C was 0.16-correct before this pass and is marked
+Converted on that basis; it has not been re-benched as a green subproject.
