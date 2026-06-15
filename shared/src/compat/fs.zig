@@ -17,6 +17,11 @@
 
 const std = @import("std");
 
+/// posix_safe (AD-6) owns fd-level read/write over posix.system. The console
+/// streams below reuse it so stdout/stderr writes do not depend on the volatile
+/// std.Io writer path (ADR shared 0001, route A for console output).
+const posix_safe = @import("../posix_safe.zig");
+
 /// Per-file staging buffer for the Io Reader/Writer interface. Writes flush
 /// after each call so the reported position is always exact, which the
 /// encoder's offset bookkeeping depends on; the buffer therefore only batches
@@ -45,11 +50,44 @@ pub const Dir = struct {
         const f = try self.inner.openFile(self.io, sub_path, .{});
         return .{ .inner = f, .io = self.io };
     }
+
+    /// Check that a path exists and is accessible (relative to this Dir, or
+    /// absolute). Errors if it cannot be accessed; used for existence tests.
+    pub fn access(self: Dir, sub_path: []const u8) !void {
+        try self.inner.access(self.io, sub_path, .{});
+    }
 };
 
 /// The current working directory, bound to `io`.
 pub fn cwd(io: std.Io) Dir {
     return .{ .inner = std.Io.Dir.cwd(), .io = io };
+}
+
+/// A console output stream (stdout or stderr). Conceptually a stream, not a
+/// file: it is fd-backed and writes through posix_safe (AD-6), with no std.Io
+/// writer and no Io handle. Obtain via stdout() or stderr().
+pub const Stream = struct {
+    fd: std.posix.fd_t,
+
+    /// Write the whole slice, looping over short writes.
+    pub fn writeAll(self: Stream, bytes: []const u8) !void {
+        var written: usize = 0;
+        while (written < bytes.len) {
+            const n = try posix_safe.safeWrite(self.fd, bytes[written..]);
+            if (n == 0) return error.WriteFailed;
+            written += n;
+        }
+    }
+};
+
+/// The process stdout stream.
+pub fn stdout() Stream {
+    return .{ .fd = std.Io.File.stdout().handle };
+}
+
+/// The process stderr stream.
+pub fn stderr() Stream {
+    return .{ .fd = std.Io.File.stderr().handle };
 }
 
 /// An open file bound to an Io context, used for writing or for reading but not
@@ -105,6 +143,12 @@ pub const File = struct {
     /// Read exactly dest.len bytes; errors if end of file comes first.
     pub fn readExact(self: *File, dest: []u8) !void {
         try self.readerRef().interface.readSliceAll(dest);
+    }
+
+    /// Read the rest of the file into a freshly allocated slice (caller frees),
+    /// up to max_bytes. The File must be opened for reading.
+    pub fn readToEndAlloc(self: *File, gpa: std.mem.Allocator, max_bytes: usize) ![]u8 {
+        return self.readerRef().interface.allocRemaining(gpa, std.Io.Limit.limited(max_bytes));
     }
 
     /// Flush any pending write and close. Deliberately does not finalize the

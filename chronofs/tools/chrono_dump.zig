@@ -34,19 +34,11 @@ const CLOCK_PATH = "/var/run/sema/clock";
 // ============================================================================
 
 fn writeStdout(line: []const u8) void {
-    var file = std.fs.File.stdout();
-    var buf: [4096]u8 = undefined;
-    var w = file.writer(&buf);
-    w.interface.writeAll(line) catch {};
-    w.interface.flush() catch {};
+    compat.fs.stdout().writeAll(line) catch {};
 }
 
 fn writeStderr(line: []const u8) void {
-    var file = std.fs.File.stderr();
-    var buf: [4096]u8 = undefined;
-    var w = file.writer(&buf);
-    w.interface.writeAll(line) catch {};
-    w.interface.flush() catch {};
+    compat.fs.stderr().writeAll(line) catch {};
 }
 
 fn printFmt(comptime fmt: []const u8, args: anytype) void {
@@ -141,13 +133,13 @@ fn ingestLine(streams: *DomainStreams, line: []const u8) void {
 const REPORT_INTERVAL_MS: u64 = 200;
 const FOLLOW_INTERVAL_MS: u64 = 1000;
 
-fn fileExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+fn fileExists(io: std.Io, path: []const u8) bool {
+    compat.fs.cwd(io).access(path) catch return false;
     return true;
 }
 
-fn runReport() void {
-    const present = fileExists(CLOCK_PATH);
+fn runReport(io: std.Io) void {
+    const present = fileExists(io, CLOCK_PATH);
     printFmt("clock: {s}\n", .{CLOCK_PATH});
 
     if (!present) {
@@ -186,10 +178,10 @@ fn runReport() void {
     }
 }
 
-fn runFollow() void {
+fn runFollow(io: std.Io) void {
     var last: ?u64 = null;
     while (true) {
-        if (!fileExists(CLOCK_PATH)) {
+        if (!fileExists(io, CLOCK_PATH)) {
             writeStdout("clock absent\n");
             last = null;
         } else {
@@ -224,10 +216,10 @@ fn runFollow() void {
 // since their ingestion arms are removed, Decision 3.)
 // ============================================================================
 
-fn runReplay(args: Args, allocator: std.mem.Allocator) !void {
+fn runReplay(args: Args, allocator: std.mem.Allocator, io: std.Io) !void {
     const path = args.replay_path orelse return error.MissingReplayPath;
 
-    const file = try std.fs.cwd().openFile(path, .{});
+    var file = try compat.fs.cwd(io).openFile(path);
     defer file.close();
     const content = try file.readToEndAlloc(allocator, 64 * 1024 * 1024);
     defer allocator.free(content);
@@ -313,6 +305,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    var io_ctx = try compat.io.open(allocator);
+    defer io_ctx.deinit();
+    const io = io_ctx.io();
+
     const argv_owned = try compat.args.alloc(allocator, init.args);
     defer argv_owned.deinit(allocator);
     const argv = argv_owned.argv;
@@ -323,8 +319,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
 
     switch (args.mode) {
-        .report => runReport(),
-        .follow => runFollow(),
-        .replay => try runReplay(args, allocator),
+        .report => runReport(io),
+        .follow => runFollow(io),
+        .replay => try runReplay(args, allocator, io),
     }
 }
