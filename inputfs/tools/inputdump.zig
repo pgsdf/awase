@@ -723,7 +723,7 @@ const EventStats = struct {
         writeOut("total events:  {d}\n", .{self.total});
         writeOut("ring overruns: {d}\n", .{self.overruns});
 
-        const now_ns = std.time.nanoTimestamp();
+        const now_ns = compat.time.nowMonotonic();
         const elapsed_ns_signed = now_ns - self.started_at_ns;
         const elapsed_ns: u64 = if (elapsed_ns_signed < 0) 0 else @intCast(elapsed_ns_signed);
         const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
@@ -775,7 +775,7 @@ fn runEvents(opts: Options) !void {
     }
 
     var stats: EventStats = .{};
-    stats.started_at_ns = std.time.nanoTimestamp();
+    stats.started_at_ns = compat.time.nowMonotonic();
     var stats_last_print_ns: i128 = stats.started_at_ns;
 
     var buf: [256]input.Event = undefined;
@@ -827,7 +827,7 @@ fn runEvents(opts: Options) !void {
 
         // Periodic stats with --stats --watch.
         if (opts.stats and !opts.json) {
-            const now_ns = std.time.nanoTimestamp();
+            const now_ns = compat.time.nowMonotonic();
             const since_print = now_ns - stats_last_print_ns;
             if (since_print >= 5 * std.time.ns_per_s) {
                 stats.print();

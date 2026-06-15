@@ -14,6 +14,7 @@
 //! call sites express an amount of time rather than a bare nanosecond count.
 
 const std = @import("std");
+const posix = std.posix;
 const posix_safe = @import("../posix_safe.zig");
 
 /// A length of time. Stored internally as nanoseconds; construct through the
@@ -42,4 +43,27 @@ pub const Duration = struct {
 /// across signal interruptions so the full duration elapses.
 pub fn sleep(duration: Duration) void {
     posix_safe.safeSleep(duration.nanoseconds);
+}
+
+/// A monotonic instant, in nanoseconds since an unspecified epoch.
+///
+/// Semantics, deliberately narrow to prevent misuse:
+///   - Monotonic: the value never moves backward and is unaffected by wall
+///     clock adjustments (NTP steps, manual clock changes, leap seconds).
+///   - Unspecified epoch: the zero point is arbitrary (typically system boot).
+///     Only differences between two values from this function are meaningful.
+///   - For elapsed-time measurement only. Subtract an earlier reading from a
+///     later one to obtain a nanosecond interval.
+///   - NOT a wall clock: it does not represent calendar or Unix time and must
+///     not be formatted or displayed as a date or time of day.
+///   - NOT portable across processes or boots: it must not be persisted to a
+///     file, exchanged over a socket, or compared against a value from another
+///     process. Use the shared clock-file format for any cross-process time.
+///
+/// Independent of std.Io. Backed by clock_gettime(MONOTONIC) over the same
+/// posix.system surface this module already owns for sleep (ADR shared 0002).
+pub fn nowMonotonic() i128 {
+    var ts: posix.timespec = undefined;
+    _ = posix.system.clock_gettime(posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
 }

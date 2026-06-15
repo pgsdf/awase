@@ -94,8 +94,10 @@ boundary. Two thin, single-purpose interfaces are introduced:
 - `compat.sync`: owns in-process mutual exclusion. It provides a `Mutex` with
   `lock`, `unlock`, and `tryLock`, default-initializable, with no `Io` parameter.
   A `Condition` is added only if and when a call site requires it.
-- `compat.time`: owns blocking timing. It provides `sleep` over a duration, with
-  no `Io` parameter.
+- `compat.time`: owns blocking timing and monotonic elapsed-time measurement. It
+  provides `sleep` over a duration, and `nowMonotonic` for reading a monotonic
+  instant suitable only for measuring elapsed intervals (not wall-clock display
+  and not for persistence or exchange). Neither takes an `Io` parameter.
 
 Callers depend on these interfaces. They do not reference `std.Io.Mutex`,
 `std.Io.sleep`, or the removed `std.Thread` equivalents.
@@ -216,3 +218,22 @@ Closure criteria:
    `compat.sync` and `compat.time` in a real subproject. `shared/src/clock.zig`
    then converts under the same boundary, after which audiofs consumes it, so the
    concurrency surface is solved once rather than per subsystem.
+
+## Clarifications
+
+### 2026-06-15: monotonic now is a timing primitive the boundary owns
+
+The inputfs migration found inputdump reading wall-clock nanoseconds through the
+removed `std.time.nanoTimestamp`, used only to measure elapsed intervals in its
+watch-loop stats. The correct replacement is a monotonic clock source, and under
+this ADR such a timing primitive belongs behind the boundary rather than in the
+tool: if a call site may call `compat.time.sleep`, it may not reach into
+`posix.system` for the companion clock read.
+
+`compat.time` therefore gains `nowMonotonic`, backed by
+`clock_gettime(CLOCK_MONOTONIC)` over the same `posix.system` surface `safeSleep`
+already uses. This is an application of Decision 2 (the boundary owns timing
+primitives), not a new decision. The interface is documented narrowly: monotonic,
+unspecified epoch, elapsed-time measurement only, not a wall clock, and not to be
+persisted or exchanged. Wall-clock or cross-process time remains the domain of the
+shared clock-file format, not this primitive.
