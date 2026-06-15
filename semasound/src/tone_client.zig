@@ -191,11 +191,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     // a sustained producer/consumer mismatch (the real layer-2 stress). When
     // not drift-testing, stay purely blocking-paced (fast drain) as before.
     const paced = (drift_ppm != 0.0);
-    const start_ns: i128 = std.time.nanoTimestamp();
+    const start_ns: i128 = compat.time.nowMonotonic();
     while (frames_done < total_frames) {
         if (gap_ms > 0 and !gapped and frames_done >= gap_at) {
             std.debug.print("semasound-tone: stalling {d} ms mid-stream (socket stays open)\n", .{gap_ms});
-            std.Thread.sleep(gap_ms * std.time.ns_per_ms);
+            compat.time.sleep(compat.time.Duration.fromMilliseconds(@intCast(gap_ms)));
             gapped = true;
         }
         var n: usize = 0;
@@ -233,9 +233,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
             const target_ns: i128 = start_ns +
                 @as(i128, @intFromFloat(@as(f64, @floatFromInt(frames_done)) /
                     eff_rate * 1e9));
-            const now_ns: i128 = std.time.nanoTimestamp();
+            const now_ns: i128 = compat.time.nowMonotonic();
             if (target_ns > now_ns) {
-                std.Thread.sleep(@intCast(target_ns - now_ns));
+                compat.time.sleep(compat.time.Duration.fromNanoseconds(@intCast(target_ns - now_ns)));
             }
         }
     }
