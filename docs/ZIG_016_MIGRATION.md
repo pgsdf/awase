@@ -1,103 +1,127 @@
 # Zig 0.15.2 to 0.16.0 Migration
 
-Status: in progress
-Type: working notebook (not an ADR; this is a mechanical toolchain migration)
+Status: in progress. chronofs is green under the vendored 0.16.0 toolchain (exe
+and full test suite), the first subproject carried all the way through, and the
+reference implementation for the boundary architecture below.
+Type: working notebook. It records per-class breaking-change detail and
+per-component port status under the architecture the migration surfaced
+(ADR shared 0001 and ADR shared 0002); it is not itself an architectural
+decision record.
 
 ## Purpose
 
 Awase pins a project-local Zig 0.16.0 toolchain (tools/bootstrap.sh, tools/zig,
-sdk/zig/current). This notebook records the breaking changes encountered when moving the
-source tree from 0.15.2 to 0.16.0, the confirmed before/after for each, and the per-component
-port status.
+sdk/zig/current). This notebook records the breaking changes encountered moving
+the source tree from 0.15.2 to 0.16.0, the confirmed before/after for each, and
+the per-component port status.
 
-It is a notebook, not an architectural decision record: the language upgrade itself was
-ratified separately and most changes are mechanical. The one exception is the std.posix
-socket-layer removal (class D below), which is a real porting effort with a strategy choice
-and may warrant its own ADR.
+What began as a mechanical toolchain bump did not stay mechanical. The 0.16 cycle
+reworked precisely the standard-library surfaces Awase leans on, all at once, and
+the recurring shape (a stable local interface over a volatile std surface) became
+ADR shared 0001. The concurrency and timing surface, where the volatile
+replacement would inject an Io dependency rather than only change shape, became
+ADR shared 0002. The migration exposed those boundaries; it did not invent them.
 
 ## Methodology (read this first)
 
-Lesson learned, the hard way, twice:
+Lesson learned, the hard way, more than twice:
 
     Do not infer Zig 0.16 APIs from Awase source code.
     Do not infer Zig 0.16 APIs from Zig master or from web migration notes.
-    The vendored stdlib (sdk/zig/current/lib/std) is the authoritative specification.
+    The vendored stdlib (sdk/zig/current/lib/std) is the authoritative
+    specification.
 
-The 0.16 cycle reworked exactly the areas this migration touches: process startup, I/O, the
-Reader/Writer interface, std.posix, and the main entrypoint. Two failure modes bit us:
+Surviving 0.15 code is not evidence of a 0.16 API (it is often 0.15 code whose
+error was masked earlier in the same compilation unit), and online examples are
+polluted by master snapshots and intermediate-snapshot posts. The workflow that
+produced every correct fix in this migration, validated end to end by chronofs:
 
-1. argsAlloc looked valid because the tree used it. It did not survive 0.16; the call was
-   0.15.2 code whose error was masked by the GeneralPurposeAllocator error earlier in the
-   same compilation unit (the compiler stops at the first error per unit).
-2. Socket APIs looked predictable because older std.posix exposed them. Most were removed.
+1. Build against the authoritative vendored toolchain.
+2. Observe the actual failure (do not predict it).
+3. Read the vendored stdlib for the real 0.16 shape.
+4. Adjust the Awase-owned boundary, not the call sites scattered across the tree.
+5. Repeat. Each cleared error tends to uncover the next, because the compiler
+   stops at the first error per compilation unit.
 
-Surviving 0.15 code is not evidence of a 0.16 API, and online examples are polluted by master
-snapshots and intermediate-snapshot blog posts. Before converting any std call, confirm its
-0.16 shape by reading the vendored stdlib directly. Treat each newly exposed error class as
-discovery work first, then migration.
+chronofs validated this directly: after its first successful build, every
+subsequent failure surfaced in an untouched std surface (a deeper file, a test
+path, a transitive module), never inside a boundary abstraction that had already
+been converted. That is the behaviour a working compatibility boundary should
+produce, and the strongest evidence the architecture holds.
 
 ## Toolchain (landed)
 
-- Vendored compiler: sdk/zig/current/zig (0.16.0, x86_64-freebsd), out of git, fetched by
-  tools/bootstrap.sh, invoked via tools/zig. See commit 164060e.
-- Root build.zig: a comptime guard rejects any compiler whose minor != 16, and routes all
-  sub-build invocations through b.graph.zig_exe so no sub-build escapes to a system Zig.
+- Vendored compiler: sdk/zig/current/zig (0.16.0, x86_64-freebsd), out of git,
+  fetched by tools/bootstrap.sh, invoked via tools/zig. See commit 164060e.
+- Root build.zig: a comptime guard rejects any compiler whose minor != 16, and
+  routes all sub-build invocations through b.graph.zig_exe so no sub-build
+  escapes to a system Zig.
+- install.sh build_sub uses the vendored ./tools/zig, not a PATH-resolved zig.
+  The dependency check reports the vendored toolchain rather than requiring a
+  system zig. (The original symptom, "process has no member named Init", was
+  install.sh building with the system zig that lacks the 0.16 process API.)
 - Rule: no build step invokes bare `zig`; everything flows through ./tools/zig or
-  b.graph.zig_exe. Never `sudo ./tools/zig build` (it poisons ~/.cache/zig ownership).
+  b.graph.zig_exe. Never `sudo ./tools/zig build` (it poisons ~/.cache/zig
+  ownership).
 
-## Authoritative error inventory (0.16.0, post-routing)
+## The compatibility boundary (where the volatility is absorbed)
 
-The first full build under the vendored 0.16.0 surfaced four breaking-change classes.
-Classes A and C are mechanical and now bench-confirmed (they no longer appear in the build).
-Class B was reopened: clearing A uncovered that the tree-wide argsAlloc usage is also removed
-in 0.16, so the original "convert two sites" framing was wrong. Class D is the substantive
-migration and is still only partially visible: each compilation unit stops at its first
-error, so the full posix/io surface appears only after A, B, C clear.
+Awase code depends on Awase-owned interfaces; those depend on the volatile std
+surfaces; never the reverse (ADR shared 0001). The modules that now own each
+surface, all under shared/src/, aggregated by shared/src/compat.zig:
+
+    compat.args    process arguments (Init.Minimal entrypoint, owned argv)
+    compat.io      construction and lifetime of a local blocking std.Io context
+    compat.fs      filesystem interaction, plus stdout/stderr console streams
+    compat.sync    Mutex (atomic-backed, no Io handle)              [ADR 0002]
+    compat.time    Duration and sleep (posix-backed, no Io handle)  [ADR 0002]
+    posix_safe     raw posix read/write/sleep syscall surface       [AD-6]
+
+shared/src/clock.zig is intentionally not behind compat.fs: it is a raw
+descriptor and mmap subsystem (it owns posix.mmap/munmap directly), so it adapts
+to the surviving posix.system primitives rather than taking on std.Io and an Io
+handle. ClockReader.init and ClockWriter.init keep their signatures, so audiofs
+and the other consumers are unaffected (ADR shared 0001/0002, posix route).
+
+## Authoritative error inventory (0.16.0)
+
+The first full build surfaced four classes (A through D). Clearing them, and then
+carrying chronofs to green, uncovered three more (E, F, G) plus the concurrency
+and timing rework and a set of smaller sub-surfaces, each of which had been
+masked behind an earlier error. The complete picture:
 
 ### Class A: std.heap.GeneralPurposeAllocator removed   [DONE, bench-confirmed]
 
-GeneralPurposeAllocator was renamed to DebugAllocator in 0.14 (kept as a deprecated alias),
-and the alias was removed in 0.16. The API is identical; the variable name `gpa` is
-conventional and kept.
+GeneralPurposeAllocator was renamed to DebugAllocator in 0.14 (kept as a
+deprecated alias), and the alias was removed in 0.16. The API is identical; the
+variable name `gpa` is conventional and kept.
 
     Before: var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     After:  var gpa = std.heap.DebugAllocator(.{}){};
 
-deinit() and allocator() are unchanged. Sites: 37 files across chronofs, inputfs, semadraw
-(tools, apps, daemon), and pgsd-sessiond. Applied as a tree-wide identifier rename.
+Applied as a tree-wide identifier rename.
 
-### Class B: std.process argument API removed   [REOPENED, pending stdlib read]
+### Class B: std.process argument API removed   [DONE]
 
-Both std.process.args() and std.process.argsAlloc()/argsFree() are rejected by the vendored
-0.16.0 ("struct 'process' has no member named 'argsAlloc'"). The original framing (convert
-two semasound sites from args() to the dominant argsAlloc form) was wrong on two counts: the
-tree's 36 argsAlloc sites were 0.15.2 code masked by the GeneralPurposeAllocator error, not
-0.16-correct code; and converting the two semasound tools to argsAlloc moved them toward a
-removed function. The two semasound conversions in the mechanical-pass commit are therefore
-known-bad and must be redone.
+argsAlloc/argsFree/argsWithAllocator are all removed in 0.16. The confirmed
+replacement is the "juicy main" model (case 3 of the original three): start.zig
+dispatches arguments to a tool whose entrypoint is
 
-Full surface: 36 files use argsAlloc/argsFree, 2 use argsWithAllocator (idle_probe,
-gesture_inspect), 38 total.
+    pub fn main(init: std.process.Init.Minimal) !void
 
-The 0.16 replacement is unconfirmed and must be read from sdk/zig/current/lib/std/process.zig
-and start.zig before any conversion. Three materially different cases:
-
-1. argsWithAllocator (or equivalent iterator) survives. Migration is mechanical: 36 sites
-   move to the iterator form, the 2 existing argsWithAllocator sites are already correct.
-2. Only ArgIterator.initWithAllocator() survives. Still mechanical, different call shape.
-3. Arguments arrive through startup plumbing (the 0.16 "juicy main" model,
-   pub fn main(init: std.process.Init, args: ...) !void). This is a structural migration of
-   every tool's main signature, not a search and replace.
-
-No conversion until the case is known.
+and the tool acquires its argv slice through the boundary,
+`compat.args.alloc(gpa, init.args)`, rather than from a removed std function.
+compat.args owns argv collection and exposes a random-access slice and a forward
+iterator. 38 sites converted (36 argsAlloc/argsFree, 2 argsWithAllocator); the
+two known-bad semasound mechanical-pass conversions were redone in this form.
+The entrypoint stays Init.Minimal (not the full std.process.Init) so startup
+infrastructure is not threaded through application code (ADR 0001, Decision 2,
+Option B).
 
 ### Class C: Compile-step linking methods moved to the module   [DONE, bench-confirmed]
 
-In 0.16, linkSystemLibrary and libc linkage live on the Module, not the Compile step.
-addExecutable / addTest already used the 0.16 `.root_module = b.createModule(...)` form, so
-only the post-creation linking calls needed routing. semadraw/build.zig was already correct
-(mod.link_libc / mod.linkSystemLibrary(name, .{})); only pgsd-sessiond/build.zig used the
-old Compile-step form.
+In 0.16, linkSystemLibrary and libc linkage live on the Module, not the Compile
+step.
 
     Before: exe.linkSystemLibrary("pam");
     After:  exe.root_module.linkSystemLibrary("pam", .{});
@@ -105,67 +129,129 @@ old Compile-step form.
     Before: exe.linkLibC();
     After:  exe.root_module.link_libc = true;
 
-Sites: pgsd-sessiond/build.zig, 5 linkSystemLibrary plus 8 linkLibC, 13 conversions total.
+Sites: pgsd-sessiond/build.zig (13 conversions). semadraw/build.zig was already
+0.16-correct.
 
-### Class D: std.posix medium-level layer removed   [PENDING, strategy decision needed]
+### Class D: std.posix socket layer removed   [DIRECTION DECIDED, implementation pending]
 
-This is the real migration. The 0.16 release notes state that most std.posix and
-std.os.windows functions sat at an awkward medium-level abstraction and were removed.
-Confirmed-removed functions that Awase uses include posix.socket, posix.bind, posix.listen,
-posix.accept, posix.shutdown (with writev/pipe2/getrandom removed elsewhere). Lower-level
-calls (read, write, close, connect) may survive; the authoritative list for this exact build
-is sdk/zig/current/lib/std/posix.zig on the bench and must be read directly rather than
-assumed.
+The medium-level std.posix socket functions (socket, bind, listen, accept,
+connect, shutdown, recv, sendmsg/recvmsg, socketpair) are removed; setsockopt and
+poll survive, and the types survive (fd_t, socket_t, sockaddr, msghdr, iovec,
+pollfd). cmsghdr is not top-level and is reached through posix.system for
+SCM_RIGHTS in shm.zig.
 
-Tree-wide exposure, occurrence counts taken before clearing A/B/C:
+Tree-wide exposure (counts taken before clearing A/B/C): posix.socket 34,
+posix.connect 4, posix.listen 3, posix.bind 3, posix.accept 3, posix.shutdown 1,
+posix.recv 1. Files: semadraw (client/connection, remote_connection, ipc/shm,
+ipc/socket_server, ipc/tcp_server), semasound (main, tone_client).
 
-    posix.socket 34, posix.connect 4, posix.listen 3, posix.bind 3, posix.accept 3,
-    posix.shutdown 1, posix.recv 1.
+Direction, now decided (it was the open question in the prior revision): an
+Awase-owned socket shim, compat.posix, over the raw posix.system.* surface,
+consistent with the boundary discipline and AD-6 (option 3). This is the
+principal remaining closure criterion of ADR 0001 (criterion 3: socket boundary
+implemented and all current socket consumers migrated). chronofs has no sockets,
+so implementation waits for the socket-bearing subprojects (semadraw, semasound);
+shm.zig SCM_RIGHTS is the hardest site.
 
-Only two posix.socket sites appear in the current build log because each compilation unit
-stops at its first error. The full surface (every socket and IPC path in semasound,
-semadrawd, chronofs) will appear on the next bench once A/B/C land.
+### Class E: filesystem and I/O relocated under std.Io   [DONE for shared and chronofs; dominant surface]
 
-Replacement directions (decision required before touching socket code):
+The 0.16 "Writergate" rework removed std.fs.cwd/File/Dir and routed filesystem
+and stream I/O through a std.Io handle. ~51 files tree-wide. Absorbed by two
+boundary modules: compat.io owns construction of a local blocking std.Io
+(std.Io.Threaded) from the tool's own allocator, and compat.fs owns the
+filesystem verbs (createFile, openFile, writeAll, read, readToEndAlloc, getPos,
+seekTo, close, Dir.access) plus stdout/stderr console streams. Console output
+routes through posix_safe rather than the std.Io writer path, so the simplest
+operation does not depend on the most volatile subsystem (ADR 0001, route A).
+chrono_dump and shared/clock are converted; the remaining files convert per
+subproject.
 
-1. Raw syscalls via std.posix.system.* (the FreeBSD thin layer) or std.os.<platform>.
-   Keeps Awase at the syscall level it already targets. Verbose errno handling, no io
-   threading. Most consistent with the project's low-level, FreeBSD-native posture.
-2. The new std.Io / std.Io.net interface (Stream, Server, UnixAddress) threaded as an
-   `io: std.Io` parameter through call sites. Higher-level, but a larger architectural
-   change and a new dependency on the still-evolving Io abstraction.
-3. An Awase-owned thin socket shim wrapping option 1, consistent with the
-   depend-only-on-owned-code discipline: one place to absorb future std.posix churn.
+### Class F: std.posix.write removed   [DONE via posix_safe]
 
-Recommendation pending. This choice is architectural and may deserve its own ADR rather
-than living only in this notebook.
+posix.write is removed (posix.read survives). Routed through posix_safe (AD-6),
+which already shimmed safeRead/safeWrite over posix.system and now also backs
+console output and sleep. No new module.
+
+### Class G: std.ArrayList initialization change   [in-place idiom fix]
+
+std.ArrayList is unmanaged in 0.16: `std.ArrayList(T){}` becomes `.empty`, and
+deinit/append take an allocator. An in-place idiom correction, not a boundary
+concern. Known sites: semadraw encoder.zig, sdcs_replay.zig.
+
+### Concurrency and timing: std.Thread synchronization removed   [DONE for chronofs; ADR shared 0002]
+
+std.Thread.Mutex, std.Thread.sleep, and std.Thread.Condition are removed; their
+replacements (std.Io.Mutex, std.Io.sleep) take an Io handle. Awase does not
+accept std.Io as the ownership model for synchronization and timing (a mutex is
+not I/O), so these are owned by compat.sync (atomic-backed Mutex) and compat.time
+(Duration plus sleep over posix nanosleep), both Io-free (ADR shared 0002).
+std.Thread.spawn and join survive unchanged and are used directly; thread
+lifecycle is not part of the boundary. Surface: Mutex 4 files, sleep 14 files,
+Condition 0 (the one apparent match is a comment in semasound/src/ring.zig).
+chronofs (stream.zig ring lock, chrono_dump and stream poll loops) is converted.
+
+## Sub-surfaces discovered during chronofs (record so they are not rediscovered)
+
+Smaller 0.16 changes that each surfaced only after a higher-level error cleared.
+All confirmed against the vendored stdlib:
+
+- std.fs.*Absolute removed: openFileAbsolute, createFileAbsolute,
+  makeDirAbsolute. Use posix.system.open / posix.system.mkdir (clock.zig) or
+  compat.fs.
+- std.posix fd wrappers removed: open, close, ftruncate, fstat, mkdir, lseek all
+  dropped from std.posix; only posix.system.* survives. posix.mmap and
+  posix.munmap survive as wrappers (memory ops, not fd I/O), so clock.zig keeps
+  them unchanged.
+- Variadic open: posix.system.open is C-variadic, so a comptime_int mode literal
+  is rejected ("must be casted to a fixed-size number type"). Pass
+  @as(posix.mode_t, 0). A typed mode parameter passes fine.
+- PROT is a packed struct(u32) of bool fields in 0.16, not a namespace of
+  constants. Use struct literals: mmap prot is .{ .READ = true } or
+  .{ .READ = true, .WRITE = true }, not posix.PROT.READ. MAP flags
+  (.{ .TYPE = .SHARED }) were already in this form. SEEK remains a constants
+  namespace (posix.SEEK.END).
+- Dir.realpath became realPath(io, out_buffer) !usize: it takes an Io handle,
+  resolves the dir itself (no sub_path), and returns the path length. In tests,
+  build a local std.Io.Threaded for the handle and slice the buffer by the
+  returned length.
+- std.fs.max_path_bytes survives (re-export of std.Io.Dir.max_path_bytes), and
+  std.fs.path.dirname survives (a string utility, not I/O). Both used unchanged.
+- The two-clock.zig hazard: shared/src/clock.zig (defines ClockReader and
+  ClockWriter) and chronofs/src/clock.zig (the Clock/MockClock wrapper that
+  consumes them) are distinct and not interchangeable. They were once crossed
+  during file application, which is why deliveries name them distinctly.
 
 ## Execution plan
 
 1. Vendor toolchain, version guard, sub-build routing.                  [DONE]
 2. Authoritative build and error inventory.                            [DONE]
-3. Mechanical pass classes A and C.                                    [DONE, bench-confirmed]
-4. Discovery: read the vendored stdlib for the class-B args API and the class-D posix
-   survivors (process.zig, start.zig, posix.zig) before any further conversion.
-5. Redo class B tree-wide (38 sites) in the confirmed 0.16 shape, then bench.
-6. Decide the class-D direction (raw syscalls, std.Io, or owned shim) from the posix.zig read.
-7. Per-component posix/io port in dependency order, each benched:
-   shared → chronofs → semasound / semadraw / semainput → pgsd-sessiond.
-8. Aggregate verification: full ./tools/zig build green plus subsystem benches.
+3. Classes A, B, C.                                                     [DONE]
+4. Compatibility-boundary architecture (ADR 0001) and the concurrency
+   and timing boundary (ADR 0002).                                     [DONE, ratified]
+5. Prove the boundary end to end on the smallest socket-free subproject:
+   chronofs (compat.args, io, fs, sync, time, plus shared/clock).      [DONE, green]
+6. Reconcile this notebook to the proven state.                        [this revision]
+7. audiofs consumes the already-converted shared/clock (F.4 clock writer).
+8. Per-subproject port in dependency order, each benched green before the next:
+   shared [done] -> chronofs [done] -> audiofs -> semadraw -> semasound ->
+   semainput -> pgsd-sessiond. semadraw is the largest remaining surface
+   (Class D sockets, the encoder seek and backfill path, sdcs.zig validation,
+   Class E breadth, Class G).
+9. Implement the Class D socket boundary (compat.posix over posix.system.*) under
+   the socket-bearing subprojects, closing ADR 0001 criterion 3.
+10. Aggregate verification: full ./tools/zig build green plus subsystem benches.
 
 ## Component status
 
-    Component        A alloc   B args        C link    D posix/io
-    shared           n/a       n/a           n/a       pending survey
-    chronofs         done      reopened      n/a       pending
-    inputfs tools    done      reopened      n/a       pending
-    semasound        n/a       reopened/bad  n/a       pending (socket/bind/listen/accept)
-    semadraw         done      reopened      already   pending
-    semainput        n/a       n/a           n/a       pending survey
-    pgsd-sessiond    done      reopened      done      pending
+    Component        A alloc   B args   C link    E fs/io   F write   G list   concurrency   D sockets
+    shared           n/a       n/a      n/a       done      done      n/a      done          pending (compat.posix)
+    chronofs         done      done     n/a       done      done      n/a      done          n/a
+    inputfs tools    done      done     n/a       pending   pending   n/a      pending       n/a
+    semasound        n/a       done     n/a       pending   pending   n/a      pending       pending
+    semadraw         done      done     already   pending   pending   pending  pending       pending
+    semainput        n/a       done     n/a       pending   pending   n/a      pending       n/a
+    pgsd-sessiond    done      done     done      pending   pending   n/a      pending       n/a
 
-"n/a" means the component had no site in that class. "already" means it was 0.16-correct
-before this pass. "reopened" means the class-B args calls there are removed in 0.16 and await
-the confirmed replacement; "bad" means the mechanical-pass commit shipped a known-wrong
-conversion there (semasound) that must be redone. Class D status is provisional until the
-post-mechanical bench reveals the full surface.
+"n/a" means the component had no site in that class. "already" means it was
+0.16-correct before this pass. "done" is converted and, for shared and chronofs,
+bench-confirmed green. "pending" awaits its per-subproject pass.
