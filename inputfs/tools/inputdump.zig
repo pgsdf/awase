@@ -234,7 +234,7 @@ fn parseSubcommand(s: []const u8) ?Subcommand {
     return null;
 }
 
-fn parseArgs(args: [][:0]u8) Options {
+fn parseArgs(args: []const [:0]const u8) Options {
     if (args.len < 2) {
         writeErr("{s}", .{usage_top});
         std.process.exit(2);
@@ -346,7 +346,7 @@ fn parseArgs(args: [][:0]u8) Options {
     return opts;
 }
 
-fn expectArg(args: [][:0]u8, i: usize, flag: []const u8) usize {
+fn expectArg(args: []const [:0]const u8, i: usize, flag: []const u8) usize {
     if (i + 1 >= args.len) {
         writeErr("inputdump: {s} requires a value\n", .{flag});
         std.process.exit(2);
