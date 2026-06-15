@@ -59,6 +59,52 @@ path, a transitive module), never inside a boundary abstraction that had already
 been converted. That is the behaviour a working compatibility boundary should
 produce, and the strongest evidence the architecture holds.
 
+### Survey completeness: enumerate the removed family, not the symbol in focus
+
+semasound re-taught this three times in one subproject. A hand-maintained
+removed-surface inventory missed symbols that were not part of the original
+migration classes, and each surfaced only after a deeper blocker cleared:
+
+- std.time.milliTimestamp, removed alongside nanoTimestamp; the survey grepped
+  only nanoTimestamp. Route: compat.time.nowMonotonic divided to milliseconds.
+- std.posix.getenv, removed and not a named class. Route: compat.args.getenv
+  (ADR 0001 amendment, process-input ownership).
+- std.mem.trimRight, renamed to std.mem.trimEnd; not a posix/Thread/fs symbol
+  at all.
+
+The discipline: a removed-surface survey must enumerate the whole family a
+symbol belongs to (every *Timestamp, the whole trim/split/tokenize rename set,
+all environment access), checked against the vendored stdlib, not the one member
+that happened to fall inside the migration's named classes. A file carrying only
+an un-surveyed symbol shows zero hits under a too-narrow grep and is skipped
+silently until the bench exposes it: estimator.zig and predictor.zig carried
+only getenv and were not in the converted set until the bench named them.
+
+### Shadowed breaks are not always removed surface; some are signature changes
+
+Once a boundary compiles through, the compiler advances into deeper analysis and
+can expose a pre-existing 0.16 incompatibility the earlier error hid. The
+FreeBSD Sigaction handler is the clean example: handler_fn changed from
+fn (c_int) to fn (posix.SIG) callconv(.c) void in 0.16. semasound's handleSignal
+was fn (c_int); it compiled under 0.15 and sat shadowed behind the socket
+errors, surfacing only after the socket boundary compiled. Not introduced by the
+migration and not a removed symbol: a silent signature change, caught only by
+the bench.
+
+### Conversion mistakes are a separate failure category from churn
+
+Adapting a removed wrapper to its raw form can introduce errors the compiler
+reports one at a time per compilation unit. semasound converted five
+posix.close(conn) (void) to posix.system.close(conn) (returns c_int) and dropped
+the return on all five; the compiler reported only the first. Standing guard, run
+per file before benching:
+
+    grep -rnE 'posix\.system\.(close|unlink|rename|mkdir|shutdown|bind|listen)' src/*.zig \
+      | grep -vE '_ = posix\.system|defer _ = posix\.system|if \(posix\.system|= posix\.system|< 0'
+
+Anything printed is a status-returning raw call whose result is not discarded,
+bound, or tested.
+
 ## Toolchain (landed)
 
 - Vendored compiler: sdk/zig/current/zig (0.16.0, x86_64-freebsd), out of git,
@@ -147,7 +193,7 @@ step.
 Sites: pgsd-sessiond/build.zig (13 conversions). semadraw/build.zig was already
 0.16-correct.
 
-### Class D: std.posix socket layer removed   [ADR 0003 RATIFIED, implementation pending]
+### Class D: std.posix socket layer removed   [compat.posix LANDED green; semasound migrated; semadraw pending]
 
 The medium-level std.posix socket functions (socket, bind, listen, accept,
 connect, shutdown, recv, sendmsg/recvmsg, socketpair) are removed; setsockopt and
@@ -180,6 +226,20 @@ remaining closure criterion of ADR 0001 (criterion 3). chronofs and all of share
 have no sockets, so implementation begins with compat.posix itself, then proves
 on the smallest consumer (semasound tone_client) before the rest; shm.zig
 SCM_RIGHTS is the last and most careful site.
+
+Status 2026-06-15: compat.posix is implemented and benched green (its own
+surface test plus a socketpair round-trip), closing ADR 0001 criterion 3.
+semasound is fully migrated as one unit and benched green on both steps
+(../tools/zig build for the three exes, ../tools/zig build test for the unit
+modules). Its socket sites (main, tone_client) route through compat.posix; its
+non-socket surface cleared the established boundaries (compat.sync, compat.time,
+the owned raw-posix Class E/F idioms, std.Io.Dir for the dump's traversal). The
+sweep also exposed and resolved three under-surveyed symbols (milliTimestamp,
+getenv, trimRight; see Methodology), the Sigaction handler signature change, and
+five conversion-mistake close() returns. Environment access is now owned by
+compat.args.getenv under the ADR 0001 process-input amendment. Remaining Class D
+work is semadraw (five socket files plus its own broad surface; shm.zig
+SCM_RIGHTS last) and pgsd-sessiond, which is gated transitively on semadraw.
 
 ### Class E: filesystem and I/O relocated under std.Io   [DONE for shared and chronofs; dominant surface]
 
@@ -308,12 +368,15 @@ All confirmed against the vendored stdlib:
    machinery unchanged). The error contract is AD-6 Awase-owned, so each file
    carries an error-handling pass, not a pure verb substitution.
 9. After the seven files are migrated and benched, the socket-bearing subprojects
-   build green in dependency order: semadraw (the largest remaining surface: Class
-   D sockets, the encoder seek and backfill path, sdcs.zig validation, Class E
-   breadth, Class G), then semasound, then pgsd-sessiond. pgsd-sessiond is gated
-   solely by its transitive semadraw client dependency (semadraw.client.connect);
-   it owns no sockets, so once semadraw is green its own remaining surface (Class
-   E/F/G and concurrency in the leaf files) is a routine pass.
+   build green in dependency order. semasound is done: migrated as one unit and
+   benched green on both ../tools/zig build and ../tools/zig build test
+   (2026-06-15), proving the boundary on a server (main) and a client
+   (tone_client). Remaining: semadraw (the largest surface: Class D sockets, the
+   encoder seek and backfill path, sdcs.zig validation, Class E breadth, Class G;
+   shm.zig SCM_RIGHTS last), then pgsd-sessiond. pgsd-sessiond is gated solely by
+   its transitive semadraw client dependency (semadraw.client.connect); it owns no
+   sockets, so once semadraw is green its own remaining surface (Class E/F/G and
+   concurrency in the leaf files) is a routine pass.
 10. Aggregate verification: full ./tools/zig build green plus subsystem benches.
 
 Survey result (2026-06-15): audiofs is a C kernel module and associated C
@@ -348,7 +411,7 @@ The authoritative signal is a bench result, not a grep result. States:
     Pending      Not yet migrated
     Blocked      Waiting on another class or an architectural decision
 
-chronofs, semainput, and inputfs have been benched green. chronofs is the
+chronofs, semainput, inputfs, and semasound have been benched green. chronofs is the
 end-to-end reference (compat.args, io, fs, sync, time, plus shared/clock);
 semainput (libsemainput, benched green 2026-06-15, 11/11) is the second
 independent validation, and a notably cheap one: its append and deinit sites were
@@ -394,7 +457,7 @@ migration target (see the survey note under the execution plan).
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
     semainput (lib)  n/a         n/a         n/a         n/a         n/a         Green       n/a           n/a
     inputfs tools    Green       Green       n/a         n/a         Green       n/a         Green         n/a
-    semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Pending
+    semasound        n/a         Green       n/a         Green       Green       n/a         Green         Green
     semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Pending
     pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       Blocked*
 
@@ -409,18 +472,24 @@ class is n/a. inputfs's tool (inputdump) has no std.fs of its own (E is n/a); it
 Class E weight lived in the shared/input dependency, now converted.
 The D column for the socket-bearing subprojects (semasound, semadraw) read
 Blocked until the compat.posix boundary was written; it landed green on
-2026-06-15 (the shared (compat) D cell is now Green), so those rows are now
-Pending: the architectural blocker is resolved and what remains is the routine
-migration of their seven socket files to the boundary, sequenced in execution
-plan step 9. "Blocked*" on pgsd-sessiond is a transitive block, not an owned one:
-it has no sockets of its own (its only socket-adjacent tokens are path strings
-and a getifaddrs C interop in sysinfo.zig), but its executable imports the
-semadraw client, and semadraw.client.connect reaches the removed posix.socket /
-connect / close / write. The 2026-06-15 survey reclassified it from "last
-socket-free unit" to Blocked on this basis; with the boundary now landed, the
-remaining gate is no longer the missing decision but semadraw's own pending
-migration, after which pgsd-sessiond follows as a routine leaf pass. It is kept
-as one coherent unit rather than split into green leaves and a blocked exe, since
-a daemon whose exe cannot link is not a useful planning milestone. semadraw C was
-0.16-correct before this pass and is marked Converted on that basis; it has not
-been re-benched as a green subproject.
+2026-06-15 (the shared (compat) D cell is now Green). semasound is now fully
+green: it was migrated as one unit and benched on both steps (../tools/zig build
+for the three exes, ../tools/zig build test for the unit modules), so its B, E,
+F, concurrency, and D cells are all Green. Its B cell also covers the ADR 0001
+process-input amendment (compat.args.getenv), and the sweep folded in the
+Sigaction handler signature fix and the milliTimestamp/getenv/trimRight
+under-survey symbols recorded in Methodology. semadraw remains Pending: the
+architectural blocker is resolved and what remains is the routine migration of
+its socket files to the boundary (shm.zig SCM_RIGHTS last), sequenced in
+execution plan step 9. "Blocked*" on pgsd-sessiond is a transitive block, not an
+owned one: it has no sockets of its own (its only socket-adjacent tokens are path
+strings and a getifaddrs C interop in sysinfo.zig), but its executable imports
+the semadraw client, and semadraw.client.connect reaches the removed
+posix.socket / connect / close / write. The 2026-06-15 survey reclassified it
+from "last socket-free unit" to Blocked on this basis; with the boundary now
+landed, the remaining gate is no longer the missing decision but semadraw's own
+pending migration, after which pgsd-sessiond follows as a routine leaf pass. It
+is kept as one coherent unit rather than split into green leaves and a blocked
+exe, since a daemon whose exe cannot link is not a useful planning milestone.
+semadraw C was 0.16-correct before this pass and is marked Converted on that
+basis; it has not been re-benched as a green subproject.
