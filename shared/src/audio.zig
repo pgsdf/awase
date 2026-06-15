@@ -16,6 +16,25 @@
 const std = @import("std");
 const posix = std.posix;
 
+// File-local raw-posix helpers. Per ADR shared 0001 and 0002, this module
+// memory-maps shared files directly (posix.mmap/munmap survive in 0.16), so it
+// adapts to the removed std.fs.*Absolute and posix.* fd wrappers by going
+// through posix.system.* rather than routing through compat. These mirror the
+// proven helpers in clock.zig and input.zig; the eventual DRY lift into a shared
+// posixfile module is the deferred post-migration refactor, not this pass.
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn fileSize(fd: posix.fd_t) !u64 {
+    const end = posix.system.lseek(fd, 0, posix.SEEK.END);
+    if (end < 0) return error.SeekFailed;
+    return @intCast(end);
+}
+
 pub const STATE_PATH = "/var/run/sema/audio/state";
 pub const STATE_MAGIC: u32 = 0x54535541; // "AUST"
 pub const STATE_VERSION: u8 = 1;
@@ -202,10 +221,9 @@ pub const StateReader = struct {
     fd: posix.fd_t,
 
     pub fn init(path: []const u8) StateReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1 };
         };
-        const raw_fd = file.handle;
 
         // Defensive: confirm the file is at least STATE_SIZE
         // bytes before mmap-ing. An mmap larger than the file
@@ -214,24 +232,24 @@ pub const StateReader = struct {
         // opening during the kernel's create/truncate/grow
         // window, or after a partial write, should be treated
         // identically to "file absent".
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
         if (end_pos < @as(u64, STATE_SIZE)) {
-            posix.close(raw_fd);
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
         const map_raw = posix.mmap(
             null,
             STATE_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         };
 
@@ -239,7 +257,7 @@ pub const StateReader = struct {
         const magic = std.mem.readInt(u32, map[H_MAGIC..][0..4], .little);
         if (magic != STATE_MAGIC or map[H_VERSION] != STATE_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1 };
         }
 
@@ -248,7 +266,7 @@ pub const StateReader = struct {
 
     pub fn deinit(self: StateReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) posix.system.close(self.fd);
     }
 
     pub fn isValid(self: StateReader) bool {
@@ -485,30 +503,29 @@ pub const EventRingReader = struct {
     last_consumed: u64,
 
     pub fn init(path: []const u8) EventRingReader {
-        const file = std.fs.openFileAbsolute(path, .{}) catch {
+        const raw_fd = openReadOnly(path) catch {
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         };
-        const raw_fd = file.handle;
 
         // Defensive size check before mmap (see StateReader.init).
-        const end_pos = file.getEndPos() catch {
-            posix.close(raw_fd);
+        const end_pos = fileSize(raw_fd) catch {
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         };
         if (end_pos < @as(u64, EVENTS_SIZE)) {
-            posix.close(raw_fd);
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         }
 
         const map_raw = posix.mmap(
             null,
             EVENTS_SIZE,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             raw_fd,
             0,
         ) catch {
-            posix.close(raw_fd);
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         };
 
@@ -516,7 +533,7 @@ pub const EventRingReader = struct {
         const magic = std.mem.readInt(u32, map[EV_OFF_MAGIC..][0..4], .little);
         if (magic != EVENTS_MAGIC or map[EV_OFF_VERSION] != EVENTS_VERSION) {
             posix.munmap(@alignCast(map_raw));
-            posix.close(raw_fd);
+            posix.system.close(raw_fd);
             return .{ .map = null, .fd = -1, .last_consumed = 0 };
         }
 
@@ -525,7 +542,7 @@ pub const EventRingReader = struct {
 
     pub fn deinit(self: EventRingReader) void {
         if (self.map) |m| posix.munmap(@alignCast(@constCast(m)));
-        if (self.fd >= 0) posix.close(self.fd);
+        if (self.fd >= 0) posix.system.close(self.fd);
     }
 
     pub fn isValid(self: EventRingReader) bool {
