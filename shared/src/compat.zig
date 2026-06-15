@@ -1,14 +1,23 @@
 //! Awase compatibility boundary over churning std APIs.
 //!
-//! Zig's standard library periodically removes or reshapes medium-level
-//! interfaces that Awase depends on broadly (process arguments in 0.16, the
-//! std.posix socket layer in 0.16). Rather than couple dozens of call sites
-//! directly to those moving targets, Awase owns thin replacements here, built
-//! over the surviving primitives (std.process.Args.Iterator, posix.system.*).
-//! If a future Zig release moves the ground again, the migration stays inside
-//! this boundary instead of spreading across the tree.
+//! Awase code depends on the interfaces here; these interfaces depend on the
+//! external std surfaces. When a std surface Awase relies on is volatile, in
+//! behaviour or in shape, the volatility is absorbed once behind an Awase-owned
+//! interface and callers depend on that interface, not on the std surface. This
+//! is the standing rule established by ADR shared 0001 (the compatibility
+//! boundary); see also shared/src/posix_safe.zig (AD-6), the first concrete
+//! instance, for read/write over posix.system.*.
 //!
-//! shared/src/posix_safe.zig (AD-6) already follows this pattern for read/write
-//! over posix.system.*; the forthcoming socket shim (Class D) joins it here.
+//! Modules:
+//!   args  process arguments, over std.process.Args (0.16 removed argsAlloc).
+//!   io    a local blocking I/O context, lifetime only (0.16 routes I/O through
+//!         a std.Io handle); construction lives here, filesystem semantics in fs.
+//!   fs    the filesystem surface (0.16 relocated std.fs under std.Io and moved
+//!         byte transfer onto the Reader/Writer interface).
+//!
+//! The socket shim (Class D) joins these here once Class E clears and the pure
+//! socket surface is fully visible.
 
 pub const args = @import("compat/args.zig");
+pub const io = @import("compat/io.zig");
+pub const fs = @import("compat/fs.zig");
