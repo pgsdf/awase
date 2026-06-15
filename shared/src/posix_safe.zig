@@ -52,6 +52,24 @@ pub fn safeWrite(fd: posix.fd_t, buf: []const u8) error{WriteFailed}!usize {
     return @intCast(signed);
 }
 
+/// Sleep for `nanoseconds`, resuming if interrupted by a signal so the full
+/// duration elapses. Best-effort and independent of std.Io: it backs
+/// `compat.time.sleep` (ADR shared 0002) over the same posix surface this
+/// module already owns. With a valid request (nsec below one second, sec
+/// non-negative) the only failure nanosleep reports is EINTR, which leaves the
+/// unslept remainder in `rem`; the loop resumes with that remainder until the
+/// call completes.
+pub fn safeSleep(nanoseconds: u64) void {
+    var req = posix.timespec{
+        .sec = @intCast(nanoseconds / std.time.ns_per_s),
+        .nsec = @intCast(nanoseconds % std.time.ns_per_s),
+    };
+    var rem: posix.timespec = undefined;
+    while (posix.system.nanosleep(&req, &rem) != 0) {
+        req = rem;
+    }
+}
+
 test "safeRead from /dev/null returns EOF" {
     const fd = try posix.open("/dev/null", .{ .ACCMODE = .RDONLY }, 0);
     defer posix.close(fd);

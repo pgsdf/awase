@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 
 // ============================================================================
 // Event payload types
@@ -87,7 +88,7 @@ pub fn EventStream(comptime T: type, comptime capacity: usize) type {
         const Self = @This();
         const E = Entry(T);
 
-        mutex:  std.Thread.Mutex,
+        mutex:  compat.sync.Mutex,
         buf:    [capacity]E,
         /// Index of the next slot to write.
         head:   usize,
@@ -357,7 +358,7 @@ test "EventStream concurrent append and query" {
             var reads: usize = 0;
             while (reads < 1000) : (reads += 1) {
                 _ = stream.latest();
-                std.Thread.sleep(1);
+                compat.time.sleep(compat.time.Duration.fromNanoseconds(1));
             }
         }
     };
