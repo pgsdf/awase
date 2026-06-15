@@ -91,7 +91,7 @@ which s6-svscan
 `which s6-svscan` must print `/usr/local/bin/s6-svscan`. If absent,
 `install.sh` will fail at the dependency check in Step 6.
 
-## Step 3 — Clone UTF
+## Step 3 — Clone awase
 
 The canonical location for the awase source tree on a deployed system
 is `/usr/local/src/UTF/`. This aligns with FreeBSD's `hier(7)`
