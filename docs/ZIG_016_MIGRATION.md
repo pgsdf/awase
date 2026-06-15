@@ -255,17 +255,42 @@ All confirmed against the vendored stdlib:
    b. inputfs (inputdump): Class F (4 posix.write) and concurrency (3 sleep) in
       the tool itself, plus its transitive dependency shared/src/input.zig, which
       carries a large removed-surface count and converts with it.
-      [DONE, production green 2026-06-15; input.zig test scaffolding is Phase 2,
-      gated by shared's input_tests step]
-   c. pgsd-sessiond.
+      [DONE, production and test green 2026-06-15; shared input_tests now green,
+      see Phase 2 in the component-status prose]
+   c. shared completion: shared/src/audio.zig is the last unconverted file in
+      shared/src. It is socket-free and self-contained (imports only std and
+      builtin), its surface is Class E only (two std.fs.openFileAbsolute, eleven
+      posix.close) on the established raw-posix idiom, and it carries ten of its
+      own test blocks, so it is standalone-benchable via
+      ../tools/zig test src/audio.zig without needing a shared/build.zig target.
+      Converting and benching it is what makes shared genuinely green, rather than
+      green only for the four module targets (compat, clock, input, session) that
+      the shared test step happens to build. It is hidden from cd shared &&
+      ../tools/zig build test because shared/build.zig has no audio target and no
+      other unit currently imports it. [Pending, ratification 2026-06-15]
+   (pgsd-sessiond is no longer in this step. The 2026-06-15 graph survey
+   established that its executable imports the semadraw client, whose connect path
+   uses posix.socket / posix.connect / posix.close / posix.write, all removed in
+   0.16 and owned by the compat.posix boundary. It owns no sockets itself and does
+   not import shared/session.zig, but its exe closure is not socket-free, so it is
+   Blocked and moves to step 9.)
 8. Implement the Class D socket boundary (compat.posix over posix.system.*),
-   closing ADR shared 0001 criterion 3. Inventory the real socket-bearing closure
-   first; the hard case is descriptor passing (SCM_RIGHTS in shm.zig) and
-   ancillary data, not basic socket creation. Do not begin this until the
-   socket-free units above are exhausted.
-9. Migrate the socket-bearing subprojects through compat.posix: semadraw (the
-   largest remaining surface: Class D sockets, the encoder seek and backfill path,
-   sdcs.zig validation, Class E breadth, Class G) and semasound.
+   closing ADR shared 0001 criterion 3. This is the principal remaining
+   architectural milestone of the migration: the survey work has shown that the
+   only gating item left is this boundary, not any individual subproject. Survey
+   the real socket-bearing closure first (semadraw and semasound socket usage),
+   then design the shim with descriptor passing as a first-class concern from the
+   outset: SCM_RIGHTS ancillary data (shm.zig) and the cmsg / msghdr surface are
+   designed in from the start, not bolted on after basic socket creation. Do not
+   begin this until the socket-free units above are exhausted (shared/audio
+   included).
+9. Migrate the socket-bearing subprojects through compat.posix, in dependency
+   order: semadraw (the largest remaining surface: Class D sockets, the encoder
+   seek and backfill path, sdcs.zig validation, Class E breadth, Class G),
+   semasound, then pgsd-sessiond. pgsd-sessiond is gated solely by its transitive
+   semadraw client dependency (semadraw.client.connect); it owns no sockets, so
+   once semadraw is green its own remaining surface (Class E/F/G and concurrency
+   in the leaf files) is a routine pass.
 10. Aggregate verification: full ./tools/zig build green plus subsystem benches.
 
 Survey result (2026-06-15): audiofs is a C kernel module and associated C
@@ -324,30 +349,47 @@ openReadOnly / fileSize, with realPath(io) the lone std.Io call retained).
 session.zig was a full conversion: its readToken / writeToken / mkdir ran on the
 removed std.fs.*Absolute and std.Io.File paths, and its token generator on the
 removed std.crypto.random (now FreeBSD arc4random_buf); nothing had caught it
-because pgsd-sessiond, its production consumer, is still pending. audiofs is
-absent from this table by design: it is C, not a Zig migration target (see the
-survey note under the execution plan).
+because no green subproject imported it. The 2026-06-15 graph survey corrected a
+standing assumption here: pgsd-sessiond, long treated as session.zig's first
+production consumer, does not import shared/session.zig at all. It has its own
+src/session_file.zig, an independent implementation, so the two no longer move
+together. The remaining unconverted file in shared/src is audio.zig (Class E
+only, socket-free, ten self-contained test blocks, standalone-benchable); it is
+absent from cd shared && ../tools/zig build test because shared/build.zig has no
+audio target. audiofs is absent from this table by design: it is C, not a Zig
+migration target (see the survey note under the execution plan).
 
     Component        A alloc     B args      C link      E fs/io     F write     G list      concurrency   D sockets
     shared (compat)  n/a         n/a         n/a         Green       Green       n/a         Green         Pending
     shared/clock     n/a         n/a         n/a         Green       Green       n/a         Green         n/a
     shared/input     n/a         n/a         n/a         Green       n/a         n/a         n/a           n/a
     shared/session   n/a         n/a         n/a         Green       Green       n/a         n/a           n/a
+    shared/audio     n/a         n/a         n/a         Pending     n/a         n/a         n/a           n/a
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
     semainput (lib)  n/a         n/a         n/a         n/a         n/a         Green       n/a           n/a
     inputfs tools    Green       Green       n/a         n/a         Green       n/a         Green         n/a
     semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Blocked
     semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Blocked
-    pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       n/a
+    pgsd-sessiond    Converted   Converted   Converted   Pending     Pending     n/a         Pending       Blocked*
 
-"n/a" means the component has no site in that class. The shared/* rows
-(compat, clock, input, session) are now all green under cd shared &&
-../tools/zig build test. semainput (libsemainput) is a pure-logic
+"n/a" means the component has no site in that class. The shared module rows
+(compat, clock, input, session) are all green under cd shared && ../tools/zig
+build test; shared/audio is the one Pending exception, socket-free and
+standalone-benchable but not built by that test step (no audio target in
+shared/build.zig). semainput (libsemainput) is a pure-logic
 library: its only 0.16 surface is the Class G ArrayList idiom, so every other
 class is n/a. inputfs's tool (inputdump) has no std.fs of its own (E is n/a); its
 Class E weight lived in the shared/input dependency, now converted.
 "Blocked" in the D column means the subproject cannot reach green until the
 compat.posix socket boundary is written (the direction is decided; only the
-implementation, sequenced under these subprojects, remains). semadraw C was
+implementation, sequenced under these subprojects, remains). "Blocked*" on
+pgsd-sessiond is a transitive block, not an owned one: it has no sockets of its
+own (its only socket-adjacent tokens are path strings and a getifaddrs C
+interop in sysinfo.zig), but its executable imports the semadraw client, and
+semadraw.client.connect reaches the removed posix.socket / connect / close /
+write. The 2026-06-15 survey reclassified it from "last socket-free unit" to
+Blocked on this basis; it is kept as one coherent unit behind compat.posix
+rather than split into green leaves and a blocked exe, since a daemon whose exe
+cannot link is not a useful planning milestone. semadraw C was
 0.16-correct before this pass and is marked Converted on that basis; it has not
 been re-benched as a green subproject.
