@@ -21,7 +21,7 @@ manually (not from loader.conf), start daemons.
 
 ## Step 1 — Mount `/var/run` as tmpfs
 
-UTF publishes shared-memory regions under `/var/run/sema/`. The
+Awase publishes shared-memory regions under `/var/run/sema/`. The
 default `/var/run` on FreeBSD is on the same filesystem as `/var`,
 which makes shared-memory writes more expensive and leaves stale
 state files across reboots. UTF assumes tmpfs.
@@ -106,7 +106,7 @@ after install.
 sudo mkdir -p /usr/local/src
 sudo chown $(id -u):$(id -g) /usr/local/src
 cd /usr/local/src
-git clone https://github.com/pgsdf/UTF.git
+git clone https://github.com/pgsdf/awase.git
 cd UTF
 ```
 
@@ -120,7 +120,7 @@ to clone elsewhere (a home directory, a workspace folder). All
 awase scripts use `SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"` to
 resolve paths relative to themselves, so no script has a
 hardcoded source location and any checkout location works
-correctly. The `/usr/local/src/UTF/` recommendation is for
+correctly. The `/usr/local/src/awase/` recommendation is for
 deployed systems and operator discoverability, not for
 developer workflow.
 
