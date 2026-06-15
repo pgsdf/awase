@@ -323,6 +323,21 @@ pub fn toNanoseconds(samples: u64, sample_rate: u32) u64 {
 // Tests
 // ============================================================================
 
+// Test-only raw-posix fixture helpers, reusing this file's openCreateRdwr,
+// openReadOnly, and fileSize (ADR shared 0001): fixtures sit on the same
+// posix.system primitives as the production code under test.
+fn testCreateWrite(path: []const u8, bytes: []const u8) !void {
+    const fd = try openCreateRdwr(path, 0o600);
+    defer _ = posix.system.close(fd);
+    if (bytes.len > 0) _ = posix.system.write(fd, bytes.ptr, bytes.len);
+}
+
+fn testFileSize(path: []const u8) !u64 {
+    const fd = try openReadOnly(path);
+    defer _ = posix.system.close(fd);
+    return fileSize(fd);
+}
+
 test "toNanoseconds basic" {
     // 48000 samples at 48kHz = exactly 1 second = 1_000_000_000 ns
     try std.testing.expectEqual(
@@ -428,10 +443,8 @@ test "ClockWriter creates parent directory" {
     writer.deinit();
 
     // Confirm the file exists and is the correct size.
-    var check = try tmp.dir.openFile("sema/clock", .{});
-    defer check.close();
-    const stat = try check.stat();
-    try std.testing.expectEqual(@as(u64, CLOCK_SIZE), stat.size);
+    const sz = try testFileSize(clock_path);
+    try std.testing.expectEqual(@as(u64, CLOCK_SIZE), sz);
 }
 
 test "ClockReader rejects wrong magic" {
@@ -449,9 +462,7 @@ test "ClockReader rejects wrong magic" {
     const clock_path = try std.fmt.bufPrint(&full_buf, "{s}/clock", .{tmp_path});
 
     // Write a file with wrong magic.
-    var f = try tmp.dir.createFile("clock", .{});
-    try f.writeAll(&[_]u8{0} ** CLOCK_SIZE);
-    f.close();
+    try testCreateWrite(clock_path, &[_]u8{0} ** CLOCK_SIZE);
 
     const reader = ClockReader.init(clock_path);
     defer reader.deinit();
