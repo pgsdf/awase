@@ -16,6 +16,7 @@
 // shows a seq gap, the defined, downstream-detectable overflow signal.
 
 const std = @import("std");
+const compat = @import("compat");
 
 pub const CAPACITY: usize = 128;
 pub const MAX_DETAIL: usize = 96;
@@ -54,7 +55,7 @@ pub const Event = struct {
 };
 
 pub const EventRing = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: compat.sync.Mutex = .{},
     buf: [CAPACITY]Event = [_]Event{.{}} ** CAPACITY,
     total: u64 = 0, // events ever appended; seq of the next event is total+1
 

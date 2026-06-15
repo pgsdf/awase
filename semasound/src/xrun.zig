@@ -16,6 +16,13 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
 
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
 const SLOT_COUNT: usize = 256;
 const SLOT_SIZE: usize = 64;
 const HEADER_SIZE: usize = 64;
@@ -60,11 +67,11 @@ pub const Ctx = struct {
 
 /// Poll the notify cdev and count new STREAM/XRUN events. Runs until stop.
 pub fn run(ctx: Ctx) void {
-    const nfd = posix.open(protocol.NOTIFY_PATH, .{ .ACCMODE = .RDONLY }, 0) catch |e| {
+    const nfd = openReadOnly(protocol.NOTIFY_PATH) catch |e| {
         std.debug.print("semasound: xrun consumer: cannot open {s}: {any}\n", .{ protocol.NOTIFY_PATH, e });
         return;
     };
-    defer posix.close(nfd);
+    defer _ = posix.system.close(nfd);
 
     var region: [REGION_SIZE]u8 = undefined;
 
@@ -101,8 +108,8 @@ pub fn run(ctx: Ctx) void {
 // using only the confirmed posix.open/read/close idioms (no pread/lseek).
 // Returns the bytes read, or null on failure.
 fn readRegion(region: *[REGION_SIZE]u8) ?usize {
-    const efd = posix.open(protocol.EVENTS_PATH, .{ .ACCMODE = .RDONLY }, 0) catch return null;
-    defer posix.close(efd);
+    const efd = openReadOnly(protocol.EVENTS_PATH) catch return null;
+    defer _ = posix.system.close(efd);
     var off: usize = 0;
     while (off < REGION_SIZE) {
         const n = posix.read(efd, region[off..]) catch break;

@@ -21,14 +21,33 @@ const FILES = [_][]const u8{
 const MAX_TARGETS = 8;
 const NAME_LEN = 32;
 
-fn printFile(dir: std.fs.Dir, name: []const u8) void {
-    var buf: [32 * 1024]u8 = undefined;
-    const f = dir.openFile(name, .{}) catch {
+// Read a whole surface file into `buf` via the std.Io route (compat.fs over a
+// blocking Io). Returns bytes read, or null when the file is absent. This is a
+// read-only diagnostic surface, so the boundary's std.Io layer is used rather
+// than the owned raw-posix route reserved for persistence and mmap paths.
+fn readFileInto(io: std.Io, path: []const u8, buf: []u8) ?usize {
+    var f = compat.fs.cwd(io).openFile(path) catch return null;
+    defer f.close();
+    var n: usize = 0;
+    while (n < buf.len) {
+        const r = f.read(buf[n..]) catch break;
+        if (r == 0) break;
+        n += r;
+    }
+    return n;
+}
+
+fn printFile(io: std.Io, dirpath: []const u8, name: []const u8) void {
+    var pathbuf: [512]u8 = undefined;
+    const path = std.fmt.bufPrint(&pathbuf, "{s}/{s}", .{ dirpath, name }) catch {
         std.debug.print("  {s}: <absent>\n", .{name});
         return;
     };
-    defer f.close();
-    const n = f.readAll(&buf) catch 0;
+    var buf: [32 * 1024]u8 = undefined;
+    const n = readFileInto(io, path, &buf) orelse {
+        std.debug.print("  {s}: <absent>\n", .{name});
+        return;
+    };
     const content = std.mem.trimRight(u8, buf[0..n], "\n");
     if (content.len == 0) {
         std.debug.print("  {s}: <empty>\n", .{name});
@@ -62,14 +81,21 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var name_lens: [MAX_TARGETS]usize = undefined;
     var ntargets: usize = 0;
 
-    var base = std.fs.cwd().openDir(RUN_BASE, .{ .iterate = true }) catch {
+    var io_ctx = compat.io.open(std.heap.page_allocator) catch {
+        std.debug.print("semasound-dump: cannot initialize I/O\n", .{});
+        return;
+    };
+    defer io_ctx.deinit();
+    const io = io_ctx.io();
+
+    var base = std.Io.Dir.cwd().openDir(io, RUN_BASE, .{ .iterate = true }) catch {
         std.debug.print("semasound-dump: {s} absent (broker never ran?)\n", .{RUN_BASE});
         return;
     };
-    defer base.close();
+    defer base.close(io);
 
     var it = base.iterate();
-    while (try it.next()) |e| {
+    while (try it.next(io)) |e| {
         if (e.kind != .directory) continue;
         if (ntargets >= MAX_TARGETS) break;
         const n = @min(e.name.len, NAME_LEN);
@@ -82,9 +108,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
     while (ti < ntargets) : (ti += 1) {
         const tname = names[ti][0..name_lens[ti]];
         std.debug.print("== target {s} ==\n", .{tname});
-        var td = base.openDir(tname, .{}) catch continue;
-        defer td.close();
-        for (FILES) |fname| printFile(td, fname);
+        var dirbuf: [512]u8 = undefined;
+        const dirpath = std.fmt.bufPrint(&dirbuf, "{s}/{s}", .{ RUN_BASE, tname }) catch continue;
+        for (FILES) |fname| printFile(io, dirpath, fname);
         std.debug.print("\n", .{});
     }
 
@@ -97,11 +123,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
         ti = 0;
         while (ti < ntargets) : (ti += 1) {
             const tname = names[ti][0..name_lens[ti]];
-            var td = base.openDir(tname, .{}) catch continue;
-            defer td.close();
-            const f = td.openFile("events", .{}) catch continue;
-            const n = f.readAll(&buf) catch 0;
-            f.close();
+            var ebuf: [512]u8 = undefined;
+            const epath = std.fmt.bufPrint(&ebuf, "{s}/{s}/events", .{ RUN_BASE, tname }) catch continue;
+            const n = readFileInto(io, epath, &buf) orelse continue;
             var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
             while (lines.next()) |l| {
                 if (l.len == 0) continue;
@@ -112,6 +136,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 }
             }
         }
-        std.Thread.sleep(500_000_000);
+        compat.time.sleep(compat.time.Duration.fromNanoseconds(500_000_000));
     }
 }

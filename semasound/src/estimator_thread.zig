@@ -25,6 +25,7 @@
 // absolute trim for that client, never a diff, so application is idempotent.
 
 const std = @import("std");
+const compat = @import("compat");
 const client_mod = @import("client.zig");
 const estimator_mod = @import("estimator.zig");
 const ring_mod = @import("ring.zig");
@@ -67,7 +68,7 @@ pub fn run(ctx: Ctx) void {
     var elapsed: u64 = 0;
 
     while (!ctx.stop.load(.acquire)) {
-        std.Thread.sleep(poll_ms * std.time.ns_per_ms);
+        compat.time.sleep(compat.time.Duration.fromMilliseconds(@intCast(poll_ms)));
         elapsed += poll_ms;
         if (elapsed < window_ms) continue;
         const window_secs = @as(f64, @floatFromInt(elapsed)) / 1000.0;

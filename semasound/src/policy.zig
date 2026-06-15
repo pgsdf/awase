@@ -13,6 +13,7 @@
 // nothing here is touched by the audio threads.
 
 const std = @import("std");
+const posix = std.posix;
 
 pub const MAX_RULES: usize = 16; // per rule list
 pub const MAX_TOKEN: usize = 32; // per token
@@ -164,20 +165,31 @@ pub fn parse(text: []const u8) LoadedPolicy {
 /// absence produce a diagnostic but never a failure.
 pub fn loadFile(path: []const u8) LoadedPolicy {
     var buf: [MAX_FILE]u8 = undefined;
-    const f = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
-        error.FileNotFound => return LoadedPolicy{},
-        else => {
-            var p = LoadedPolicy{};
-            p.addError("unknown directive: <unreadable policy file>", .{});
-            return p;
-        },
-    };
-    defer f.close();
-    const n = f.readAll(buf[0..]) catch {
+    var path_buf = posix.toPosixPath(path) catch {
         var p = LoadedPolicy{};
         p.addError("unknown directive: <unreadable policy file>", .{});
         return p;
     };
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) {
+        // A missing file is a valid empty policy (ADR 0026 Decision 2);
+        // any other open failure is a diagnostic, never a hard failure.
+        if (posix.errno(fd) == .NOENT) return LoadedPolicy{};
+        var p = LoadedPolicy{};
+        p.addError("unknown directive: <unreadable policy file>", .{});
+        return p;
+    }
+    defer _ = posix.system.close(fd);
+    var n: usize = 0;
+    while (n < buf.len) {
+        const r = posix.read(fd, buf[n..]) catch {
+            var p = LoadedPolicy{};
+            p.addError("unknown directive: <unreadable policy file>", .{});
+            return p;
+        };
+        if (r == 0) break;
+        n += r;
+    }
     return parse(buf[0..n]);
 }
 

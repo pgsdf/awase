@@ -74,7 +74,7 @@ fn openWronly(path: []const u8) !posix.fd_t {
 // a handler is fragile machinery, and everything a cooperative path would
 // clean up is already crash-safe (stale-socket unlink at startup, kernel fd
 // reclamation, GET_FORMAT rest-state seeding, runtime-instance publish_seq).
-fn handleSignal(_: c_int) callconv(.c) void {
+fn handleSignal(_: posix.SIG) callconv(.c) void {
     const msg = "semasound: signal received, shutting down\n";
     writeBytes(posix.STDERR_FILENO, msg) catch {};
     _ = posix.system.unlink(protocol.SOCKET_PATH);

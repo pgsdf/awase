@@ -12,6 +12,7 @@
 // contribution is the constrained events.EventRing.append (see events.zig).
 
 const std = @import("std");
+const compat = @import("compat");
 const client_mod = @import("client.zig");
 const target_mod = @import("target.zig");
 const events_mod = @import("events.zig");
@@ -125,7 +126,7 @@ pub fn run(ctx: Ctx) void {
 
     while (!ctx.stop.load(.acquire)) {
         publish_seq += 1;
-        const now_ns: i64 = @intCast(std.time.nanoTimestamp());
+        const now_ns: i64 = @intCast(compat.time.nowMonotonic());
 
         for (ctx.targets, 0..) |*t, ti| {
             if (ti >= per.len) break;
@@ -184,7 +185,7 @@ pub fn run(ctx: Ctx) void {
             }
         }
 
-        std.Thread.sleep(1_000_000_000);
+        compat.time.sleep(compat.time.Duration.fromNanoseconds(1_000_000_000));
     }
 }
 

@@ -8,6 +8,7 @@
 // reclaimed only after its reader has exited and its ring has drained.
 
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const Ring = @import("ring.zig").Ring;
 const protocol = @import("protocol.zig");
@@ -163,7 +164,7 @@ pub fn readerRun(client: *Client) void {
 pub const ClientSet = struct {
     clients: [MAX_CLIENTS]Client = [_]Client{.{}} ** MAX_CLIENTS,
     active: [MAX_CLIENTS]bool = [_]bool{false} ** MAX_CLIENTS,
-    mutex: std.Thread.Mutex = .{},
+    mutex: compat.sync.Mutex = .{},
 
     /// Claim a free slot for `fd`. Returns null if full (caller closes fd).
     pub fn add(self: *ClientSet, fd: posix.fd_t, id: u32) ?*Client {
@@ -196,7 +197,7 @@ pub const ClientSet = struct {
                 self.clients[i].ring.available() == 0)
             {
                 if (self.clients[i].thread) |t| t.join();
-                posix.close(self.clients[i].fd);
+                _ = posix.system.close(self.clients[i].fd);
                 self.active[i] = false;
                 if (nreaped < out_ids.len) {
                     out_ids[nreaped] = self.clients[i].id;

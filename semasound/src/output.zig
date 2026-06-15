@@ -10,8 +10,16 @@
 // silence and the loop still paces on the write, keeping the stream alive.
 
 const std = @import("std");
+const compat = @import("compat");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
+
+fn openWronly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .WRONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
 const mixer = @import("mixer.zig");
 const events_mod = @import("events.zig");
 const client_mod = @import("client.zig");
@@ -88,8 +96,10 @@ fn computeGains(ptrs: []*client_mod.Client, gains: []u32, duck: u32) void {
 fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
     var off: usize = 0;
     while (off < bytes.len) {
-        const n = try posix.write(fd, bytes[off..]);
-        off += n;
+        const chunk = bytes[off..];
+        const rc = posix.system.write(fd, chunk.ptr, chunk.len);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
     }
 }
 
@@ -100,7 +110,7 @@ pub fn run(ctx: Ctx) void {
         std.debug.print("semasound: output[{s}] starting on null sink; device absent, reconnecting\n", .{ctx.name});
     }
     const period_ns: u64 = CHUNK_FRAMES * 1_000_000_000 / protocol.CANON_RATE;
-    var next_ns: i128 = std.time.nanoTimestamp() + period_ns;
+    var next_ns: i128 = compat.time.nowMonotonic() + period_ns;
     var last_reconnect_ms: i64 = 0;
 
     var out: [CHUNK_BYTES]u8 = undefined;
@@ -110,7 +120,7 @@ pub fn run(ctx: Ctx) void {
     var gains: [client_mod.MAX_CLIENTS]u32 = undefined;
     var src_owner: [client_mod.MAX_CLIENTS]usize = undefined;
 
-    var last_report: i64 = std.time.milliTimestamp();
+    var last_report: i64 = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
     var short_ev: u64 = 0; // active clients that supplied a partial chunk this pass
     var absent_ev: u64 = 0; // active clients that supplied nothing this pass
 
@@ -149,25 +159,25 @@ pub fn run(ctx: Ctx) void {
                 writeAll(ctx.fd.load(.monotonic), &out) catch |e| {
                     std.debug.print("semasound: audiofs write error {any}; output[{s}] continues on null sink, device layer reconnecting\n", .{ e, ctx.name });
                     dev_state = .null_sink;
-                    next_ns = std.time.nanoTimestamp() + period_ns;
+                    next_ns = compat.time.nowMonotonic() + period_ns;
                 };
             },
             .null_sink => {
                 // Timer pacing at the canonical rate (F.5.c pattern):
                 // the mix is discarded; clients stream at real-time
                 // cadence against their ring drain, silently.
-                const t = std.time.nanoTimestamp();
+                const t = compat.time.nowMonotonic();
                 if (next_ns > t) {
-                    std.Thread.sleep(@intCast(next_ns - t));
+                    compat.time.sleep(compat.time.Duration.fromNanoseconds(@intCast(next_ns - t)));
                     next_ns += period_ns;
                 } else {
                     next_ns = t + period_ns;
                 }
                 // Rate-limited reconnect: one open attempt per second.
-                const rc_now = std.time.milliTimestamp();
+                const rc_now: i64 = @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms));
                 if (rc_now - last_reconnect_ms >= 1000) {
                     last_reconnect_ms = rc_now;
-                    if (posix.open(protocol.DEVICE_PATH, .{ .ACCMODE = .WRONLY }, 0)) |nfd| {
+                    if (openWronly(protocol.DEVICE_PATH)) |nfd| {
                         ctx.fd.store(nfd, .monotonic);
                         if (ctx.election) |est| election_mod.seedFromDevice(est, nfd);
                         dev_state = .real;
@@ -181,7 +191,7 @@ pub fn run(ctx: Ctx) void {
         // thread on its own cadence, never here.
         _ = ctx.frames_written.fetchAdd(CHUNK_FRAMES, .monotonic);
 
-        const now = std.time.milliTimestamp();
+        const now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
         if (nreaped > 0) {
             // Reaped events: bounded formatting into a stack buffer, then
             // the constrained append, reusing the clock read above. No
@@ -228,9 +238,9 @@ pub fn runNull(ctx: Ctx) void {
     var sources: [client_mod.MAX_CLIENTS][]const u8 = undefined;
 
     const period_ns: u64 = CHUNK_FRAMES * 1_000_000_000 / 48000; // ~21.3 ms
-    var next_ns: i128 = std.time.nanoTimestamp() + period_ns;
+    var next_ns: i128 = compat.time.nowMonotonic() + period_ns;
 
-    var last_report: i64 = std.time.milliTimestamp();
+    var last_report: i64 = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
 
     while (!ctx.stop.load(.acquire)) {
         var reaped_ids: [client_mod.MAX_CLIENTS]u32 = undefined;
@@ -251,7 +261,7 @@ pub fn runNull(ctx: Ctx) void {
         // paced cadence, which is what keeps null-routed clients streaming.
         _ = ctx.frames_written.fetchAdd(CHUNK_FRAMES, .monotonic);
 
-        const now = std.time.milliTimestamp();
+        const now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
         if (nreaped > 0) {
             // Reaped events: bounded formatting into a stack buffer, then
             // the constrained append, reusing the clock read above. No
@@ -274,10 +284,10 @@ pub fn runNull(ctx: Ctx) void {
 
         // Pace to the deadline; carry the schedule so jitter does not
         // accumulate.
-        const t = std.time.nanoTimestamp();
+        const t = compat.time.nowMonotonic();
         if (next_ns > t) {
             const rem: u64 = @intCast(next_ns - t);
-            std.Thread.sleep(rem);
+            compat.time.sleep(compat.time.Duration.fromNanoseconds(@intCast(rem)));
         }
         next_ns += period_ns;
     }

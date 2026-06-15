@@ -11,6 +11,7 @@
 // for this shape, so we match it.
 
 const std = @import("std");
+const compat = @import("compat");
 
 pub const CAP: usize = 64 * 1024; // ~340 ms at 48 kHz/16-bit/stereo
 
@@ -18,7 +19,7 @@ pub const Ring = struct {
     buf: [CAP]u8 = undefined,
     head: usize = 0, // monotonic write counter; index is head % CAP
     tail: usize = 0, // monotonic read counter
-    mutex: std.Thread.Mutex = .{},
+    mutex: compat.sync.Mutex = .{},
 
     pub fn available(self: *Ring) usize {
         self.mutex.lock();
@@ -58,7 +59,7 @@ pub const Ring = struct {
             if (free == 0) {
                 self.mutex.unlock();
                 if (stop.load(.acquire)) return false;
-                std.Thread.sleep(2 * std.time.ns_per_ms);
+                compat.time.sleep(compat.time.Duration.fromMilliseconds(2));
                 continue;
             }
             const n = @min(free, bytes.len - written);

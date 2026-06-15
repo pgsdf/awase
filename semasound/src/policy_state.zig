@@ -10,9 +10,47 @@
 // Single accept thread only; no audio-thread involvement.
 
 const std = @import("std");
+const posix = std.posix;
 const policy_mod = @import("policy.zig");
 
 pub const RUN_BASE = "/var/run/sema/audio";
+
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const chunk = bytes[off..];
+        const rc = posix.system.write(fd, chunk.ptr, chunk.len);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
+
+fn renamePath(old_path: []const u8, new_path: []const u8) !void {
+    var old_buf = try posix.toPosixPath(old_path);
+    var new_buf = try posix.toPosixPath(new_path);
+    if (posix.system.rename(&old_buf, &new_buf) < 0) return error.RenameFailed;
+}
+
+fn makeDirPath(dir: []const u8) void {
+    // mkdir -p over dir's own components (the ensureParents idiom carried in
+    // shared infrastructure, applied to `dir` itself rather than its parent).
+    var i: usize = 0;
+    while (i < dir.len) {
+        while (i < dir.len and dir[i] == '/') : (i += 1) {}
+        if (i >= dir.len) break;
+        while (i < dir.len and dir[i] != '/') : (i += 1) {}
+        const partial = dir[0..i];
+        var dir_buf = posix.toPosixPath(partial) catch return;
+        _ = posix.system.mkdir(&dir_buf, 0o755);
+    }
+}
 
 pub fn writeAtomic(dir: []const u8, name: []const u8, content: []const u8) void {
     var pathbuf: [256]u8 = undefined;
@@ -20,24 +58,23 @@ pub fn writeAtomic(dir: []const u8, name: []const u8, content: []const u8) void 
     const path = std.fmt.bufPrint(&pathbuf, "{s}/{s}", .{ dir, name }) catch return;
     const tmp = std.fmt.bufPrint(&tmpbuf, "{s}/.{s}.tmp", .{ dir, name }) catch return;
 
-    const f = std.fs.cwd().createFile(tmp, .{ .truncate = true }) catch return;
+    const fd = openCreateRdwr(tmp, 0o644) catch return;
     var ok = true;
-    f.writeAll(content) catch {
+    writeAllFd(fd, content) catch {
         ok = false;
     };
-    f.close();
+    _ = posix.system.close(fd);
     if (!ok) return;
-    std.fs.cwd().rename(tmp, path) catch {};
+    renamePath(tmp, path) catch {};
 }
 
 /// Ensure the per-target surface directory exists. Called once at startup
-/// per target; failure is logged, not fatal (surfaces are observability).
+/// per target; failure is non-fatal (surfaces are observability only). The
+/// mkdir -p idiom is fire-and-forget: pre-existing components are expected.
 pub fn ensureDir(target_name: []const u8) void {
     var buf: [256]u8 = undefined;
     const dir = std.fmt.bufPrint(&buf, "{s}/{s}", .{ RUN_BASE, target_name }) catch return;
-    std.fs.cwd().makePath(dir) catch |e| {
-        std.debug.print("semasound: policy surfaces: cannot create {s}: {any}\n", .{ dir, e });
-    };
+    makeDirPath(dir);
 }
 
 /// Rewrite policy-valid and policy-errors for a target from a loaded policy.
