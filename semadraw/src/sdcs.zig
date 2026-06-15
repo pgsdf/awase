@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = std.posix;
 
 fn readExact(r: anytype, buf: []u8) !void {
     var off: usize = 0;
@@ -114,7 +115,7 @@ pub fn pad8Len(n: usize) usize {
     return (8 - (n % 8)) % 8;
 }
 
-pub fn writeHeader(file: std.fs.File) !void {
+pub fn writeHeader(fd: posix.fd_t) !void {
     var h: Header = .{
         .magic = undefined,
         .version_major = version_major,
@@ -129,7 +130,7 @@ pub fn writeHeader(file: std.fs.File) !void {
         .reserved2 = 0,
     };
     @memcpy(h.magic[0..], Magic);
-    try file.writeAll(std.mem.asBytes(&h));
+    try writeAllFd(fd, std.mem.asBytes(&h));
 }
 
 pub fn writeCmd(w: anytype, opcode: u16, payload: []const u8) !void {
@@ -145,15 +146,58 @@ pub fn writeCmd(w: anytype, opcode: u16, payload: []const u8) !void {
 }
 
 
-// Validation reads/seeks the underlying file, so we include the relevant std.fs
-// error sets alongside protocol-level validation errors.
-pub const ValidateError = (error{
+// Validation reads/seeks the underlying descriptor. Error boundary:
+//   Protocol = malformed or invalid SDCS content (incl. truncation at EOF)
+//   IoError  = failure of an underlying descriptor operation (read/lseek)
+pub const ValidateError = error{
     Protocol,
     UnsupportedOpcode,
     VersionUnsupported,
     InvalidScalar,
     InvalidGeometry,
-} || std.fs.File.ReadError || std.fs.File.SeekError || std.fs.File.StatError);
+    IoError,
+};
+
+// Owned raw-posix file I/O for the fd-based codec API (Zig 0.16 removed
+// std.fs.File). Callers own opening the descriptor; the codec owns format I/O.
+fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const chunk = bytes[off..];
+        const rc = posix.system.write(fd, chunk.ptr, chunk.len);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
+
+fn readExactFd(fd: posix.fd_t, buf: []u8) ValidateError!void {
+    var off: usize = 0;
+    while (off < buf.len) {
+        const n = posix.read(fd, buf[off..]) catch return ValidateError.IoError;
+        if (n == 0) return ValidateError.Protocol; // truncated = malformed content
+        off += n;
+    }
+}
+
+fn seekByFd(fd: posix.fd_t, delta: i64) ValidateError!void {
+    if (posix.system.lseek(fd, delta, posix.SEEK.CUR) < 0) return ValidateError.IoError;
+}
+
+fn getPosFd(fd: posix.fd_t) ValidateError!u64 {
+    const pos = posix.system.lseek(fd, 0, posix.SEEK.CUR);
+    if (pos < 0) return ValidateError.IoError;
+    return @intCast(pos);
+}
+
+fn fileSizeFd(fd: posix.fd_t) ValidateError!u64 {
+    // Derive size via SEEK_END, preserving the current position.
+    const cur = posix.system.lseek(fd, 0, posix.SEEK.CUR);
+    if (cur < 0) return ValidateError.IoError;
+    const end = posix.system.lseek(fd, 0, posix.SEEK.END);
+    if (end < 0) return ValidateError.IoError;
+    if (posix.system.lseek(fd, cur, posix.SEEK.SET) < 0) return ValidateError.IoError;
+    return @intCast(end);
+}
 
 /// Returns a human-readable name for an opcode, or null if unknown.
 pub fn opcodeName(opcode: u16) ?[]const u8 {
@@ -405,18 +449,18 @@ fn validateFillRectPayload(r: anytype) ValidateError!void {
     if (w < 0.0 or h < 0.0) return ValidateError.InvalidGeometry;
 }
 
-pub fn validateFile(file: std.fs.File) ValidateError!void {
+pub fn validateFile(fd: posix.fd_t) ValidateError!void {
     // Validates SDCS container structure and supported command records.
     // Does not execute commands.
     // On success, the file position is unspecified. Callers should seekTo(0) if needed.
 
     var header: Header = undefined;
-    // Zig 0.15.x: use `fs.File.read()` directly (the type returned by
-    // `fs.File.reader()` does not expose a `.read()` method).
+    // Read the fixed-size header directly via posix.read; readExactFd handles
+    // any short read to fill the remainder.
     const hdr_bytes = std.mem.asBytes(&header);
-    const got = file.read(hdr_bytes) catch return ValidateError.Protocol;
+    const got = posix.read(fd, hdr_bytes) catch return ValidateError.IoError;
     if (got == 0) return ValidateError.Protocol;
-    if (got != hdr_bytes.len) readExact(file, hdr_bytes[got..]) catch return ValidateError.Protocol;
+    if (got != hdr_bytes.len) try readExactFd(fd, hdr_bytes[got..]);
 
     // Magic is the SDCS file signature.
     // NOTE (Zig 0.15+ port): Some earlier emitters produced magic values that
@@ -433,17 +477,17 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
 
     // Bounds checking needs the file length. `stat()` is stable across Zig
     // versions and includes newer error variants like PermissionDenied.
-    const file_end: u64 = (try file.stat()).size;
+    const file_end: u64 = try fileSizeFd(fd);
 
     while (true) {
         var ch: ChunkHeader = undefined;
         const ch_bytes = std.mem.asBytes(&ch);
 
-        const n0 = file.read(ch_bytes) catch return ValidateError.Protocol;
+        const n0 = posix.read(fd, ch_bytes) catch return ValidateError.IoError;
         if (n0 == 0) break; // EOF at chunk boundary is ok
-        if (n0 != ch_bytes.len) readExact(file, ch_bytes[n0..]) catch return ValidateError.Protocol;
+        if (n0 != ch_bytes.len) try readExactFd(fd, ch_bytes[n0..]);
 
-        const payload_start = file.getPos() catch return ValidateError.Protocol;
+        const payload_start = try getPosFd(fd);
 
         // `bytes` is written by the encoder. Most writers store the *total* chunk
         // size (ChunkHeader + payload + any padding). However, some writers store
@@ -489,7 +533,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
             if (remaining < @sizeOf(CmdHdr)) return ValidateError.Protocol;
 
             var cmd: CmdHdr = undefined;
-            readExact(file, std.mem.asBytes(&cmd)) catch return ValidateError.Protocol;
+            try readExactFd(fd, std.mem.asBytes(&cmd));
             remaining -= @sizeOf(CmdHdr);
 
             if (cmd.payload_bytes > remaining) return ValidateError.Protocol;
@@ -533,7 +577,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
                 Op.DRAW_GLYPH_RUN,
                 => {
                     if (cmd.payload_bytes != 0) {
-                        try file.seekBy(@as(i64, @intCast(cmd.payload_bytes)));
+                        try seekByFd(fd, @as(i64, @intCast(cmd.payload_bytes)));
                     }
                 },
 
@@ -548,7 +592,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
             const pad: usize = pad8Len(record_bytes);
             if (pad != 0) {
                 if (pad > remaining) return ValidateError.Protocol;
-                try file.seekBy(@as(i64, @intCast(pad)));
+                try seekByFd(fd, @as(i64, @intCast(pad)));
                 remaining -= pad;
             }
         }
@@ -560,7 +604,7 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
         // reserve extra space beyond the payload.
         if (payload_capacity > ch.payload_bytes) {
             const chunk_pad = payload_capacity - ch.payload_bytes;
-            try file.seekBy(@as(i64, @intCast(chunk_pad)));
+            try seekByFd(fd, @as(i64, @intCast(chunk_pad)));
         }
     }
 }
@@ -568,18 +612,18 @@ pub fn validateFile(file: std.fs.File) ValidateError!void {
 /// Validates an SDCS file with detailed diagnostic information on error.
 /// On success, diagnostics is not modified.
 /// On error, diagnostics is populated with context about the failure.
-pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnostics) ValidateError!void {
+pub fn validateFileWithDiagnostics(fd: posix.fd_t, diag: *ValidationDiagnostics) ValidateError!void {
     // Track current position for diagnostics
     var current_offset: u64 = 0;
 
     var header: Header = undefined;
     const hdr_bytes = std.mem.asBytes(&header);
-    const got = file.read(hdr_bytes) catch {
+    const got = posix.read(fd, hdr_bytes) catch {
         diag.* = .{
             .file_offset = 0,
             .message = "failed to read file header",
         };
-        return ValidateError.Protocol;
+        return ValidateError.IoError;
     };
     if (got == 0) {
         diag.* = .{
@@ -589,12 +633,12 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
         return ValidateError.Protocol;
     }
     if (got != hdr_bytes.len) {
-        readExact(file, hdr_bytes[got..]) catch {
+        readExactFd(fd, hdr_bytes[got..]) catch |e| {
             diag.* = .{
                 .file_offset = got,
                 .message = "incomplete header",
             };
-            return ValidateError.Protocol;
+            return e;
         };
     }
 
@@ -620,51 +664,51 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
         return ValidateError.VersionUnsupported;
     }
 
-    const file_end: u64 = (file.stat() catch {
+    const file_end: u64 = fileSizeFd(fd) catch {
         diag.* = .{
             .file_offset = current_offset,
             .message = "failed to stat file",
         };
-        return ValidateError.Protocol;
-    }).size;
+        return ValidateError.IoError;
+    };
 
     while (true) {
         var ch: ChunkHeader = undefined;
         const ch_bytes = std.mem.asBytes(&ch);
 
-        const chunk_start = file.getPos() catch {
+        const chunk_start = getPosFd(fd) catch {
             diag.* = .{
                 .file_offset = current_offset,
                 .message = "failed to get file position",
             };
-            return ValidateError.Protocol;
+            return ValidateError.IoError;
         };
         current_offset = chunk_start;
 
-        const n0 = file.read(ch_bytes) catch {
+        const n0 = posix.read(fd, ch_bytes) catch {
             diag.* = .{
                 .file_offset = current_offset,
                 .message = "failed to read chunk header",
             };
-            return ValidateError.Protocol;
+            return ValidateError.IoError;
         };
         if (n0 == 0) break; // EOF at chunk boundary is ok
         if (n0 != ch_bytes.len) {
-            readExact(file, ch_bytes[n0..]) catch {
+            readExactFd(fd, ch_bytes[n0..]) catch |e| {
                 diag.* = .{
                     .file_offset = current_offset,
                     .message = "incomplete chunk header",
                 };
-                return ValidateError.Protocol;
+                return e;
             };
         }
 
-        const payload_start = file.getPos() catch {
+        const payload_start = getPosFd(fd) catch {
             diag.* = .{
                 .file_offset = current_offset,
                 .message = "failed to get payload position",
             };
-            return ValidateError.Protocol;
+            return ValidateError.IoError;
         };
 
         const hdr_sz: u64 = @sizeOf(ChunkHeader);
@@ -701,12 +745,12 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
         var end_seen = false;
 
         while (remaining > 0 and !end_seen) {
-            const cmd_offset = file.getPos() catch {
+            const cmd_offset = getPosFd(fd) catch {
                 diag.* = .{
                     .file_offset = current_offset,
                     .message = "failed to get command position",
                 };
-                return ValidateError.Protocol;
+                return ValidateError.IoError;
             };
             current_offset = cmd_offset;
 
@@ -719,12 +763,12 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
             }
 
             var cmd: CmdHdr = undefined;
-            readExact(file, std.mem.asBytes(&cmd)) catch {
+            readExactFd(fd, std.mem.asBytes(&cmd)) catch |e| {
                 diag.* = .{
                     .file_offset = current_offset,
                     .message = "failed to read command header",
                 };
-                return ValidateError.Protocol;
+                return e;
             };
             remaining -= @sizeOf(CmdHdr);
 
@@ -758,14 +802,14 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
 
                 Op.SET_CLIP_RECTS, Op.SET_BLEND, Op.SET_TRANSFORM_2D, Op.SET_ANTIALIAS, Op.SET_SOURCE_LINEAR_GRADIENT, Op.SET_SOURCE_RADIAL_GRADIENT, Op.SET_SOURCE_PATTERN, Op.SET_CLIP_PATH, Op.FILL_RECT, Op.STROKE_RECT, Op.STROKE_LINE, Op.SET_STROKE_JOIN, Op.SET_STROKE_CAP, Op.SET_MITER_LIMIT, Op.STROKE_QUAD_BEZIER, Op.STROKE_CUBIC_BEZIER, Op.STROKE_PATH, Op.FILL_PATH, Op.BLIT_IMAGE, Op.DRAW_GLYPH_RUN => {
                     if (cmd.payload_bytes != 0) {
-                        file.seekBy(@as(i64, @intCast(cmd.payload_bytes))) catch {
+                        seekByFd(fd, @as(i64, @intCast(cmd.payload_bytes))) catch {
                             diag.* = .{
                                 .file_offset = current_offset,
                                 .opcode = cmd.opcode,
                                 .opcode_name = opcodeName(cmd.opcode),
                                 .message = "failed to skip command payload",
                             };
-                            return ValidateError.Protocol;
+                            return ValidateError.IoError;
                         };
                     }
                 },
@@ -795,12 +839,12 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
                     };
                     return ValidateError.Protocol;
                 }
-                file.seekBy(@as(i64, @intCast(pad))) catch {
+                seekByFd(fd, @as(i64, @intCast(pad))) catch {
                     diag.* = .{
                         .file_offset = current_offset,
                         .message = "failed to skip padding",
                     };
-                    return ValidateError.Protocol;
+                    return ValidateError.IoError;
                 };
                 remaining -= pad;
             }
@@ -823,12 +867,12 @@ pub fn validateFileWithDiagnostics(file: std.fs.File, diag: *ValidationDiagnosti
 
         if (payload_capacity > ch.payload_bytes) {
             const chunk_pad = payload_capacity - ch.payload_bytes;
-            file.seekBy(@as(i64, @intCast(chunk_pad))) catch {
+            seekByFd(fd, @as(i64, @intCast(chunk_pad))) catch {
                 diag.* = .{
                     .file_offset = current_offset,
                     .message = "failed to skip chunk padding",
                 };
-                return ValidateError.Protocol;
+                return ValidateError.IoError;
             };
         }
     }

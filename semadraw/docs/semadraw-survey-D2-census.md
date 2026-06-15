@@ -73,40 +73,81 @@ A third lesson, from verifying the above: a `pub fn NAME` grep returns false
 not. A "MISSING" result is verified by checking declaration form before it is
 believed, the same bench-is-authority discipline applied to absence as to presence.
 
+### Class E/F aliased-posix correction (Phase 1 bench feedback)
+
+The Phase 0/1 production bench (idle_probe `posix.write`) exposed the largest
+census gap: the per-file table tracked `close` via a `std.posix.close` grep and had
+no `write`/`open`/`ftruncate` columns, while every file aliases `const posix =
+std.posix` and calls the bare `posix.X` form. The fully-qualified token grep was
+blind to all of it. A unit-wide re-survey of the aliased form (only `posix` and
+`testing` are aliased in the unit, so the gap is bounded to posix) gives the actual
+Class E/F distribution. All are removed except `posix.read`, which survives. The
+per-file counts are folded into the canonical Per-file census table below; they are
+NOT repeated here, to avoid two competing inventories (operator correction). The
+files most affected, understated by the first census, are process.zig (4 write, 12
+close where the first pass showed only milli/sleep), tcp_server.zig (2 write, 11
+close), socket_server.zig (2 write, 5 close), and shm.zig (4 close, 1 ftruncate).
+
+This does NOT change routes (posix.write -> posix.system.write or owned idiom;
+posix.close -> posix.system.close; posix.open -> openReadOnly idiom; ftruncate ->
+posix.system.ftruncate) or phase structure. It increases Class F effort within the
+phases already assigned to those files.
+
+### Census methodology correction 4: token grep must resolve aliases
+
+The first three corrections covered construction forms, family rubber-stamping, and
+declaration-form false-MISSING. This fourth is the costliest: a `std.X.Y` token grep
+cannot see `posix.write` when the file does `const posix = std.posix`. The census
+must first enumerate every `const NAME = std.NS` alias in the unit, then grep each
+removed symbol in BOTH the `std.NS.sym` and aliased `NAME.sym` forms. The per-file
+table must carry a column per removed verb actually in use (write/open/close/
+ftruncate/lseek), not a partial set. Confirmed for this unit: only `posix` and
+`testing` are aliased, so once posix is surveyed in aliased form the census is whole.
+
+
 ## Per-file census (boundary-exposed files; carry-forward tags)
 
 Reach = production-only (P) / shared (S). Val = build (b) / both (B). Wiring =
 does the file's MODULE wire compat today (modules, not exes, are the unit of
 wiring in semadraw; see D1).
 
-    File                          Reach Val  Removed surface (counts)              Module wiring
-    client/connection.zig          S    B    sockets(2)                            connection: MISSING
-    sdcs.zig                       S    B    fs.File(4)                            sdcs: MISSING (route TBD)
-    ipc/socket_server.zig          P    b    fs.cwd(2) sockets(7)                  socket_server: MISSING
-    ipc/tcp_server.zig             P    b    sockets(4)                            tcp_server: MISSING
-    ipc/shm.zig                    P    b    nano(1) sockets(2,SCM_RIGHTS)         shm: MISSING
-    client/remote_connection.zig   P    b    sockets(2)                            remote_connection: MISSING
-    daemon/semadrawd.zig           P    b    nano(2) getenv(1) sigaction(2)        semadrawd EXE: wired
-    compositor/compositor.zig      P    b    nano(3) getenv(2)                     compositor: MISSING
-    compositor/frame_scheduler.zig P    b    nano(5) sleep(4)                      frame_scheduler: MISSING
-    daemon/events.zig              P    b    nano(1) fs.File(2) io.reader(1)       events: MISSING
-    backend/drawfs.zig             P    b    nano(2)                               drawfs: MISSING
-    backend/drm.zig                P    b    nano(2) *Absolute(2)                  drm: MISSING
-    backend/software.zig           P    b    nano(2)                               software: MISSING
-    backend/process.zig            P    b    milli(2) sleep(1)                     backend_process: MISSING
-    backend/inputfs_input.zig      P    b    close(3) kqueue/kevent(3) *Abs(1)     (raw-posix; no compat needed)
-    app.zig                        P    b    nano(2) sleep(1)                      semadraw: MISSING
-    apps/term/main.zig             P    b    milli(9) fs.File(1)                   semadraw_term EXE: wired
-    apps/term/pty.zig              P    b    getenv(1)                             pty: MISSING
-    encoder.zig                    P    b    fs.File(1)                            semadraw: MISSING (route TBD)
-    tools/sdcs_replay.zig          P    b    fs.cwd(2) fs.File(2)                  sdcs_replay EXE: wired
-    tools/gesture_inspect.zig      P    b    io.reader(2)                          gesture_inspect EXE: wired
-    tools/idle_probe.zig           P    b    sleep(1)                              idle_probe EXE: wired
-    tools/sdcs_dump.zig            P    b    fs.cwd(1)                             sdcs_dump EXE: wired
-    tools/sdcs_fuzz.zig            P    b    fs.cwd(9)                             sdcs_fuzz EXE: wired
-    tools/sdcs_test_malformed.zig  P    b    fs.cwd(2)                             sdcs_test_malformed EXE: MISSING
-    tools/sdcs_make_*.zig (26)     P    b    fs.cwd(1 each)                        each EXE: wired
-    apps/graphics_demo/main.zig    P    b    fs.File(1)                            semadraw_demo EXE: wired
+CANONICAL INVENTORY. The "Removed surface" column folds in the aliased-posix
+Class E/F counts (write/open/close/ftruncate) from the alias survey; there is no
+separate posix inventory elsewhere in this document. posix.read survives throughout
+and is omitted from counts (no work). Files marked [P1-done] were converted in
+Phase 1.
+
+    File                          Reach Val  Removed surface (counts)                       Module wiring
+    ipc/protocol.zig               S    B    meta.intToEnum(2) [P1-done]                    protocol: n/a (pure std)
+    client/connection.zig          S    B    sockets(2) write(1) close(2) [P1-done]         connection: wired
+    sdcs.zig                       S    B    fs.File(4)                                     sdcs: wired (owned raw-posix)
+    ipc/socket_server.zig          P    b    fs.cwd(2) sockets(7) write(2) close(5)         socket_server: MISSING
+    ipc/tcp_server.zig             P    b    sockets(4) write(2) close(11)                  tcp_server: MISSING
+    ipc/shm.zig                    P    b    nano(1) sockets(2,SCM_RIGHTS) close(4) ftrunc(1) shm: MISSING
+    client/remote_connection.zig   P    b    sockets(2) write(2) close(2)                   remote_connection: MISSING
+    daemon/semadrawd.zig           P    b    nano(2) getenv(1) sigaction(2) close(2)        semadrawd EXE: wired
+    daemon/surface_registry.zig    P    b    close(1)                                       surface_registry: MISSING
+    compositor/compositor.zig      P    b    nano(3) getenv(2)                              compositor: MISSING
+    compositor/frame_scheduler.zig P    b    nano(5) sleep(4)                               frame_scheduler: MISSING
+    daemon/events.zig              P    b    nano(1) fs.File(2) io.reader(1) close(2)       events: MISSING
+    backend/drawfs.zig             P    b    nano(2) write(1) open(1) close(2)              drawfs: MISSING
+    backend/drm.zig                P    b    nano(2) *Absolute(2) open(1) close(2)          drm: MISSING
+    backend/evdev.zig              P    b    open(1) close(2)                               evdev: MISSING
+    backend/software.zig           P    b    nano(2)                                        software: MISSING
+    backend/process.zig            P    b    milli(2) sleep(1) write(4) close(12)           backend_process: MISSING
+    backend/inputfs_input.zig      P    b    close(3) kqueue/kevent(3) *Abs(1)              (raw-posix; out-of-unit)
+    app.zig                        P    b    nano(2) sleep(1)                               semadraw: MISSING
+    apps/term/main.zig             P    b    milli(9) fs.File(1)                            semadraw_term EXE: wired
+    apps/term/pty.zig              P    b    getenv(1) write(1) open(1) close(4)            pty: MISSING
+    encoder.zig                    P    b    fs.File(1) ArrayList-init(1)                   semadraw: wired (owned)
+    tools/sdcs_replay.zig          P    b    fs.cwd(2) fs.File(2) ArrayList-init(3)         sdcs_replay EXE: wired
+    tools/gesture_inspect.zig      P    b    io.reader(2) write(3)                          gesture_inspect EXE: wired
+    tools/idle_probe.zig           P    b    sleep(1) write(3)                              idle_probe EXE: wired
+    tools/sdcs_dump.zig            P    b    fs.cwd(1)                                       sdcs_dump EXE: wired
+    tools/sdcs_fuzz.zig            P    b    fs.cwd(9)                                       sdcs_fuzz EXE: wired
+    tools/sdcs_test_malformed.zig  P    b    fs.cwd(2)                                       sdcs_test_malformed EXE: MISSING
+    tools/sdcs_make_*.zig (26)     P    b    fs.cwd(1 each)                                 each EXE: wired
+    apps/graphics_demo/main.zig    P    b    fs.File(1)                                     semadraw_demo EXE: wired
 
 simd.zig and backend/inputfs_translate.zig (shared) carry no removed surface.
 ipc/protocol.zig (shared) was wrongly listed clean in the first census pass; the

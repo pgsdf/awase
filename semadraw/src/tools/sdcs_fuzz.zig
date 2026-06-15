@@ -1,6 +1,32 @@
 const std = @import("std");
+const posix = std.posix;
 const compat = @import("compat");
 const sdcs = @import("sdcs");
+
+// Owned raw-posix open/write idioms (Zig 0.16 removed std.fs.File) for the
+// fd-based sdcs validate API. Corpus generation (makeDir + createFile) is left
+// on std.fs for the filesystem phase.
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const chunk = bytes[off..];
+        const rc = posix.system.write(fd, chunk.ptr, chunk.len);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
 
 /// Fuzzing entry point for SDCS validator.
 ///
@@ -36,16 +62,16 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const input_path = args[1];
 
     // Open the input file
-    const file = std.fs.cwd().openFile(input_path, .{}) catch |err| {
+    const fd = openReadOnly(input_path) catch |err| {
         // File errors are not crashes, just exit cleanly
         std.debug.print("Could not open file: {any}\n", .{err});
         std.process.exit(1);
     };
-    defer file.close();
+    defer _ = posix.system.close(fd);
 
     // Run validation with diagnostics
     var diag = sdcs.ValidationDiagnostics{};
-    const result = sdcs.validateFileWithDiagnostics(file, &diag);
+    const result = sdcs.validateFileWithDiagnostics(fd, &diag);
 
     if (result) |_| {
         // Valid input
@@ -67,22 +93,22 @@ export fn LLVMFuzzerTestOneInput(data: [*]const u8, size: usize) c_int {
     // we use a temp file approach (slower but works)
     const tmp_path = "/tmp/sdcs_fuzz_input.sdcs";
 
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch {
+    const fd = openCreateRdwr(tmp_path, 0o644) catch {
         return 0;
     };
-    file.writeAll(slice) catch {
-        file.close();
+    writeAllFd(fd, slice) catch {
+        _ = posix.system.close(fd);
         return 0;
     };
-    file.close();
+    _ = posix.system.close(fd);
 
-    const read_file = std.fs.cwd().openFile(tmp_path, .{}) catch {
+    const read_fd = openReadOnly(tmp_path) catch {
         return 0;
     };
-    defer read_file.close();
+    defer _ = posix.system.close(read_fd);
 
     var diag = sdcs.ValidationDiagnostics{};
-    sdcs.validateFileWithDiagnostics(read_file, &diag) catch {};
+    sdcs.validateFileWithDiagnostics(read_fd, &diag) catch {};
 
     return 0;
 }

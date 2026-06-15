@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = std.posix;
 const sdcs = @import("sdcs.zig");
 
 fn putU16LE(buf: []u8, off: *usize, v: u16) void {
@@ -836,10 +837,10 @@ pub const Encoder = struct {
         try appendCmdAlloc(&self.cmds, self.allocator, sdcs.Op.END, &[_]u8{});
     }
 
-    pub fn writeToFile(self: *Encoder, file: std.fs.File) !void {
-        try sdcs.writeHeader(file);
+    pub fn writeToFile(self: *Encoder, fd: posix.fd_t) !void {
+        try sdcs.writeHeader(fd);
 
-        const chunk_pos = try file.getPos();
+        const chunk_pos = try fdGetPos(fd);
         var ch = sdcs.ChunkHeader{
             .type = sdcs.ChunkType.CMDS,
             .flags = 0,
@@ -847,30 +848,52 @@ pub const Encoder = struct {
             .bytes = 0,
             .payload_bytes = 0,
         };
-        try file.writeAll(std.mem.asBytes(&ch));
+        try fdWriteAll(fd, std.mem.asBytes(&ch));
 
-        const payload_start = try file.getPos();
-        try file.writeAll(self.cmds.items);
+        const payload_start = try fdGetPos(fd);
+        try fdWriteAll(fd, self.cmds.items);
 
         // Pad chunk payload to 8-byte alignment
         const payload_bytes: u64 = self.cmds.items.len;
         const pad = sdcs.pad8Len(self.cmds.items.len);
         if (pad != 0) {
             const zeros = [_]u8{0} ** 8;
-            try file.writeAll(zeros[0..pad]);
+            try fdWriteAll(fd, zeros[0..pad]);
         }
 
-        const end_pos = try file.getPos();
+        const end_pos = try fdGetPos(fd);
         const aligned_payload: u64 = end_pos - payload_start;
 
         ch.payload_bytes = payload_bytes;
         ch.bytes = @sizeOf(sdcs.ChunkHeader) + aligned_payload;
 
-        try file.seekTo(chunk_pos);
-        try file.writeAll(std.mem.asBytes(&ch));
-        try file.seekTo(end_pos);
+        try fdSeekTo(fd, chunk_pos);
+        try fdWriteAll(fd, std.mem.asBytes(&ch));
+        try fdSeekTo(fd, end_pos);
     }
 };
+
+// Owned raw-posix writer idioms for the SDCS output path (Zig 0.16 removed
+// std.fs.File). encoder owns format writing; callers own opening the descriptor.
+fn fdWriteAll(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const chunk = bytes[off..];
+        const rc = posix.system.write(fd, chunk.ptr, chunk.len);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
+
+fn fdGetPos(fd: posix.fd_t) !u64 {
+    const pos = posix.system.lseek(fd, 0, posix.SEEK.CUR);
+    if (pos < 0) return error.SeekFailed;
+    return @intCast(pos);
+}
+
+fn fdSeekTo(fd: posix.fd_t, pos: u64) !void {
+    if (posix.system.lseek(fd, @intCast(pos), posix.SEEK.SET) < 0) return error.SeekFailed;
+}
 
 test "fillPath encodes multi-contour payload" {
     const testing = std.testing;

@@ -1,5 +1,30 @@
 const std = @import("std");
+const posix = std.posix;
 const sdcs = @import("sdcs");
+
+// Owned raw-posix open/write idioms (Zig 0.16 removed std.fs.File). These feed
+// the fd-based sdcs validate API; this file's fs surface is entirely SDCS test I/O.
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const chunk = bytes[off..];
+        const rc = posix.system.write(fd, chunk.ptr, chunk.len);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
 
 /// Test harness for malformed SDCS input validation.
 /// Generates various malformed SDCS files and verifies the validator rejects them correctly.
@@ -185,26 +210,26 @@ fn testMalformedExpectError(allocator: std.mem.Allocator, data: []const u8, expe
 
     // Write data to a temporary file
     const tmp_path = "/tmp/sdcs_malformed_test.sdcs";
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch |err| {
+    const fd = openCreateRdwr(tmp_path, 0o644) catch |err| {
         std.debug.print("FAIL [{s}]: could not create temp file: {any}\n", .{ name, err });
         return false;
     };
-    defer file.close();
-    file.writeAll(data) catch |err| {
+    defer _ = posix.system.close(fd);
+    writeAllFd(fd, data) catch |err| {
         std.debug.print("FAIL [{s}]: could not write temp file: {any}\n", .{ name, err });
         return false;
     };
 
     // Re-open for reading
-    const read_file = std.fs.cwd().openFile(tmp_path, .{}) catch |err| {
+    const read_fd = openReadOnly(tmp_path) catch |err| {
         std.debug.print("FAIL [{s}]: could not open temp file: {any}\n", .{ name, err });
         return false;
     };
-    defer read_file.close();
+    defer _ = posix.system.close(read_fd);
 
     // Validate with diagnostics
     var diag = sdcs.ValidationDiagnostics{};
-    const result = sdcs.validateFileWithDiagnostics(read_file, &diag);
+    const result = sdcs.validateFileWithDiagnostics(read_fd, &diag);
 
     if (result) |_| {
         // Validation succeeded - this is a failure for malformed input tests
