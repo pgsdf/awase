@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = std.posix;
 
 /// Default path for the session token file.
 /// Whichever daemon starts first creates this file; all subsequent daemons
@@ -19,10 +20,8 @@ pub const DEFAULT_SESSION_PATH = "/var/run/sema/session";
 pub fn readOrCreate(path: []const u8) !u64 {
     // Ensure the parent directory exists.
     if (std.fs.path.dirname(path)) |dir_path| {
-        std.fs.makeDirAbsolute(dir_path) catch |err| switch (err) {
-            error.PathAlreadyExists => {},
-            else => return err,
-        };
+        var dir_buf = posix.toPosixPath(dir_path) catch return error.NameTooLong;
+        _ = posix.system.mkdir(&dir_buf, 0o755);
     }
 
     // Attempt to read an existing token.
@@ -47,12 +46,52 @@ pub fn format(token: u64, buf: []u8) []u8 {
 // Internal helpers
 // ============================================================================
 
+// Raw-posix file helpers (ADR shared 0001): session.zig owns its token file via
+// posix.system rather than the removed std.fs.*Absolute and std.Io.File paths.
+// File-local for now, matching clock.zig and input.zig; a shared posixfile
+// module is a post-migration refactor.
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+
+fn readAllInto(fd: posix.fd_t, buf: []u8) !usize {
+    var total: usize = 0;
+    while (total < buf.len) {
+        const rc = posix.system.read(fd, buf.ptr + total, buf.len - total);
+        const n: isize = @bitCast(rc);
+        if (n < 0) return error.ReadFailed;
+        if (n == 0) break;
+        total += @intCast(n);
+    }
+    return total;
+}
+
+fn writeAllFrom(fd: posix.fd_t, bytes: []const u8) !void {
+    var total: usize = 0;
+    while (total < bytes.len) {
+        const rc = posix.system.write(fd, bytes.ptr + total, bytes.len - total);
+        const n: isize = @bitCast(rc);
+        if (n <= 0) return error.WriteFailed;
+        total += @intCast(n);
+    }
+}
+
 fn readToken(path: []const u8) !u64 {
-    var file = try std.fs.openFileAbsolute(path, .{});
-    defer file.close();
+    const fd = try openReadOnly(path);
+    defer _ = posix.system.close(fd);
 
     var buf: [17]u8 = undefined; // 16 hex chars + optional newline
-    const n = try file.readAll(&buf);
+    const n = try readAllInto(fd, &buf);
 
     // Accept exactly 16 hex chars, optionally followed by a newline.
     const hex = switch (n) {
@@ -68,9 +107,9 @@ fn writeToken(path: []const u8, token: u64) !void {
     var fmt_buf: [17]u8 = undefined;
     const hex = std.fmt.bufPrint(&fmt_buf, "{x:0>16}\n", .{token}) catch unreachable;
 
-    var file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(hex);
+    const fd = try openCreateRdwr(path, 0o600);
+    defer _ = posix.system.close(fd);
+    try writeAllFrom(fd, hex);
 }
 
 // ============================================================================
@@ -108,7 +147,11 @@ test "readOrCreate creates token file and returns consistent value" {
 
     // Build an absolute path inside the temp dir.
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const tmp_len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     var full_buf: [std.fs.max_path_bytes]u8 = undefined;
     const token_path = try std.fmt.bufPrint(&full_buf, "{s}/session", .{tmp_path});
 
@@ -124,10 +167,10 @@ test "readOrCreate creates token file and returns consistent value" {
     var fmt_buf: [16]u8 = undefined;
     const hex = format(token1, &fmt_buf);
 
-    var file = try tmp.dir.openFile("session", .{});
-    defer file.close();
+    const fd = try openReadOnly(token_path);
+    defer _ = posix.system.close(fd);
     var read_buf: [17]u8 = undefined;
-    const n = try file.readAll(&read_buf);
+    const n = try readAllInto(fd, &read_buf);
     // File should contain 16 hex chars + newline.
     try std.testing.expectEqual(@as(usize, 17), n);
     try std.testing.expectEqualStrings(hex, read_buf[0..16]);
@@ -139,14 +182,18 @@ test "readOrCreate regenerates on corrupted token file" {
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const tmp_len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     var full_buf: [std.fs.max_path_bytes]u8 = undefined;
     const token_path = try std.fmt.bufPrint(&full_buf, "{s}/session", .{tmp_path});
 
     // Write garbage into the token file.
-    var file = try tmp.dir.createFile("session", .{});
-    try file.writeAll("not-a-hex-token!!");
-    file.close();
+    const fd = try openCreateRdwr(token_path, 0o600);
+    try writeAllFrom(fd, "not-a-hex-token!!");
+    _ = posix.system.close(fd);
 
     // readOrCreate should overwrite with a valid token.
     const token = try readOrCreate(token_path);
@@ -165,7 +212,11 @@ test "readOrCreate creates parent directory if absent" {
     defer tmp.cleanup();
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    var io_backing = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_backing.deinit();
+    const io = io_backing.io();
+    const tmp_len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..tmp_len];
     var full_buf: [std.fs.max_path_bytes]u8 = undefined;
     // Use a subdirectory that doesn't exist yet.
     const token_path = try std.fmt.bufPrint(&full_buf, "{s}/sema/session", .{tmp_path});
@@ -174,6 +225,6 @@ test "readOrCreate creates parent directory if absent" {
     try std.testing.expect(token != 0 or token == 0); // any u64 is valid
 
     // Confirm the file was created.
-    var check = try tmp.dir.openFile("sema/session", .{});
-    check.close();
+    const check_fd = try openReadOnly(token_path);
+    _ = posix.system.close(check_fd);
 }
