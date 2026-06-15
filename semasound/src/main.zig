@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const compat = @import("compat");
 const protocol = @import("protocol.zig");
 const client_mod = @import("client.zig");
 const output = @import("output.zig");
@@ -47,7 +48,23 @@ var g_null_fd: std.atomic.Value(std.posix.fd_t) = .init(-1);
 const POLICY_ETC = "/usr/local/etc/semasound";
 
 fn nowNs() i64 {
-    return @intCast(std.time.nanoTimestamp());
+    return @intCast(compat.time.nowMonotonic());
+}
+
+// Migration shims for the removed std.posix.write and std.posix.open. Both go
+// through posix.system.* (the Class F write path and the Class E open idiom used
+// across the tree). writeBytes is single-shot and fire-and-forget at most call
+// sites; its one caller that acts on failure keeps catching the owned error.
+fn writeBytes(fd: posix.fd_t, bytes: []const u8) error{WriteFailed}!void {
+    const n = posix.system.write(fd, bytes.ptr, bytes.len);
+    if (n < 0) return error.WriteFailed;
+}
+
+fn openWronly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .WRONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
 }
 
 // F.5.f (ADR 0028 Decision 3): prompt, signal-driven shutdown. The handler
@@ -59,8 +76,8 @@ fn nowNs() i64 {
 // reclamation, GET_FORMAT rest-state seeding, runtime-instance publish_seq).
 fn handleSignal(_: c_int) callconv(.c) void {
     const msg = "semasound: signal received, shutting down\n";
-    _ = posix.write(posix.STDERR_FILENO, msg) catch {};
-    posix.unlink(protocol.SOCKET_PATH) catch {};
+    writeBytes(posix.STDERR_FILENO, msg) catch {};
+    _ = posix.system.unlink(protocol.SOCKET_PATH);
     std.c._exit(0);
 }
 
@@ -118,8 +135,8 @@ fn preemptGroupPeers(tgt: *target_mod.Target) void {
         var i: usize = 0;
         while (i < n) : (i += 1) {
             const c = ptrs[i];
-            _ = posix.write(c.fd, &[_]u8{protocol.STATUS_PREEMPTED}) catch {};
-            posix.shutdown(c.fd, .both) catch {};
+            writeBytes(c.fd, &[_]u8{protocol.STATUS_PREEMPTED}) catch {};
+            compat.posix.shutdown(c.fd, .both) catch {};
             std.debug.print("semasound: policy: preempted client {d} on {s} (group {s})\n", .{ c.id, o.name, g });
             var db: [64]u8 = undefined;
             const d = std.fmt.bufPrint(&db, "id={d} group={s}", .{ c.id, g }) catch db[0..0];
@@ -140,13 +157,13 @@ fn readFull(fd: posix.fd_t, buf: []u8) !void {
 fn handleAccept(conn: posix.fd_t, id: u32) void {
     var hello: protocol.Hello = undefined;
     readFull(conn, std.mem.asBytes(&hello)) catch {
-        posix.close(conn);
+        posix.system.close(conn);
         return;
     };
     if (!protocol.helloIsAcceptable(hello)) {
-        _ = posix.write(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
-        _ = posix.write(conn, "error: F.5.b accepts 16-bit mono/stereo at a supported rate\n") catch {};
-        posix.close(conn);
+        writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
+        writeBytes(conn, "error: F.5.b accepts 16-bit mono/stereo at a supported rate\n") catch {};
+        posix.system.close(conn);
         return;
     }
     // F.5.c (ADR 0025 Decision 3): resolve the Hello's target. Empty routes
@@ -154,9 +171,9 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
     // is immutable for the connection's lifetime (re-route is a reconnect).
     const tname = protocol.targetName(&hello);
     const requested = target_mod.find(&g_targets, tname) orelse {
-        _ = posix.write(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
-        _ = posix.write(conn, "error: unknown target\n") catch {};
-        posix.close(conn);
+        writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
+        writeBytes(conn, "error: unknown target\n") catch {};
+        posix.system.close(conn);
         return;
     };
 
@@ -198,9 +215,9 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
             const d = std.fmt.bufPrint(&db, "label={s} class={s}", .{ label, class }) catch db[0..0];
             requested.events.append(.denied, nowNs(), requested.frames_written.load(.monotonic), d);
             policy_state.writeLastEvaluation(requested.name, label, class, "deny");
-            _ = posix.write(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
-            _ = posix.write(conn, "error: denied by policy\n") catch {};
-            posix.close(conn);
+            writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
+            writeBytes(conn, "error: denied by policy\n") catch {};
+            posix.system.close(conn);
             std.debug.print("semasound: policy: denied label={s} class={s} on {s}\n", .{ label, class, requested.name });
             return;
         }
@@ -227,8 +244,8 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
         }
     }
     const c = tgt.set.add(conn, id) orelse {
-        _ = posix.write(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
-        posix.close(conn);
+        writeBytes(conn, &[_]u8{protocol.STATUS_REJECTED}) catch {};
+        posix.system.close(conn);
         return;
     };
     // Set the client's input format and install a resampler unless the input
@@ -242,7 +259,7 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
     if (!(hello.rate_hz == hw_rate and hello.channels == protocol.CANON_CHANNELS)) {
         c.resampler = resampler.Resampler.init(hello.rate_hz, hw_rate);
     }
-    _ = posix.write(conn, &[_]u8{protocol.STATUS_ACCEPTED}) catch {
+    writeBytes(conn, &[_]u8{protocol.STATUS_ACCEPTED}) catch {
         c.closed.store(true, .release); // reap frees the slot and fd
         return;
     };
@@ -262,10 +279,10 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
 }
 
 pub fn main() !void {
-    const lfd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
-    defer posix.close(lfd);
+    const lfd = try compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    defer _ = posix.system.close(lfd);
 
-    std.fs.cwd().deleteFile(protocol.SOCKET_PATH) catch {};
+    _ = posix.system.unlink(protocol.SOCKET_PATH);
 
     var addr: posix.sockaddr.un = .{
         .family = posix.AF.UNIX,
@@ -273,8 +290,8 @@ pub fn main() !void {
     };
     if (protocol.SOCKET_PATH.len >= addr.path.len) return error.SocketPathTooLong;
     @memcpy(addr.path[0..protocol.SOCKET_PATH.len], protocol.SOCKET_PATH);
-    try posix.bind(lfd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
-    try posix.listen(lfd, 8);
+    try compat.posix.bind(lfd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
+    try compat.posix.listen(lfd, 8);
 
     std.debug.print("semasound F.5.a: listening on {s}\n", .{protocol.SOCKET_PATH});
     installSignalHandlers();
@@ -288,7 +305,7 @@ pub fn main() !void {
     // AD-47: a missing device no longer aborts the daemon. The output
     // thread starts on the null sink and its device layer reconnects;
     // election seeding happens at reopen instead.
-    const startup_fd: std.posix.fd_t = posix.open(protocol.DEVICE_PATH, .{ .ACCMODE = .WRONLY }, 0) catch |e| blk: {
+    const startup_fd: std.posix.fd_t = openWronly(protocol.DEVICE_PATH) catch |e| blk: {
         std.debug.print("semasound: cannot open {s}: {any}; starting on null sink, device layer will reconnect\n", .{ protocol.DEVICE_PATH, e });
         break :blk -1;
     };
@@ -363,7 +380,7 @@ pub fn main() !void {
 
     var next_id: u32 = 1;
     while (!g_stop.load(.acquire)) {
-        const conn = posix.accept(lfd, null, null, 0) catch |e| {
+        const conn = compat.posix.accept(lfd, null, null, 0) catch |e| {
             std.debug.print("semasound: accept error {any}\n", .{e});
             continue;
         };

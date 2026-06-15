@@ -21,6 +21,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addImport("compat", compat_mod);
     b.installArtifact(exe);
 
     // semasound-tone: F.5.a test client.
