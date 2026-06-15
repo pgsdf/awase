@@ -251,7 +251,7 @@ All confirmed against the vendored stdlib:
    vendored toolchain, not the fewest files), each benched green before the next:
    a. semainput (libsemainput): self-contained (imports only std), surface is the
       Class G ArrayList idiom across four lists, validated by 11 unit tests. The
-      cleanest remaining target.
+      cleanest remaining target. [DONE, green 2026-06-15]
    b. inputfs (inputdump): Class F (5 posix.write) and concurrency (3 sleep) in
       the tool itself, plus its transitive dependency shared/src/input.zig, which
       carries a large removed-surface count and must convert with it.
@@ -287,7 +287,14 @@ The authoritative signal is a bench result, not a grep result. States:
     Pending      Not yet migrated
     Blocked      Waiting on another class or an architectural decision
 
-Only chronofs has been benched green end to end. shared is benched green
+chronofs and semainput have been benched green. chronofs is the end-to-end
+reference (compat.args, io, fs, sync, time, plus shared/clock); semainput
+(libsemainput, benched green 2026-06-15, 11/11) is the second independent
+validation, and a notably cheap one: its append and deinit sites were already on
+the 0.16 unmanaged ArrayList form from the earlier gesture work, so only the four
+.empty inits remained. That is a useful signal that some remaining subprojects
+may be closer to 0.16 than their raw surface counts suggest. shared is benched
+green
 transitively through chronofs, but only for the parts chronofs exercises: the
 compat modules and shared/src/clock.zig. shared/src/input.zig is a separate
 shared file that is not yet converted (a large removed-surface count) and is the
@@ -299,7 +306,7 @@ survey note under the execution plan).
     shared (compat)  n/a         n/a         n/a         Green       Green       n/a         Green         Pending
     shared/input     n/a         n/a         n/a         Pending     Pending     n/a         Pending       n/a
     chronofs         Green       Green       n/a         Green       Green       n/a         Green         n/a
-    semainput (lib)  n/a         n/a         n/a         n/a         n/a         Pending     n/a           n/a
+    semainput (lib)  n/a         n/a         n/a         n/a         n/a         Green       n/a           n/a
     inputfs tools    Converted   Converted   n/a         n/a         Pending     n/a         Pending       n/a
     semasound        n/a         Converted   n/a         Pending     Pending     n/a         Pending       Blocked
     semadraw         Converted   Converted   Converted   Pending     Pending     Pending     Pending       Blocked
