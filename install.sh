@@ -409,6 +409,22 @@ if [ "$UNINSTALL" -eq 1 ]; then
         echo "  skip     $PERIODIC_TARGET (not found)"
     fi
 
+    # Session files. Remove the default.session this script ships and the
+    # sessions dir if it ends up empty; leave any operator-added .session
+    # files (and the parent share/pgsd if other assets remain) in place.
+    SESSIONS_DIR="$PREFIX/share/pgsd/sessions"
+    DEFAULT_SESSION_TARGET="$SESSIONS_DIR/default.session"
+    if [ -f "$DEFAULT_SESSION_TARGET" ]; then
+        rm -f "$DEFAULT_SESSION_TARGET"
+        echo "  removed  $DEFAULT_SESSION_TARGET"
+    else
+        echo "  skip     $DEFAULT_SESSION_TARGET (not found)"
+    fi
+    if [ -d "$SESSIONS_DIR" ]; then
+        rmdir "$SESSIONS_DIR" 2>/dev/null && echo "  removed  $SESSIONS_DIR" || true
+        rmdir "$PREFIX/share/pgsd" 2>/dev/null || true
+    fi
+
     # AD-20: remove the s6 supervision tree at /var/service/utf/.
     # We do not remove /var/log/utf/; those logs may be useful for
     # postmortem inspection. Operators who want a clean slate should
@@ -822,6 +838,41 @@ install_bin_required "$SCRIPT_DIR/scripts/utf-log-cleanup"
 if [ -f "$PREFIX/bin/semainputd" ]; then
     rm -f "$PREFIX/bin/semainputd"
     echo "  removed    $PREFIX/bin/semainputd (retired)"
+fi
+
+# ============================================================================
+# Session files (ADR 0004)
+# ============================================================================
+#
+# pgsd-sessiond resolves the user's selected session id to
+# $PREFIX/share/pgsd/sessions/<id>.session and FATALLY exits if the file is
+# missing (EXIT_SESSION_NOT_FOUND). Under supervision that exit looks like a
+# bounce: the operator types a correct password, the daemon dies, the
+# supervisor respawns a fresh login screen, and no error survives the restart.
+# The default picker choice (.terminal) maps to the id "default", so a working
+# install must ship default.session. This was previously laid down only by the
+# bench-only install-bench.sh, so production installs had no sessions dir.
+#
+# Installed if-absent: an operator who has customised default.session keeps
+# their version across upgrades. Other .session files they add are untouched.
+
+SESSIONS_DIR="$PREFIX/share/pgsd/sessions"
+echo ""
+echo "=== Installing session files to $SESSIONS_DIR/ ==="
+mkdir -p "$SESSIONS_DIR"
+DEFAULT_SESSION_SRC="$SCRIPT_DIR/pgsd-sessiond/share/sessions/default.session"
+DEFAULT_SESSION_DST="$SESSIONS_DIR/default.session"
+if [ -f "$DEFAULT_SESSION_DST" ]; then
+    echo "  skip      $DEFAULT_SESSION_DST (exists; not overwriting)"
+elif [ -f "$DEFAULT_SESSION_SRC" ]; then
+    if cp "$DEFAULT_SESSION_SRC" "$DEFAULT_SESSION_DST"; then
+        chmod 0644 "$DEFAULT_SESSION_DST"
+        echo "  installed $DEFAULT_SESSION_DST"
+    else
+        echo "  WARNING: failed to install $DEFAULT_SESSION_DST" >&2
+    fi
+else
+    echo "  WARNING: $DEFAULT_SESSION_SRC missing from source tree; skipping" >&2
 fi
 
 # ============================================================================

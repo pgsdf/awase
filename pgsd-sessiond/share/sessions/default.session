@@ -1,0 +1,4 @@
+[PGSD Session]
+Name=Default UTF Session
+Exec=exec semadraw-term --fullscreen --scale 3
+Comment=PGSD's default session: fullscreen terminal at 3x scale
