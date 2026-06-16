@@ -35,16 +35,16 @@ pub const BackendProcess = struct {
         if (self.running) return error.AlreadyRunning;
 
         // Create pipes
-        self.cmd_pipe = try posix.pipe();
+        self.cmd_pipe = try pipeFds();
         errdefer {
-            posix.close(self.cmd_pipe[0]);
-            posix.close(self.cmd_pipe[1]);
+            closeFd(self.cmd_pipe[0]);
+            closeFd(self.cmd_pipe[1]);
         }
 
-        self.result_pipe = try posix.pipe();
+        self.result_pipe = try pipeFds();
         errdefer {
-            posix.close(self.result_pipe[0]);
-            posix.close(self.result_pipe[1]);
+            closeFd(self.result_pipe[0]);
+            closeFd(self.result_pipe[1]);
         }
 
         // Fork
@@ -64,9 +64,9 @@ pub const BackendProcess = struct {
         self.running = true;
 
         // Close child's ends of pipes
-        posix.close(self.cmd_pipe[0]); // Close read end of cmd pipe
+        closeFd(self.cmd_pipe[0]); // Close read end of cmd pipe
         self.cmd_pipe[0] = -1;
-        posix.close(self.result_pipe[1]); // Close write end of result pipe
+        closeFd(self.result_pipe[1]); // Close write end of result pipe
         self.result_pipe[1] = -1;
     }
 
@@ -132,10 +132,10 @@ pub const BackendProcess = struct {
         offset += 4;
 
         // Write header
-        _ = try posix.write(self.cmd_pipe[1], buf[0..offset]);
+        try writeAll(self.cmd_pipe[1], buf[0..offset]);
 
         // Write SDCS data separately
-        _ = try posix.write(self.cmd_pipe[1], request.sdcs_data);
+        try writeAll(self.cmd_pipe[1], request.sdcs_data);
     }
 
     /// Receive a render result from the backend process
@@ -166,8 +166,8 @@ pub const BackendProcess = struct {
 
     fn runBackendChild(self: *Self) !void {
         // Close parent's ends of pipes
-        posix.close(self.cmd_pipe[1]); // Close write end of cmd pipe
-        posix.close(self.result_pipe[0]); // Close read end of result pipe
+        closeFd(self.cmd_pipe[1]); // Close write end of cmd pipe
+        closeFd(self.result_pipe[0]); // Close read end of result pipe
 
         // Enter Capsicum sandbox on FreeBSD (future)
         // enterCapabilityMode() catch {};
@@ -254,30 +254,30 @@ pub const BackendProcess = struct {
         std.mem.writeInt(u64, buf[12..20], result.render_time_ns, .little);
         buf[20] = if (result.error_msg == null) 1 else 0;
 
-        _ = try posix.write(self.result_pipe[1], buf[0..21]);
+        try writeAll(self.result_pipe[1], buf[0..21]);
     }
 
     fn sendShutdown(self: *Self) !void {
         var buf: [4]u8 = undefined;
         std.mem.writeInt(u32, buf[0..4], 0, .little); // SHUTDOWN = 0
-        _ = try posix.write(self.cmd_pipe[1], &buf);
+        try writeAll(self.cmd_pipe[1], &buf);
     }
 
     fn closePipes(self: *Self) void {
         if (self.cmd_pipe[0] != -1) {
-            posix.close(self.cmd_pipe[0]);
+            closeFd(self.cmd_pipe[0]);
             self.cmd_pipe[0] = -1;
         }
         if (self.cmd_pipe[1] != -1) {
-            posix.close(self.cmd_pipe[1]);
+            closeFd(self.cmd_pipe[1]);
             self.cmd_pipe[1] = -1;
         }
         if (self.result_pipe[0] != -1) {
-            posix.close(self.result_pipe[0]);
+            closeFd(self.result_pipe[0]);
             self.result_pipe[0] = -1;
         }
         if (self.result_pipe[1] != -1) {
-            posix.close(self.result_pipe[1]);
+            closeFd(self.result_pipe[1]);
             self.result_pipe[1] = -1;
         }
     }
@@ -334,4 +334,39 @@ fn sleepNs(ns: u64) void {
         if (std.posix.errno(rc) != .INTR) return;
         // EINTR: req now holds the remaining interval; loop to finish it
     }
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT2a): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+// Migration raw-fd idiom (P2 WT2a): file-local blocking writeAll.
+// Replaces posix.write, removed in Zig 0.16. Loops to completion over the
+// raw libc write. A zero-byte return is treated as failure rather than
+// spinning, since it means no forward progress on a blocking fd.
+fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const rc = posix.system.write(fd, bytes[off..].ptr, bytes.len - off);
+        if (rc < 0) {
+            if (posix.errno(rc) == .AGAIN) continue;
+            return error.WriteFailed;
+        }
+        if (rc == 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
+
+// Migration raw-fd idiom (P2 WT2a): file-local pipe creator.
+// Replaces posix.pipe, removed in Zig 0.16, with the raw libc call.
+fn pipeFds() ![2]posix.fd_t {
+    var fds: [2]posix.fd_t = undefined;
+    if (posix.system.pipe(&fds) != 0) return error.PipeFailed;
+    return fds;
 }

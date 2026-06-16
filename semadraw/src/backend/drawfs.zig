@@ -429,11 +429,11 @@ pub const DrawfsBackend = struct {
 
         // Open device
         log.info("opening {s}...", .{device_path});
-        self.fd = posix.open(device_path, .{ .ACCMODE = .RDWR }, 0) catch {
+        self.fd = posix.openat(posix.AT.FDCWD, device_path, .{ .ACCMODE = .RDWR }, 0) catch {
             log.err("failed to open {s}", .{device_path});
             return error.OpenFailed;
         };
-        errdefer posix.close(self.fd);
+        errdefer closeFd(self.fd);
         log.info("opened {s}, fd={}", .{ device_path, self.fd });
 
         // Protocol handshake
@@ -494,12 +494,7 @@ pub const DrawfsBackend = struct {
         const frame = try fillFrame(&self.frame_buf, frame_id, msg_type, msg_id, payload);
 
         // Send frame
-        var sent: usize = 0;
-        while (sent < frame.len) {
-            sent += posix.write(self.fd, frame[sent..]) catch |err| {
-                return err;
-            };
-        }
+        try writeAll(self.fd, frame);
 
         // Read reply. The fd is multiplexed with EVT_SURFACE_PRESENTED
         // events emitted by our own SURFACE_PRESENT requests; loop
@@ -810,7 +805,7 @@ pub const DrawfsBackend = struct {
         self.destroySurface();
 
         if (self.fd >= 0) {
-            posix.close(self.fd);
+            closeFd(self.fd);
             self.fd = -1;
         }
 
@@ -2046,4 +2041,31 @@ fn monotonicNowNs() i128 {
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT2a): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+// Migration raw-fd idiom (P2 WT2a): file-local blocking writeAll.
+// Replaces posix.write, removed in Zig 0.16. Loops to completion over the
+// raw libc write. A zero-byte return is treated as failure rather than
+// spinning, since it means no forward progress on a blocking fd.
+fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const rc = posix.system.write(fd, bytes[off..].ptr, bytes.len - off);
+        if (rc < 0) {
+            if (posix.errno(rc) == .AGAIN) continue;
+            return error.WriteFailed;
+        }
+        if (rc == 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
 }
