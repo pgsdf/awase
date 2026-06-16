@@ -423,9 +423,9 @@ test "emitWithSamples-style writes through pipe fd succeed (AD-23)" {
     const testing = std.testing;
     const posix = std.posix;
 
-    const fds = try posix.pipe();
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    const fds = try pipeFds();
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
     var file: std.fs.File = .{ .handle = fds[1] };
     const payload_a = "{\"type\":\"frame_complete\",\"backend\":\"software\"}\n";
@@ -479,4 +479,22 @@ fn realtimeNowNs() i128 {
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.REALTIME, &ts);
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT3): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: std.posix.fd_t) void {
+    _ = std.posix.system.close(fd);
+}
+
+// Migration raw-fd idiom (P2 WT3): file-local pipe creator.
+// Replaces posix.pipe, removed in Zig 0.16, with the raw libc call.
+fn pipeFds() ![2]std.posix.fd_t {
+    var fds: [2]std.posix.fd_t = undefined;
+    if (std.posix.system.pipe(&fds) != 0) return error.PipeFailed;
+    return fds;
 }

@@ -1770,7 +1770,7 @@ pub const Daemon = struct {
 
         if (self.clients.count() >= self.config.max_clients) {
             log.warn("max clients reached, rejecting connection", .{});
-            posix.close(client_fd);
+            closeFd(client_fd);
             return;
         }
 
@@ -1781,7 +1781,7 @@ pub const Daemon = struct {
         // socket. Per ADR 0006 §2, getpeereid failure is a
         // connection-level error: close, log, no reply to the peer.
         const session = self.clients.createSession(client_fd) catch |err| {
-            posix.close(client_fd);
+            closeFd(client_fd);
             log.warn("failed to create client session: {} (errno may indicate cause; fd closed)", .{err});
             return err;
         };
@@ -3113,4 +3113,14 @@ fn realtimeNowNs() i128 {
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.REALTIME, &ts);
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT3): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
 }
