@@ -98,7 +98,7 @@ pub const Encoder = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) Encoder {
-        return .{ .allocator = allocator, .cmds = std.ArrayList(u8){} };
+        return .{ .allocator = allocator, .cmds = std.ArrayList(u8).empty };
     }
 
     pub fn deinit(self: *Encoder) void {
