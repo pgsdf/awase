@@ -1,5 +1,21 @@
 const std = @import("std");
 const posix = std.posix;
+const compat = @import("compat");
+
+// Owned raw-posix idioms for the descriptor verbs std.posix dropped in 0.16.
+// The socket family routes through compat.posix; write/close are local.
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+fn writeOnce(fd: posix.fd_t, bytes: []const u8) !usize {
+    const rc = posix.system.write(fd, bytes.ptr, bytes.len);
+    if (rc < 0) {
+        if (posix.errno(rc) == .AGAIN) return error.WouldBlock;
+        return error.WriteFailed;
+    }
+    return @intCast(rc);
+}
 const protocol = @import("protocol");
 
 /// TCP server for remote semadraw connections
@@ -23,8 +39,8 @@ pub const TcpServer = struct {
     /// Bind and listen on a specific address and port
     pub fn bindAddr(addr: [4]u8, port: u16) !TcpServer {
         // Create socket
-        const fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
-        errdefer posix.close(fd);
+        const fd = try compat.posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+        errdefer closeFd(fd);
 
         // Enable address reuse
         const optval: c_int = 1;
@@ -38,10 +54,10 @@ pub const TcpServer = struct {
             .zero = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
         };
 
-        try posix.bind(fd, @ptrCast(&bind_addr), @sizeOf(posix.sockaddr.in));
+        try compat.posix.bind(fd, @ptrCast(&bind_addr), @sizeOf(posix.sockaddr.in));
 
         // Listen with reasonable backlog
-        try posix.listen(fd, 16);
+        try compat.posix.listen(fd, 16);
 
         return .{
             .fd = fd,
@@ -55,7 +71,7 @@ pub const TcpServer = struct {
         var client_addr: posix.sockaddr.in = undefined;
         var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
 
-        const client_fd = try posix.accept(self.fd, @ptrCast(&client_addr), &addr_len, posix.SOCK.CLOEXEC);
+        const client_fd = try compat.posix.accept(self.fd, @ptrCast(&client_addr), &addr_len, posix.SOCK.CLOEXEC);
 
         // Apply read timeout so a stalled client cannot hold a surface
         // indefinitely. WouldBlock returned mid-message is treated as a
@@ -76,7 +92,7 @@ pub const TcpServer = struct {
 
     /// Close the server socket
     pub fn deinit(self: *TcpServer) void {
-        posix.close(self.fd);
+        closeFd(self.fd);
     }
 };
 
@@ -184,12 +200,12 @@ pub const RemoteClient = struct {
 
         // Send header. AD-46: see ClientSocket.sendMessage; a short
         // write is an error, not a silent corruption.
-        const hn = try posix.write(self.fd, &hdr_buf);
+        const hn = try writeOnce(self.fd, &hdr_buf);
         if (hn != hdr_buf.len) return error.PartialWrite;
 
         // Send payload
         if (payload.len > 0) {
-            const pn = try posix.write(self.fd, payload);
+            const pn = try writeOnce(self.fd, payload);
             if (pn != payload.len) return error.PartialWrite;
         }
     }
@@ -229,7 +245,7 @@ pub const RemoteClient = struct {
         header.serialize(frame[0..protocol.MsgHeader.SIZE]);
         @memcpy(frame[protocol.MsgHeader.SIZE..][0..payload.len], payload);
 
-        const n = posix.send(self.fd, frame[0..total], posix.MSG.DONTWAIT) catch |e| switch (e) {
+        const n = compat.posix.send(self.fd, frame[0..total], posix.MSG.DONTWAIT) catch |e| switch (e) {
             error.WouldBlock => return .would_block,
             else => return .err,
         };
@@ -238,7 +254,7 @@ pub const RemoteClient = struct {
     }
 
     pub fn close(self: *RemoteClient) void {
-        posix.close(self.fd);
+        closeFd(self.fd);
     }
 
     pub fn getFd(self: *RemoteClient) posix.socket_t {
@@ -288,9 +304,9 @@ test "RemoteClient address string formatting" {
 test "RemoteClient message framing via socketpair" {
     // Use socketpair to get a connected fd pair without needing a real server.
     var fds: [2]posix.socket_t = undefined;
-    try posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    try compat.posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
     const dummy_addr = posix.sockaddr.in{
         .family = posix.AF.INET,
@@ -316,9 +332,9 @@ test "RemoteClient message framing via socketpair" {
 
 test "RemoteClient message framing with payload via socketpair" {
     var fds: [2]posix.socket_t = undefined;
-    try posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    try compat.posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
     const dummy_addr = posix.sockaddr.in{
         .family = posix.AF.INET,
@@ -344,7 +360,7 @@ test "RemoteClient message framing with payload via socketpair" {
 
 test "RemoteClient abrupt disconnect returns ConnectionClosed" {
     var fds: [2]posix.socket_t = undefined;
-    try posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    try compat.posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
 
     const dummy_addr = posix.sockaddr.in{
         .family = posix.AF.INET,
@@ -354,10 +370,10 @@ test "RemoteClient abrupt disconnect returns ConnectionClosed" {
     };
 
     // Close the writer end without sending anything.
-    posix.close(fds[0]);
+    closeFd(fds[0]);
 
     var reader = RemoteClient.init(fds[1], dummy_addr);
-    defer posix.close(fds[1]);
+    defer closeFd(fds[1]);
 
     const result = reader.readMessage(std.testing.allocator);
     try std.testing.expectError(error.ConnectionClosed, result);
@@ -365,9 +381,9 @@ test "RemoteClient abrupt disconnect returns ConnectionClosed" {
 
 test "RemoteClient multiple messages in sequence via socketpair" {
     var fds: [2]posix.socket_t = undefined;
-    try posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-    defer posix.close(fds[0]);
-    defer posix.close(fds[1]);
+    try compat.posix.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    defer closeFd(fds[0]);
+    defer closeFd(fds[1]);
 
     const dummy_addr = posix.sockaddr.in{
         .family = posix.AF.INET,

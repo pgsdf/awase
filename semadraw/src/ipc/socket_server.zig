@@ -1,5 +1,21 @@
 const std = @import("std");
 const posix = std.posix;
+const compat = @import("compat");
+
+// Owned raw-posix idioms for the descriptor verbs std.posix dropped in 0.16.
+// The socket family routes through compat.posix; write/close are local.
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+fn writeOnce(fd: posix.fd_t, bytes: []const u8) !usize {
+    const rc = posix.system.write(fd, bytes.ptr, bytes.len);
+    if (rc < 0) {
+        if (posix.errno(rc) == .AGAIN) return error.WouldBlock;
+        return error.WriteFailed;
+    }
+    return @intCast(rc);
+}
 const protocol = @import("protocol");
 
 /// Unix domain socket server for semadrawd
@@ -35,11 +51,11 @@ pub const SocketServer = struct {
         const addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.un);
 
         // Probe: is anything currently listening at this path?
-        const probe = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
+        const probe = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0) catch |err| {
             return err;
         };
-        const connect_result = posix.connect(probe, @ptrCast(&addr), addr_len);
-        posix.close(probe);
+        const connect_result = compat.posix.connect(probe, @ptrCast(&addr), addr_len);
+        closeFd(probe);
 
         // Treat ANY connect failure as "no live listener, safe to proceed."
         // The most common reasons for a probe connect to fail are:
@@ -62,8 +78,8 @@ pub const SocketServer = struct {
         }
 
         // Create the listening socket.
-        const fd = try posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
-        errdefer posix.close(fd);
+        const fd = try compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+        errdefer closeFd(fd);
 
         // Remove the stale file if it exists (after the probe confirmed
         // no live listener). FileNotFound is fine; other errors propagate.
@@ -72,14 +88,14 @@ pub const SocketServer = struct {
             else => return err,
         };
 
-        try posix.bind(fd, @ptrCast(&addr), addr_len);
+        try compat.posix.bind(fd, @ptrCast(&addr), addr_len);
 
         // Set socket permissions (owner+group read/write)
         // Mode 0660 = rw-rw----
         posix.fchmodat(posix.AT.FDCWD, path, 0o660, 0) catch {};
 
         // Listen with reasonable backlog
-        try posix.listen(fd, 16);
+        try compat.posix.listen(fd, 16);
 
         return .{
             .fd = fd,
@@ -89,7 +105,7 @@ pub const SocketServer = struct {
 
     /// Accept a new client connection
     pub fn accept(self: *SocketServer) AcceptError!posix.socket_t {
-        const client_fd = try posix.accept(self.fd, null, null, posix.SOCK.CLOEXEC);
+        const client_fd = try compat.posix.accept(self.fd, null, null, posix.SOCK.CLOEXEC);
         return client_fd;
     }
 
@@ -100,7 +116,7 @@ pub const SocketServer = struct {
 
     /// Close the server socket and remove the socket file
     pub fn deinit(self: *SocketServer) void {
-        posix.close(self.fd);
+        closeFd(self.fd);
         std.fs.cwd().deleteFile(self.path) catch {};
     }
 };
@@ -249,12 +265,12 @@ pub const ClientSocket = struct {
         // signal interruption) leaves the stream corrupt mid-frame, so
         // it is surfaced as an error and the caller's existing error
         // path disconnects the client instead of corrupting silently.
-        const hn = try posix.write(self.fd, &hdr_buf);
+        const hn = try writeOnce(self.fd, &hdr_buf);
         if (hn != hdr_buf.len) return error.PartialWrite;
 
         // Send payload
         if (payload.len > 0) {
-            const pn = try posix.write(self.fd, payload);
+            const pn = try writeOnce(self.fd, payload);
             if (pn != payload.len) return error.PartialWrite;
         }
     }
@@ -294,7 +310,7 @@ pub const ClientSocket = struct {
         header.serialize(frame[0..protocol.MsgHeader.SIZE]);
         @memcpy(frame[protocol.MsgHeader.SIZE..][0..payload.len], payload);
 
-        const n = posix.send(self.fd, frame[0..total], posix.MSG.DONTWAIT) catch |e| switch (e) {
+        const n = compat.posix.send(self.fd, frame[0..total], posix.MSG.DONTWAIT) catch |e| switch (e) {
             error.WouldBlock => return .would_block,
             else => return .err,
         };
@@ -365,7 +381,7 @@ pub const ClientSocket = struct {
         }
         self.large_buf = null;
         self.large_buf_len = 0;
-        posix.close(self.fd);
+        closeFd(self.fd);
     }
 
     pub fn getFd(self: *ClientSocket) posix.socket_t {
@@ -390,7 +406,7 @@ pub const MessageWithFd = struct {
 
     pub fn deinit(self: *MessageWithFd, allocator: std.mem.Allocator) void {
         self.message.deinit(allocator);
-        if (self.fd) |f| posix.close(f);
+        if (self.fd) |f| closeFd(f);
     }
 };
 
