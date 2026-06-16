@@ -149,14 +149,23 @@ pub const InputfsInput = struct {
         // a single info line either way so the bench-side state
         // is visible at startup.
         const notify_fd: ?std.posix.fd_t = blk: {
-            const f = std.fs.openFileAbsolute(input.NOTIFY_DEV_PATH, .{}) catch |err| {
-                if (!quiet) {
-                    log.warn("inputfs notify cdev at {s} unavailable: {}; falling back to poll-timeout cadence", .{ input.NOTIFY_DEV_PATH, err });
-                }
+            // 0.16 removed std.fs.openFileAbsolute; open the cdev read-only
+            // through the surviving posix.system surface (the raw-posix idiom
+            // used in shared/src/input.zig and clock.zig). Best-effort: any
+            // failure (path too long, open error) leaves notify_fd null.
+            var path_buf = std.posix.toPosixPath(input.NOTIFY_DEV_PATH) catch {
+                if (!quiet) log.warn("inputfs notify cdev path {s} too long; falling back to poll-timeout cadence", .{input.NOTIFY_DEV_PATH});
                 break :blk null;
             };
-            log.info("inputfs notify cdev opened at {s} (fd={})", .{ input.NOTIFY_DEV_PATH, f.handle });
-            break :blk f.handle;
+            const fd = std.posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(std.posix.mode_t, 0));
+            if (fd < 0) {
+                if (!quiet) {
+                    log.warn("inputfs notify cdev at {s} unavailable (errno={d}); falling back to poll-timeout cadence", .{ input.NOTIFY_DEV_PATH, @intFromEnum(std.posix.errno(fd)) });
+                }
+                break :blk null;
+            }
+            log.info("inputfs notify cdev opened at {s} (fd={})", .{ input.NOTIFY_DEV_PATH, fd });
+            break :blk fd;
         };
 
         // ADR 0009: build the kqueue bridge over the notify fd.
@@ -164,19 +173,23 @@ pub const InputfsInput = struct {
         // and leaves wake_kq null (poll-timeout cadence).
         const wake_kq: ?std.posix.fd_t = blk: {
             const nfd = notify_fd orelse break :blk null;
-            const kq = std.posix.kqueue() catch |err| {
-                if (!quiet) log.warn("kqueue bridge unavailable: {}; falling back to poll-timeout cadence", .{err});
+            const kq = std.posix.system.kqueue();
+            if (kq < 0) {
+                if (!quiet) log.warn("kqueue bridge unavailable (errno={d}); falling back to poll-timeout cadence", .{@intFromEnum(std.posix.errno(kq))});
                 break :blk null;
-            };
+            }
             var changes = [1]std.posix.Kevent{std.mem.zeroes(std.posix.Kevent)};
             changes[0].ident = @intCast(nfd);
             changes[0].filter = EVFILT_READ;
             changes[0].flags = EV_ADD | EV_CLEAR;
-            _ = std.posix.kevent(kq, &changes, &.{}, null) catch |err| {
-                if (!quiet) log.warn("kqueue bridge registration failed: {}; falling back to poll-timeout cadence", .{err});
+            // 0.16 removed std.posix.kevent; call the raw posix.system.kevent
+            // (slice args become ptr + count). One change in, no events out.
+            const reg_rc = std.posix.system.kevent(kq, &changes, 1, &changes, 0, null);
+            if (reg_rc < 0) {
+                if (!quiet) log.warn("kqueue bridge registration failed (errno={d}); falling back to poll-timeout cadence", .{@intFromEnum(std.posix.errno(reg_rc))});
                 closeFd(kq);
                 break :blk null;
-            };
+            }
             log.info("inputfs wake bridge: notify fd {} registered in kqueue fd {} (EVFILT_READ, EV_CLEAR)", .{ nfd, kq });
             break :blk kq;
         };
@@ -228,7 +241,10 @@ pub const InputfsInput = struct {
         const kq = self.wake_kq orelse return;
         var evs: [4]std.posix.Kevent = undefined;
         const zero = std.mem.zeroes(std.posix.timespec);
-        _ = std.posix.kevent(kq, &.{}, &evs, &zero) catch return;
+        // 0.16: raw posix.system.kevent. No changes, drain up to 4 events with
+        // a zero timeout (non-blocking). Errors are swallowed: a lost wake
+        // costs at most one poll timeout.
+        _ = std.posix.system.kevent(kq, &evs, 0, &evs, @intCast(evs.len), &zero);
     }
 
     /// Drain all newly published events from the inputfs ring and

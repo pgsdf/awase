@@ -88,6 +88,7 @@
 
 const std = @import("std");
 const semadraw = @import("semadraw");
+const compat = @import("compat");
 const font = @import("font.zig");
 const keymap = @import("keymap.zig");
 const sysinfo = @import("sysinfo.zig");
@@ -550,7 +551,7 @@ pub const State = struct {
             .network_str = net_str,
             .realmem_str = realmem_str,
             .physmem_str = physmem_str,
-            .network_last_refresh_ms = std.time.milliTimestamp(),
+            .network_last_refresh_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms))),
             .status_message = null,
             .selected_session = .terminal,
             .picker_cursor = .terminal,
@@ -603,7 +604,7 @@ pub const State = struct {
     /// indicator is far less disruptive than one that pops an
     /// error dialog.
     pub fn maybeRefreshNetwork(self: *State) bool {
-        const now = std.time.milliTimestamp();
+        const now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
         if (now - self.network_last_refresh_ms < NETWORK_REFRESH_INTERVAL_MS) {
             return false;
         }
@@ -1587,7 +1588,7 @@ fn makeTestState(allocator: std.mem.Allocator) !State {
         // invokes the draw path. State-machine tests do not call
         // maybeRefreshNetwork directly, but the field is part of
         // the struct contract and must be initialised.
-        .network_last_refresh_ms = std.time.milliTimestamp() + NETWORK_REFRESH_INTERVAL_MS,
+        .network_last_refresh_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms))) + NETWORK_REFRESH_INTERVAL_MS,
         .status_message = null,
         .selected_session = .terminal,
         .picker_cursor = .terminal,

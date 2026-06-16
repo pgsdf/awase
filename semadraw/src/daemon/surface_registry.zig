@@ -88,7 +88,7 @@ pub const AttachedBuffer = struct {
         const mapped = try posix.mmap(
             null,
             self.shm_size,
-            posix.PROT.READ,
+            .{ .READ = true },
             .{ .TYPE = .SHARED },
             self.shm_fd,
             0,
@@ -153,10 +153,10 @@ pub const SurfaceRegistry = struct {
             .allocator = allocator,
             .surfaces = std.AutoHashMap(protocol.SurfaceId, *Surface).init(allocator),
             .next_id = 1,
-            .composition_order = .{},
+            .composition_order = .empty,
             .order_dirty = false,
             .compositing = false,
-            .pending_destroy = .{},
+            .pending_destroy = .empty,
             .pending_buffer_updates = std.AutoHashMap(protocol.SurfaceId, []u8).init(allocator),
         };
     }
@@ -454,7 +454,7 @@ pub const SurfaceRegistry = struct {
 
     /// Remove all surfaces owned by a client
     pub fn removeClientSurfaces(self: *SurfaceRegistry, client: protocol.ClientId) void {
-        var to_remove = std.ArrayListUnmanaged(protocol.SurfaceId){};
+        var to_remove = std.ArrayListUnmanaged(protocol.SurfaceId).empty;
         defer to_remove.deinit(self.allocator);
 
         var it = self.surfaces.iterator();

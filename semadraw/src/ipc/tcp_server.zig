@@ -29,7 +29,7 @@ pub const TcpServer = struct {
     /// will be disconnected by the next readMessage call on that socket.
     pub const READ_TIMEOUT_SEC: u32 = 30;
 
-    pub const AcceptError = posix.AcceptError || error{Unexpected};
+    pub const AcceptError = compat.posix.AcceptError || error{Unexpected};
 
     /// Bind and listen on a TCP port
     pub fn bind(port: u16) !TcpServer {

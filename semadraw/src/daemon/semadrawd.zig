@@ -362,11 +362,11 @@ pub const Daemon = struct {
         //     logs a warning and skips. The daemon stays at the
         //     operator's uid. run_uid is just posix.geteuid().
         const run_uid: posix.uid_t = blk: {
-            const starting_uid = posix.getuid();
+            const starting_uid = posix.system.getuid();
             if (starting_uid != 0) {
-                break :blk posix.geteuid();
+                break :blk posix.system.geteuid();
             }
-            const env_uid = posix.getenv("SEMADRAW_RUN_UID") orelse {
+            const env_uid = compat.args.getenv("SEMADRAW_RUN_UID") orelse {
                 log.err("running as root but SEMADRAW_RUN_UID is unset; init cannot determine run uid", .{});
                 return error.EnvVarMissing;
             };
@@ -383,7 +383,7 @@ pub const Daemon = struct {
         // posture). Log the resolution so operators can see what
         // the daemon decided.
         const privileged_uid: ?posix.uid_t = blk: {
-            const env_priv = posix.getenv("SEMADRAW_PRIVILEGED_UID") orelse {
+            const env_priv = compat.args.getenv("SEMADRAW_PRIVILEGED_UID") orelse {
                 log.info("SEMADRAW_PRIVILEGED_UID unset; no client will be granted privileged status", .{});
                 break :blk null;
             };
@@ -431,7 +431,7 @@ pub const Daemon = struct {
             .run_uid = run_uid,
             .privileged_uid = privileged_uid,
             .pump_instrument = blk: {
-                const v = std.posix.getenv("UTF_PUMP_INSTRUMENT") orelse break :blk false;
+                const v = compat.args.getenv("UTF_PUMP_INSTRUMENT") orelse break :blk false;
                 break :blk v.len > 0;
             },
         };
@@ -999,7 +999,7 @@ pub const Daemon = struct {
         }
 
         // Poll fd array: [0] = server, [1] = tcp (optional), [...] = clients
-        var poll_fds: std.ArrayListUnmanaged(PollFd) = .{};
+        var poll_fds: std.ArrayListUnmanaged(PollFd) = .empty;
         defer poll_fds.deinit(self.allocator);
 
         while (self.running) {
@@ -2829,21 +2829,21 @@ const PrivilegeDropError = error{
 };
 
 fn dropPrivileges() !void {
-    const starting_uid = posix.getuid();
+    const starting_uid = posix.system.getuid();
     if (starting_uid != 0) {
         log.warn("not running as root (uid={d}); skipping privilege drop", .{starting_uid});
         log.warn("this is acceptable for development; production deployment under s6 starts as root", .{});
         return;
     }
 
-    // Read drop-target uid and gid from environment. posix.getenv returns
-    // ?[]const u8; null means the variable is unset.
-    const env_uid = posix.getenv("SEMADRAW_RUN_UID") orelse {
+    // Read drop-target uid and gid from environment. compat.args.getenv
+    // returns ?[]const u8; null means the variable is unset.
+    const env_uid = compat.args.getenv("SEMADRAW_RUN_UID") orelse {
         log.err("running as root but SEMADRAW_RUN_UID is unset; refusing to start", .{});
         log.err("the s6 run script should set SEMADRAW_RUN_UID and SEMADRAW_RUN_GID before exec", .{});
         return PrivilegeDropError.EnvVarMissing;
     };
-    const env_gid = posix.getenv("SEMADRAW_RUN_GID") orelse {
+    const env_gid = compat.args.getenv("SEMADRAW_RUN_GID") orelse {
         log.err("running as root but SEMADRAW_RUN_GID is unset; refusing to start", .{});
         return PrivilegeDropError.EnvVarMissing;
     };
@@ -2867,14 +2867,21 @@ fn dropPrivileges() !void {
     }
 
     // setgid first, then setuid. Once setuid drops root, setgid would fail.
-    posix.setgid(target_gid) catch |err| {
-        log.err("setgid({d}) failed: {}", .{ target_gid, err });
+    // 0.16 removed the std.posix setgid/setuid error-union wrappers; route to
+    // the raw posix.system surface and act on the return code (AD-6 owned error
+    // contract). The call sites only distinguish success from failure, so any
+    // nonzero return collapses to the per-step PrivilegeDropError; errno is
+    // logged for the operator.
+    const setgid_rc = posix.system.setgid(target_gid);
+    if (setgid_rc != 0) {
+        log.err("setgid({d}) failed: errno={d}", .{ target_gid, @intFromEnum(posix.errno(setgid_rc)) });
         return PrivilegeDropError.SetgidFailed;
-    };
-    posix.setuid(target_uid) catch |err| {
-        log.err("setuid({d}) failed: {}", .{ target_uid, err });
+    }
+    const setuid_rc = posix.system.setuid(target_uid);
+    if (setuid_rc != 0) {
+        log.err("setuid({d}) failed: errno={d}", .{ target_uid, @intFromEnum(posix.errno(setuid_rc)) });
         return PrivilegeDropError.SetuidFailed;
-    };
+    }
 
     // Verify the drop took. On a correctly-running kernel, a successful
     // setuid()/setgid() pair makes both real and effective ids match the
@@ -2882,17 +2889,18 @@ fn dropPrivileges() !void {
     // that returned success without dropping does not leave the daemon
     // running as root with a false sense of security.
     //
-    // We only verify uid here. std.posix exposes getuid/geteuid but not
-    // getgid/getegid in Zig 0.15.2, and std.c does not expose them
-    // either. The gid-side verification was always defense-in-depth: if
-    // posix.setgid above returned success, the kernel reported the gid
+    // We only verify uid here. In 0.16 std.posix exposes none of the
+    // credential syscalls (getuid/geteuid/getgid/getegid); they are reached
+    // through the surviving posix.system surface, which does expose all of
+    // them. The gid-side verification was always defense-in-depth: if
+    // setgid above returned success, the kernel reported the gid
     // actually changed. A kernel that lies about setgid success but
     // also lies consistently about getgid would defeat any check we
     // could write; that is not a real failure mode. The uid check still
     // catches the plausible failure mode (operator misconfiguration
     // where SEMADRAW_RUN_UID is wrong).
-    const post_uid = posix.getuid();
-    const post_euid = posix.geteuid();
+    const post_uid = posix.system.getuid();
+    const post_euid = posix.system.geteuid();
     if (post_uid != target_uid or post_euid != target_uid) {
         log.err("privilege-drop verification failed: post-drop uid={d} euid={d}, expected uid={d}", .{
             post_uid, post_euid, target_uid,

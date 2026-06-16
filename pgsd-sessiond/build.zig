@@ -162,6 +162,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "semadraw", .module = semadraw_mod },
+                .{ .name = "compat", .module = compat_mod },
             },
         }),
     });

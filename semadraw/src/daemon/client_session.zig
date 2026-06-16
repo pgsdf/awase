@@ -91,7 +91,7 @@ pub const ClientSession = struct {
             .state = .awaiting_hello,
             .limits = .{},
             .usage = .{},
-            .surfaces = .{},
+            .surfaces = .empty,
             .allocator = allocator,
             .sdcs_buffer = null,
         };

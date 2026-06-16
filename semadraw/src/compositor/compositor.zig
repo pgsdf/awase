@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat");
 const damage = @import("damage");
 const frame_scheduler = @import("frame_scheduler");
 const backend_mod = @import("backend");
@@ -121,14 +122,14 @@ pub const Compositor = struct {
             // or empty leaves it off. Reading once at construction means
             // zero per-frame syscall cost when off.
             .instrument = blk: {
-                const v = std.posix.getenv("UTF_COMPOSITOR_INSTRUMENT") orelse break :blk false;
+                const v = compat.args.getenv("UTF_COMPOSITOR_INSTRUMENT") orelse break :blk false;
                 break :blk v.len > 0;
             },
             // AD-25 Round 2: same init-time pattern for the
             // composite-gate diagnostic. Enabled by setting
             // UTF_COMPOSITE_GATE_INSTRUMENT to any non-empty value.
             .gate_instrument = blk: {
-                const v = std.posix.getenv("UTF_COMPOSITE_GATE_INSTRUMENT") orelse break :blk false;
+                const v = compat.args.getenv("UTF_COMPOSITE_GATE_INSTRUMENT") orelse break :blk false;
                 break :blk v.len > 0;
             },
             .gate_stall_since_wall = null,

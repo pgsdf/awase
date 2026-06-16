@@ -230,7 +230,7 @@ const USAGE_TEXT =
     \\
 ;
 
-fn printUsage(out: std.fs.File) void {
+fn printUsage(out: compat.fs.Stream) void {
     out.writeAll(USAGE_TEXT) catch {};
 }
 
@@ -299,7 +299,7 @@ fn parseArgs(argv: []const [:0]const u8) ArgError!Args {
         } else if (std.mem.startsWith(u8, a, "--session=")) {
             args.session = a["--session=".len..];
         } else if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) {
-            printUsage(std.fs.File.stdout());
+            printUsage(compat.fs.stdout());
             std.process.exit(EXIT_OK);
         } else if (std.mem.startsWith(u8, a, "-")) {
             return ArgError.UnknownFlag;
@@ -436,7 +436,7 @@ const CliConv = struct {
     ) anyerror!?[*:0]u8 {
         const self: *CliConv = @ptrCast(@alignCast(ctx));
 
-        const stderr = std.fs.File.stderr();
+        const stderr = compat.fs.stderr();
         _ = stderr.writeAll(prompt) catch {};
         // PAM prompts conventionally don't include trailing space; add one.
         if (prompt.len > 0 and prompt[prompt.len - 1] != ' ') {
@@ -447,7 +447,7 @@ const CliConv = struct {
             pam.PROMPT_ECHO_OFF, pam.PROMPT_ECHO_ON => {
                 // Read a line of input. For ECHO_OFF, suppress echo on
                 // stdin during the read.
-                const stdin_fd: c_int = @intCast(std.fs.File.stdin().handle);
+                const stdin_fd: c_int = posix.STDIN_FILENO;
                 const term: ?TermState = if (style == pam.PROMPT_ECHO_OFF)
                     disableEcho(stdin_fd)
                 else
@@ -498,10 +498,9 @@ const CliConv = struct {
         var buf = std.ArrayList(u8).empty;
         defer buf.deinit(allocator);
 
-        const stdin = std.fs.File.stdin();
         var chunk: [1]u8 = undefined;
         while (true) {
-            const n = stdin.read(&chunk) catch |err| return err;
+            const n = posix.read(posix.STDIN_FILENO, &chunk) catch |err| return err;
             if (n == 0) {
                 if (buf.items.len == 0) return null;
                 break;
@@ -595,13 +594,13 @@ const SERVICE_PRIMARY: [:0]const u8 = "pgsd-sessiond";
 const SERVICE_FALLBACK: [:0]const u8 = "login";
 
 fn selectService() [:0]const u8 {
-    std.fs.cwd().access("/etc/pam.d/pgsd-sessiond", .{}) catch {
+    if (posix.system.access("/etc/pam.d/pgsd-sessiond", posix.F_OK) != 0) {
         std.debug.print(
             "note: /etc/pam.d/pgsd-sessiond not installed; falling back to PAM service \"login\"\n",
             .{},
         );
         return SERVICE_FALLBACK;
-    };
+    }
     return SERVICE_PRIMARY;
 }
 
@@ -623,7 +622,7 @@ pub fn main(init: std.process.Init.Minimal) u8 {
 
     const args = parseArgs(argv) catch |err| {
         printArgError(err, argv);
-        printUsage(std.fs.File.stderr());
+        printUsage(compat.fs.stderr());
         return EXIT_USAGE;
     };
 
@@ -686,7 +685,7 @@ fn runListUsers(alloc: std.mem.Allocator) u8 {
     };
     defer list.deinit(alloc);
 
-    const stdout = std.fs.File.stdout();
+    const stdout = compat.fs.stdout();
     var buf: [4096]u8 = undefined;
 
     for (list.users.items) |*u| {
@@ -729,7 +728,7 @@ fn runListSessions(alloc: std.mem.Allocator) u8 {
     };
     defer result.deinit(alloc);
 
-    const stdout = std.fs.File.stdout();
+    const stdout = compat.fs.stdout();
     var buf: [8192]u8 = undefined;
 
     for (result.sessions.items) |*s| {

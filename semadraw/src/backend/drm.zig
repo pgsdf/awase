@@ -229,7 +229,7 @@ const DumbBuffer = struct {
         const map_ptr = posix.mmap(
             null,
             @intCast(create_req.size),
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             fd,
             @intCast(map_req.offset),
@@ -596,16 +596,32 @@ pub const DrmBackend = struct {
         @memcpy(data, text);
         self.clipboard_data[selection] = data;
 
-        // Persist to file for cross-process sharing
+        // Persist to file for cross-process sharing. 0.16 removed
+        // std.fs.createFileAbsolute and the std.Io.File writeAll path; open
+        // write-only/create/truncate through posix.system and write the bytes
+        // with a partial-write loop (raw-posix idiom, AD-6). Best-effort: any
+        // failure keeps the in-memory copy.
         const path = getClipboardPath(selection);
-        const file = std.fs.createFileAbsolute(path, .{ .truncate = true }) catch |err| {
-            log.warn("failed to persist clipboard to {s}: {}", .{ path, err });
+        var path_buf = posix.toPosixPath(path) catch {
+            log.warn("failed to persist clipboard to {s}: path too long", .{path});
+            return;
+        };
+        const fd = posix.system.open(&path_buf, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(posix.mode_t, 0o666));
+        if (fd < 0) {
+            log.warn("failed to persist clipboard to {s} (errno={d})", .{ path, @intFromEnum(posix.errno(fd)) });
             return; // Still keep in memory even if file write fails
-        };
-        defer file.close();
-        file.writeAll(text) catch |err| {
-            log.warn("failed to write clipboard data: {}", .{err});
-        };
+        }
+        defer _ = posix.system.close(fd);
+        var woff: usize = 0;
+        while (woff < text.len) {
+            const w = posix.system.write(fd, text.ptr + woff, text.len - woff);
+            if (w < 0) {
+                log.warn("failed to write clipboard data (errno={d})", .{@intFromEnum(posix.errno(w))});
+                break;
+            }
+            if (w == 0) break;
+            woff += @intCast(w);
+        }
 
         log.debug("clipboard set: {} bytes to selection {}", .{ text.len, selection });
     }
@@ -617,28 +633,43 @@ pub const DrmBackend = struct {
         // If we don't have data in memory, try to load from file
         if (self.clipboard_data[selection] == null) {
             const path = getClipboardPath(selection);
-            const file = std.fs.openFileAbsolute(path, .{}) catch {
+            // 0.16: open read-only via posix.system; size via lseek(END) then
+            // rewind; read with a partial-read loop (raw-posix idiom).
+            var path_buf = posix.toPosixPath(path) catch {
                 self.clipboard_pending[selection] = true;
                 return;
             };
-            defer file.close();
-
-            const stat = file.stat() catch {
+            const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+            if (fd < 0) {
                 self.clipboard_pending[selection] = true;
                 return;
-            };
+            }
+            defer _ = posix.system.close(fd);
 
-            if (stat.size > 0 and stat.size < 1024 * 1024) { // Max 1MB
-                const data = self.allocator.alloc(u8, @intCast(stat.size)) catch {
+            const end = posix.system.lseek(fd, 0, posix.SEEK.END);
+            if (end < 0) {
+                self.clipboard_pending[selection] = true;
+                return;
+            }
+            const fsize: u64 = @intCast(end);
+            _ = posix.system.lseek(fd, 0, posix.SEEK.SET);
+
+            if (fsize > 0 and fsize < 1024 * 1024) { // Max 1MB
+                const data = self.allocator.alloc(u8, @intCast(fsize)) catch {
                     self.clipboard_pending[selection] = true;
                     return;
                 };
-                const bytes_read = file.readAll(data) catch {
-                    self.allocator.free(data);
-                    self.clipboard_pending[selection] = true;
-                    return;
-                };
-                if (bytes_read == data.len) {
+                var roff: usize = 0;
+                var read_ok = true;
+                while (roff < data.len) {
+                    const r = posix.read(fd, data[roff..]) catch {
+                        read_ok = false;
+                        break;
+                    };
+                    if (r == 0) break;
+                    roff += r;
+                }
+                if (read_ok and roff == data.len) {
                     self.clipboard_data[selection] = data;
                 } else {
                     self.allocator.free(data);

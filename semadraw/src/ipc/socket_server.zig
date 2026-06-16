@@ -23,7 +23,7 @@ pub const SocketServer = struct {
     fd: posix.socket_t,
     path: []const u8,
 
-    pub const AcceptError = posix.AcceptError || error{Unexpected};
+    pub const AcceptError = compat.posix.AcceptError || error{Unexpected};
 
     /// Bind and listen on a Unix domain socket.
     ///

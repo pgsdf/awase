@@ -36,6 +36,7 @@
 //! ```
 
 const std = @import("std");
+const compat = @import("compat");
 const client = @import("semadraw_client");
 const Encoder = @import("encoder.zig").Encoder;
 
@@ -187,7 +188,7 @@ pub const App = struct {
             0;
 
         while (self.running) {
-            const frame_start = std.time.nanoTimestamp();
+            const frame_start = compat.time.nowMonotonic();
 
             // Draw
             try self.encoder.reset();
@@ -202,9 +203,9 @@ pub const App = struct {
 
             // Frame pacing
             if (frame_ns > 0) {
-                const elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
+                const elapsed: u64 = @intCast(compat.time.nowMonotonic() - frame_start);
                 if (elapsed < frame_ns) {
-                    std.Thread.sleep(frame_ns - elapsed);
+                    compat.time.sleep(compat.time.Duration.fromNanoseconds(frame_ns - elapsed));
                 }
             }
         }

@@ -95,7 +95,7 @@ pub const SurfaceDamage = struct {
     pub fn init(surface_id: u32) SurfaceDamage {
         return .{
             .surface_id = surface_id,
-            .regions = .{},
+            .regions = .empty,
             .full_damage = false,
             .frame_added = 0,
         };
@@ -206,7 +206,7 @@ pub const DamageTracker = struct {
         return .{
             .allocator = allocator,
             .surface_damage = std.AutoHashMap(u32, SurfaceDamage).init(allocator),
-            .output_damage = .{},
+            .output_damage = .empty,
             .needs_full_repaint = true, // Start with full repaint
             .current_frame = 0,
         };

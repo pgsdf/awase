@@ -644,7 +644,7 @@ pub const DrawfsBackend = struct {
         const map = posix.mmap(
             null,
             self.surface_bytes,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .SHARED },
             self.fd,
             0,
