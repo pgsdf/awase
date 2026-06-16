@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const compat = @import("compat");
 const builtin = @import("builtin");
 
 // Platform-specific ioctl constants
@@ -35,7 +36,7 @@ pub const Pty = struct {
     pub fn spawn(shell: ?[]const u8, cols: u16, rows: u16) !Self {
         // Open pty master using posix_openpt
         const master_fd = try openPtyMaster();
-        errdefer posix.close(master_fd);
+        errdefer _ = posix.system.close(master_fd);
 
         // Get slave name and unlock using libc functions
         const slave_name = ptsname(master_fd) orelse return error.PtsnameFailed;
@@ -52,31 +53,32 @@ pub const Pty = struct {
         _ = ioctl(master_fd, TIOCSWINSZ, @intFromPtr(&ws));
 
         // Fork
-        const pid = try posix.fork();
+        const pid_rc = posix.system.fork();
+        if (pid_rc < 0) return error.ForkFailed;
+        const pid = pid_rc;
 
         if (pid == 0) {
             // Child process
-            posix.close(master_fd);
+            _ = posix.system.close(master_fd);
 
             // Create new session
             _ = std.c.setsid();
 
             // Open slave pty
             const slave_name_slice = std.mem.sliceTo(slave_name, 0);
-            const slave_fd = posix.open(slave_name_slice, .{ .ACCMODE = .RDWR }, 0) catch {
-                posix.exit(1);
-            };
+            const slave_fd = posix.system.open(slave_name_slice.ptr, .{ .ACCMODE = .RDWR }, @as(posix.mode_t, 0));
+            if (slave_fd < 0) posix.system._exit(1);
 
             // Set as controlling terminal
             _ = ioctl(slave_fd, TIOCSCTTY, @as(c_ulong, 0));
 
             // Duplicate to stdin/stdout/stderr
-            posix.dup2(slave_fd, 0) catch posix.exit(1);
-            posix.dup2(slave_fd, 1) catch posix.exit(1);
-            posix.dup2(slave_fd, 2) catch posix.exit(1);
+            if (posix.system.dup2(slave_fd, 0) < 0) posix.system._exit(1);
+            if (posix.system.dup2(slave_fd, 1) < 0) posix.system._exit(1);
+            if (posix.system.dup2(slave_fd, 2) < 0) posix.system._exit(1);
 
             if (slave_fd > 2) {
-                posix.close(slave_fd);
+                _ = posix.system.close(slave_fd);
             }
 
             // Set window size on slave
@@ -88,7 +90,7 @@ pub const Pty = struct {
             // Copy shell path to null-terminated buffer for execve
             var shell_path_buf: [256]u8 = undefined;
             if (shell_path_slice.len >= shell_path_buf.len) {
-                posix.exit(1);
+                posix.system._exit(1);
             }
             @memcpy(shell_path_buf[0..shell_path_slice.len], shell_path_slice);
             shell_path_buf[shell_path_slice.len] = 0;
@@ -137,7 +139,7 @@ pub const Pty = struct {
             );
             _ = err;
 
-            posix.exit(127);
+            posix.system._exit(127);
         }
 
         // Parent process
@@ -150,10 +152,10 @@ pub const Pty = struct {
 
     /// Close the pty and wait for child
     pub fn close(self: *Self) void {
-        posix.close(self.master_fd);
+        _ = posix.system.close(self.master_fd);
         // Only wait if child hasn't been reaped already
         if (self.child_pid != 0) {
-            _ = posix.waitpid(self.child_pid, 0);
+            _ = posix.system.waitpid(self.child_pid, null, 0);
         }
     }
 
@@ -176,8 +178,9 @@ pub const Pty = struct {
     pub fn write(self: *Self, data: []const u8) !void {
         var written: usize = 0;
         while (written < data.len) {
-            const n = try posix.write(self.master_fd, data[written..]);
-            written += n;
+            const rc = posix.system.write(self.master_fd, data[written..].ptr, data.len - written);
+            if (rc < 0) return error.WriteFailed;
+            written += @intCast(rc);
         }
     }
 
@@ -194,8 +197,9 @@ pub const Pty = struct {
 
     /// Check if child is still running
     pub fn isAlive(self: *const Self) bool {
-        const result = posix.waitpid(self.child_pid, posix.W.NOHANG);
-        return result.pid == 0; // 0 means still running
+        var status: c_int = undefined;
+        const wpid = posix.system.waitpid(self.child_pid, &status, @intCast(posix.W.NOHANG));
+        return wpid == 0; // 0 means still running
     }
 };
 
@@ -217,7 +221,7 @@ fn openPtyMaster() !posix.fd_t {
 
 fn getDefaultShell() []const u8 {
     // Try SHELL environment variable
-    if (std.posix.getenv("SHELL")) |shell| {
+    if (compat.args.getenv("SHELL")) |shell| {
         return shell;
     }
     // Fallback to /bin/sh

@@ -41,13 +41,13 @@ const Connection = semadraw_client.Connection;
 fn writeOut(comptime fmt: []const u8, args: anytype) void {
     var buf: [256]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = posix.write(1, s) catch {};
+    compat.fs.stdout().writeAll(s) catch {};
 }
 
 fn writeErr(comptime fmt: []const u8, args: anytype) void {
     var buf: [256]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = posix.write(2, s) catch {};
+    compat.fs.stderr().writeAll(s) catch {};
 }
 
 fn usage() void {
@@ -62,7 +62,7 @@ fn usage() void {
         \\  idle_probe --help         Print this message.
         \\
     ;
-    _ = posix.write(1, text) catch {};
+    compat.fs.stdout().writeAll(text) catch {};
 }
 
 const Args = struct {
@@ -143,6 +143,6 @@ pub fn main(init: std.process.Init.Minimal) !void {
         writeOut("idle last_input_ts_ns={d} delta_ns={d} advanced={s}\n", .{ v, delta, advanced });
         prev = v;
         have_prev = true;
-        std.Thread.sleep(interval_ns);
+        compat.time.sleep(compat.time.Duration.fromNanoseconds(interval_ns));
     }
 }

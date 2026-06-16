@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             }
             socket_path = args[i];
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            const stdout_file = std.fs.File{ .handle = posix.STDOUT_FILENO };
+            const stdout_file = compat.fs.stdout();
             try stdout_file.writeAll(
                 \\semadraw-demo - Graphics demo for SemaDraw
                 \\
@@ -110,7 +110,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
 
         // ~30 FPS (33ms = 0 seconds, 33_000_000 nanoseconds)
-        posix.nanosleep(0, 33_000_000);
+        compat.time.sleep(compat.time.Duration.fromNanoseconds(33_000_000));
     }
 
     log.info("demo finished", .{});

@@ -1,11 +1,24 @@
 const std = @import("std");
 const compat = @import("compat");
 const sdcs = @import("sdcs");
+const posix = std.posix;
 
-fn readExact(r: anytype, buf: []u8) !void {
+
+// Owned raw-posix read/seek idioms (Zig 0.16 removed std.fs.File). This tool's
+// fs surface is read-only SDCS inspection.
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn seekByFd(fd: posix.fd_t, delta: i64) !void {
+    if (posix.system.lseek(fd, delta, posix.SEEK.CUR) < 0) return error.SeekFailed;
+}
+fn readExact(fd: posix.fd_t, buf: []u8) !void {
     var off: usize = 0;
     while (off < buf.len) {
-        const n = try r.read(buf[off..]);
+        const n = try posix.read(fd, buf[off..]);
         if (n == 0) return error.EndOfStream;
         off += n;
     }
@@ -42,18 +55,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return error.InvalidArgument;
     }
 
-    var file = try std.fs.cwd().openFile(args[1], .{});
-    defer file.close();
+    const fd = try openReadOnly(args[1]);
+    defer _ = posix.system.close(fd);
 
     var h: sdcs.Header = undefined;
-    try readExact(file, std.mem.asBytes(&h));
+    try readExact(fd, std.mem.asBytes(&h));
     if (!std.mem.eql(u8, h.magic[0..], sdcs.Magic)) return error.Protocol;
 
     std.debug.print("SDCS {d}.{d}\n", .{ h.version_major, h.version_minor });
 
     while (true) {
         var ch: sdcs.ChunkHeader = undefined;
-        const got = file.read(std.mem.asBytes(&ch)) catch return;
+        const got = posix.read(fd, std.mem.asBytes(&ch)) catch return;
         if (got == 0) break;
         if (got != @sizeOf(sdcs.ChunkHeader)) break;
 
@@ -70,25 +83,25 @@ pub fn main(init: std.process.Init.Minimal) !void {
             var remaining: usize = @intCast(ch.payload_bytes);
             while (remaining >= @sizeOf(sdcs.CmdHdr)) {
                 var cmd: sdcs.CmdHdr = undefined;
-                try readExact(file, std.mem.asBytes(&cmd));
+                try readExact(fd, std.mem.asBytes(&cmd));
                 remaining -= @sizeOf(sdcs.CmdHdr);
 
                 const pb: usize = @intCast(cmd.payload_bytes);
                 std.debug.print("  op 0x{X:0>4} {s} payload {d}\n", .{ cmd.opcode, opcodeName(cmd.opcode), pb });
                 if (pb > remaining) return error.Protocol;
-                try file.seekBy(@intCast(pb));
+                try seekByFd(fd, @intCast(pb));
                 remaining -= pb;
 
                 const pad = sdcs.pad8Len(@sizeOf(sdcs.CmdHdr) + pb);
                 if (pad > remaining) return error.Protocol;
-                if (pad != 0) try file.seekBy(@intCast(pad));
+                if (pad != 0) try seekByFd(fd, @intCast(pad));
                 remaining -= pad;
 
                 if (cmd.opcode == sdcs.Op.END) break;
             }
             break;
         } else {
-            try file.seekBy(@intCast(ch.payload_bytes));
+            try seekByFd(fd, @intCast(ch.payload_bytes));
         }
     }
 }

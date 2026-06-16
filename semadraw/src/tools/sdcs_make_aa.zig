@@ -1,7 +1,17 @@
 const std = @import("std");
+const posix = std.posix;
 const compat = @import("compat");
 const semadraw = @import("semadraw");
 
+
+// Owned raw-posix create idiom (Zig 0.16 removed std.fs.File). The fd feeds
+// Encoder.writeToFile, which writes through the surviving posix.system surface.
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
 pub fn main(init: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -18,8 +28,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     const out_path = args[1];
 
-    var file = try std.fs.cwd().createFile(out_path, .{ .truncate = true });
-    defer file.close();
+    const fd = try openCreateRdwr(out_path, 0o644);
+    defer _ = posix.system.close(fd);
 
     var enc = semadraw.Encoder.init(alloc);
     defer enc.deinit();
@@ -74,5 +84,5 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try enc.strokeLine(170.0, 220.0, 210.0, 250.0, 2.0, 0.0, 1.0, 0.0, 1.0);
 
     try enc.end();
-    try enc.writeToFile(file);
+    try enc.writeToFile(fd);
 }

@@ -2,6 +2,44 @@ const std = @import("std");
 const compat = @import("compat");
 const sdcs = @import("sdcs");
 const simd = @import("simd");
+const posix = std.posix;
+
+// Owned raw-posix fs idioms (Zig 0.16 removed std.fs.File). sdcs_replay reads an
+// SDCS file (validate + execute) and writes a PPM; both run on raw fds, the fd
+// also feeding the fd-based sdcs.validateFile.
+fn openReadOnly(path: []const u8) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDONLY }, @as(posix.mode_t, 0));
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn openCreateRdwr(path: []const u8, mode: posix.mode_t) !posix.fd_t {
+    var path_buf = try posix.toPosixPath(path);
+    const fd = posix.system.open(&path_buf, .{ .ACCMODE = .RDWR, .CREAT = true, .TRUNC = true }, mode);
+    if (fd < 0) return error.OpenFailed;
+    return fd;
+}
+fn seekToFd(fd: posix.fd_t, off: u64) !void {
+    if (posix.system.lseek(fd, @intCast(off), posix.SEEK.SET) < 0) return error.SeekFailed;
+}
+fn seekByFd(fd: posix.fd_t, delta: i64) !void {
+    if (posix.system.lseek(fd, delta, posix.SEEK.CUR) < 0) return error.SeekFailed;
+}
+fn writeAllFd(fd: posix.fd_t, bytes: []const u8) !void {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const rc = posix.system.write(fd, bytes[off..].ptr, bytes.len - off);
+        if (rc < 0) return error.WriteFailed;
+        off += @intCast(rc);
+    }
+}
+// A by-value reader over a raw fd, for the readExact(anytype) call sites.
+const FdReader = struct {
+    fd: posix.fd_t,
+    fn read(self: FdReader, buf: []u8) !usize {
+        return posix.read(self.fd, buf);
+    }
+};
 
 fn readExact(r: anytype, buf: []u8) !void {
     var off: usize = 0;
@@ -18,13 +56,13 @@ fn readExact(r: anytype, buf: []u8) !void {
 /// Zig 0.15.2 does not expose `std.io.limitedReader`, but we only need a
 /// wrapper that prevents reading past a fixed byte count.
 const LimitedFileReader = struct {
-    file: *std.fs.File,
+    fd: posix.fd_t,
     remaining: usize,
 
     fn read(self: *LimitedFileReader, buf: []u8) !usize {
         if (self.remaining == 0) return 0;
         const want = @min(buf.len, self.remaining);
-        const n = try self.file.read(buf[0..want]);
+        const n = try posix.read(self.fd, buf[0..want]);
         self.remaining -= n;
         return n;
     }
@@ -1542,11 +1580,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var rgba = try alloc.alloc(u8, w * h * 4);
     defer alloc.free(rgba);
 
-    var clip_rects = std.ArrayList(ClipRect){};
+    var clip_rects = std.ArrayList(ClipRect).empty;
     defer clip_rects.deinit(alloc);
-    var clip_path_pts = std.ArrayList(FillPoint){};
+    var clip_path_pts = std.ArrayList(FillPoint).empty;
     defer clip_path_pts.deinit(alloc);
-    var clip_path_lens = std.ArrayList(u32){};
+    var clip_path_lens = std.ArrayList(u32).empty;
     defer clip_path_lens.deinit(alloc);
     var clip: Clip = .{};
     var t = Transform2D{};
@@ -1592,15 +1630,15 @@ var last_ca: f32 = 0;
         }
     }
 
-    var file = try std.fs.cwd().openFile(in_path, .{});
-    defer file.close();
+    const fd = try openReadOnly(in_path);
+    defer _ = posix.system.close(fd);
 
     // Validate before executing
-    try sdcs.validateFile(file);
-    try file.seekTo(0);
+    try sdcs.validateFile(fd);
+    try seekToFd(fd, 0);
 
     // Zig 0.15.x: use `fs.File` directly (fs.File.Reader does not expose `.read()`).
-    var file_r = file;
+    var file_r = FdReader{ .fd = fd };
 
     var header: sdcs.Header = undefined;
     try readExact(file_r, std.mem.asBytes(&header));
@@ -1613,7 +1651,7 @@ var last_ca: f32 = 0;
         if (got != @sizeOf(sdcs.ChunkHeader)) break;
 
         if (ch.type != sdcs.ChunkType.CMDS) {
-            try file.seekBy(@intCast(ch.payload_bytes));
+            try seekByFd(fd, @intCast(ch.payload_bytes));
             continue;
         }
 
@@ -1664,7 +1702,7 @@ if (cmd.opcode == 0 and cmd.flags == 0 and cmd.payload_bytes == 0) {
             const pb: usize = @intCast(cmd.payload_bytes);
             if (pb > remaining) break;
 
-            var lr = LimitedFileReader{ .file = &file, .remaining = pb };
+            var lr = LimitedFileReader{ .fd = fd, .remaining = pb };
             const r = lr.reader();
 
             if (cmd.opcode == sdcs.Op.RESET) {
@@ -2534,26 +2572,26 @@ else if (cmd.opcode == sdcs.Op.FILL_RECT) {
                 last_line_valid = false;
 
             } else {
-                try file.seekBy(@intCast(pb));
+                try seekByFd(fd, @intCast(pb));
 
             }
             const left = lr.remaining;
-            if (left != 0) try file.seekBy(@intCast(left));
+            if (left != 0) try seekByFd(fd, @intCast(left));
             remaining -= pb;
 
             const pad = sdcs.pad8Len(@sizeOf(sdcs.CmdHdr) + pb);
             if (pad > remaining) return error.Protocol;
-            if (pad != 0) try file.seekBy(@intCast(pad));
+            if (pad != 0) try seekByFd(fd, @intCast(pad));
             remaining -= pad;
-            file_r = file;
+            file_r = FdReader{ .fd = fd };
 
             if (cmd.opcode == sdcs.Op.END) break;
         }
         break;
     }
 
-    var out = try std.fs.cwd().createFile(out_path, .{ .truncate = true });
-    defer out.close();
+    const out_fd = try openCreateRdwr(out_path, 0o644);
+    defer _ = posix.system.close(out_fd);
     
 // flush final pending cap
 if (pending_cap_valid) {
@@ -2593,7 +2631,7 @@ else if (stroke_cap == .Round) {
 // so format into a small buffer and write the bytes.
 var ppm_hdr_buf: [64]u8 = undefined;
 const ppm_hdr = try std.fmt.bufPrint(&ppm_hdr_buf, "P6\n{d} {d}\n255\n", .{ w, h });
-try out.writeAll(ppm_hdr);
+try writeAllFd(out_fd, ppm_hdr);
 
     // Convert RGBA framebuffer to RGB for PPM output.
     // PPM P6 is 3 bytes per pixel (RGB)
@@ -2605,7 +2643,7 @@ try out.writeAll(ppm_hdr);
         rgb_out[i * 3 + 1] = rgba[i * 4 + 1];
         rgb_out[i * 3 + 2] = rgba[i * 4 + 2];
     }
-    try out.writeAll(rgb_out);
+    try writeAllFd(out_fd, rgb_out);
 }
 
 test "pointInFilledPath convex square nonzero" {

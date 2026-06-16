@@ -405,7 +405,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             // at run time.
             config.fullscreen = true;
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            const f = std.fs.File{ .handle = posix.STDOUT_FILENO };
+            const f = compat.fs.stdout();
             f.writeAll(
                 \\semadraw-term - Terminal emulator for SemaDraw
                 \\
@@ -603,8 +603,8 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
     try renderFrame(allocator, &state, &rend, surface, conn, true);
 
     const blink_ms: i64 = 500;
-    var last_blink  = std.time.milliTimestamp();
-    var last_pty_ms = std.time.milliTimestamp();
+    var last_blink  = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
+    var last_pty_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
     var last_switch_ms: i64 = 0; // debounce session switch keys
     var blink_vis   = true;
     var running     = true;
@@ -638,7 +638,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         _ = posix.poll(pfds[0..nfds], 16) catch continue;
 
         // Cursor blink: only trigger if PTY has been quiet for at least one blink interval
-        const now = std.time.milliTimestamp();
+        const now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
         if (sess.scr.shouldCursorBlink() and now - last_blink >= blink_ms and now - last_pty_ms >= blink_ms) {
             blink_vis   = !blink_vis;
             last_blink  = now;
@@ -664,7 +664,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                         s.parser.feedSlice(data.?);
                         if (si == state.active) {
                             needs_render = true;
-                            last_pty_ms = std.time.milliTimestamp();
+                            last_pty_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
                         } else s.bell = true;
                         // Check if more data is available
                         var check = [1]posix.pollfd{.{ .fd = s.shell.getFd(), .events = posix.POLL.IN, .revents = 0 }};
@@ -674,8 +674,9 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                 }
 
                 if (pfd.revents & (posix.POLL.HUP | posix.POLL.ERR) != 0) {
-                    const wr = posix.waitpid(s.shell.child_pid, posix.W.NOHANG);
-                    if (wr.pid != 0) s.shell.child_pid = 0;
+                    var wr_status: c_int = undefined;
+                    const wr_pid = posix.system.waitpid(s.shell.child_pid, &wr_status, @intCast(posix.W.NOHANG));
+                    if (wr_pid != 0) s.shell.child_pid = 0;
                     s.alive = false;
                     if (si == state.active) {
                         if (state.session_count <= 1) {
@@ -702,7 +703,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         // destroyed: their teardown would touch the dead socket (the
         // semasound never-close-dead-fds policy).
         if (!connected) {
-            const rc_now = std.time.milliTimestamp();
+            const rc_now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
             if (rc_now - last_reconnect_ms >= 1000) {
                 last_reconnect_ms = rc_now;
                 reconnect: {
@@ -734,12 +735,12 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                         // to reconnecting; the PTYs keep pumping.
                         log.warn("semadrawd disconnected; terminal state held, reconnecting", .{});
                         connected = false;
-                        last_reconnect_ms = std.time.milliTimestamp();
+                        last_reconnect_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
                     },
                     .error_reply  => |e| log.err("daemon error: {}", .{e.code}),
                     .key_press    => |k| {
                         if (k.pressed == 1) {
-                            const now_sw = std.time.milliTimestamp();
+                            const now_sw = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
                             const is_switch = handleSessionSwitch(&state, k.key_code, k.modifiers);
                             if (is_switch) {
                                 // Debounce: ignore session switch repeats within 300ms
@@ -769,7 +770,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                                 // same transition as .disconnected.
                                 log.warn("commit failed; semadrawd gone, terminal state held, reconnecting", .{});
                                 connected = false;
-                                last_reconnect_ms = std.time.milliTimestamp();
+                                last_reconnect_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
                             }
                         }
                     },
@@ -792,7 +793,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                 // reconnect repaint has everything.
                 log.warn("commit failed; semadrawd gone, terminal state held, reconnecting", .{});
                 connected = false;
-                last_reconnect_ms = std.time.milliTimestamp();
+                last_reconnect_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
             }
         }
     }

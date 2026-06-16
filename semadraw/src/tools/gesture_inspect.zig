@@ -44,13 +44,13 @@ const GesturePayload = semadraw_client.GesturePayload;
 fn writeOut(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = posix.write(1, s) catch {};
+    compat.fs.stdout().writeAll(s) catch {};
 }
 
 fn writeErr(comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = posix.write(2, s) catch {};
+    compat.fs.stderr().writeAll(s) catch {};
 }
 
 // ============================================================================
@@ -113,7 +113,7 @@ fn printHelp() void {
         \\for the canonical input scenarios and expected output lines.
         \\
     ;
-    _ = posix.write(1, help) catch {};
+    compat.fs.stdout().writeAll(help) catch {};
 }
 
 // ============================================================================
@@ -123,8 +123,7 @@ fn printHelp() void {
 fn formatModifiers(buf: []u8, modifiers: u8) ![]const u8 {
     // Bit 0 = SHIFT, 1 = ALT, 2 = CTRL, 3 = META (matches GestureFlags
     // by construction; see semadrawd's last_modifiers doc).
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(buf);
     var first = true;
     if ((modifiers & 0x01) != 0) {
         if (!first) try w.writeByte('+');
@@ -147,7 +146,7 @@ fn formatModifiers(buf: []u8, modifiers: u8) ![]const u8 {
         first = false;
     }
     if (first) try w.writeAll("none");
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 fn formatGestureFlags(buf: []u8, flags: protocol.GestureFlags) ![]const u8 {
@@ -252,8 +251,7 @@ fn printGesture(g: ParsedGesture) void {
 }
 
 fn formatGesturePayload(buf: []u8, payload: GesturePayload) ![]const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(buf);
     switch (payload) {
         .n_click => |p| try w.print("button={d} count={d} x={d} y={d}", .{ p.button, p.count, p.x, p.y }),
         .drag_start, .drag_move, .drag_end, .tap => |p| try w.print(
@@ -304,7 +302,7 @@ fn formatGesturePayload(buf: []u8, payload: GesturePayload) ![]const u8 {
             try w.print("predicted={s} axis={s} confidence={d}", .{ g_str, a_str, p.confidence });
         },
     }
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 // ============================================================================
