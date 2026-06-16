@@ -1,0 +1,138 @@
+--- a/pgsd-sessiond/src/main.zig	2026-06-16 11:44:46.000000000 +0000
++++ b/pgsd-sessiond/src/main.zig	2026-06-16 12:26:49.704462978 +0000
+@@ -107,8 +107,7 @@
+ 
+ var shutdown_requested = std.atomic.Value(bool).init(false);
+ 
+-fn signalHandler(sig: c_int) callconv(.c) void {
+-    _ = sig;
++fn signalHandler(_: posix.SIG) callconv(.c) void {
+     shutdown_requested.store(true, .seq_cst);
+ }
+ 
+@@ -974,7 +973,7 @@
+         // Inner loop: one user's path through identify -> password
+         // -> (optional picker) -> submission -> auth outcome.
+         while (running) {
+-            const frame_start = std.time.nanoTimestamp();
++            const frame_start = compat.time.nowMonotonic();
+ 
+             // Refresh network state on the cadence configured by
+             // ui.NETWORK_REFRESH_INTERVAL_MS. Cheap when throttled
+@@ -987,7 +986,7 @@
+ 
+             // SM-4: wall-clock caret blink phase; a flip warrants a
+             // redraw only once typing has started (solid before).
+-            const now_ms = std.time.milliTimestamp();
++            const now_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
+             const blink_phase: u64 = @intCast(@mod(@divTrunc(now_ms, ui.CURSOR_BLINK_MS), 2));
+             if (blink_phase != last_blink_phase) {
+                 last_blink_phase = blink_phase;
+@@ -1078,10 +1077,10 @@
+                         var s = s_const;
+                         surface.destroy();
+                         conn.disconnect();
+-                        const launch_start_ns = std.time.nanoTimestamp();
++                        const launch_start_ns = compat.time.nowMonotonic();
+                         const child_exit = doLaunch(alloc, &s);
+                         const launch_elapsed_ns: u64 = @intCast(
+-                            std.time.nanoTimestamp() - launch_start_ns,
++                            compat.time.nowMonotonic() - launch_start_ns,
+                         );
+                         s.user.deinit(alloc);
+                         s.session.deinit(alloc);
+@@ -1241,9 +1240,9 @@
+             };
+ 
+             // Frame pacing.
+-            const elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
++            const elapsed: u64 = @intCast(compat.time.nowMonotonic() - frame_start);
+             if (elapsed < frame_ns) {
+-                std.Thread.sleep(frame_ns - elapsed);
++                compat.time.sleep(compat.time.Duration.fromNanoseconds(frame_ns - elapsed));
+             }
+         }
+ 
+--- a/pgsd-sessiond/src/sysinfo.zig	2026-06-16 04:09:05.000000000 +0000
++++ b/pgsd-sessiond/src/sysinfo.zig	2026-06-16 12:26:49.718315385 +0000
+@@ -29,12 +29,18 @@
+     @cInclude("sys/socket.h");
+     @cInclude("sys/sysctl.h");
+     @cInclude("netinet/in.h");
+-    @cInclude("net/if.h");
+     @cInclude("arpa/inet.h");
+     @cInclude("ifaddrs.h");
+     @cInclude("string.h");
+ });
+ 
++// net/if.h is intentionally not @cInclude'd: on FreeBSD it transitively pulls
++// <sys/time.h>, whose bintime_shift inline trips a Zig 0.16 translate-c bug
++// ("@bitCast must have a known result type"). Only two interface-flag bits are
++// needed, declared here against the stable FreeBSD ABI.
++const IFF_UP: c_uint = 0x1;
++const IFF_LOOPBACK: c_uint = 0x8;
++
+ pub const Error = error{
+     HostnameFailed,
+     SysctlFailed,
+@@ -155,9 +161,9 @@
+ 
+         const flags = ifa.ifa_flags;
+         // Must be UP.
+-        if ((flags & c.IFF_UP) == 0) continue;
++        if ((flags & IFF_UP) == 0) continue;
+         // Skip loopback (`lo0` etc.).
+-        if ((flags & c.IFF_LOOPBACK) != 0) continue;
++        if ((flags & IFF_LOOPBACK) != 0) continue;
+ 
+         // Cast to sockaddr_in to get the address.
+         const sin: *const c.struct_sockaddr_in = @ptrCast(@alignCast(addr));
+--- a/pgsd-sessiond/src/launch.zig	2026-06-16 04:09:05.000000000 +0000
++++ b/pgsd-sessiond/src/launch.zig	2026-06-16 12:26:49.728491882 +0000
+@@ -32,7 +32,9 @@
+ 
+ const c = @cImport({
+     @cInclude("sys/types.h");
+-    @cInclude("sys/stat.h");
++    // sys/stat.h omitted: in combination it transitively pulls <sys/time.h>,
++    // whose bintime_shift inline trips a Zig 0.16 translate-c bug. Only mkdir
++    // and chmod are needed, routed to std.c below.
+     @cInclude("sys/wait.h");
+     @cInclude("login_cap.h");
+     @cInclude("pwd.h");
+@@ -66,7 +68,7 @@
+ 
+ // Runtime dir base. ADR 0005 §Runtime directory specifies this path
+ // shape; the per-uid subdir is created at launch time.
+-const RUNTIME_DIR_BASE: []const u8 = "/var/run/pgsd";
++const RUNTIME_DIR_BASE: [:0]const u8 = "/var/run/pgsd";
+ 
+ // Fallback PATH when login.conf has no class for the user. ADR 0005
+ // §POSIX/FreeBSD specifies this exact string.
+@@ -216,7 +218,7 @@
+     // install.sh to create this; we mkdir it idempotently in case
+     // /var/run is tmpfs (default on FreeBSD) and gets wiped at reboot
+     // before the rc.d script ran.
+-    _ = c.mkdir(RUNTIME_DIR_BASE.ptr, 0o755);
++    _ = std.c.mkdir(RUNTIME_DIR_BASE.ptr, 0o755);
+     // ignore EEXIST and other errors; the per-uid mkdir below will
+     // surface a real failure.
+ 
+@@ -227,7 +229,7 @@
+         .{ RUNTIME_DIR_BASE, uid },
+     ) catch return Error.RuntimeDirCreateFailed;
+ 
+-    if (c.mkdir(path.ptr, 0o700) != 0) {
++    if (std.c.mkdir(path.ptr, 0o700) != 0) {
+         const err = errno();
+         if (err != c.EEXIST) return Error.RuntimeDirCreateFailed;
+     }
+@@ -235,7 +237,7 @@
+     // Even on EEXIST, force ownership and mode to the expected values.
+     // chown is no-op when already correct; chmod likewise.
+     if (c.chown(path.ptr, uid, gid) != 0) return Error.RuntimeDirCreateFailed;
+-    if (c.chmod(path.ptr, 0o700) != 0) return Error.RuntimeDirCreateFailed;
++    if (std.c.chmod(path.ptr, 0o700) != 0) return Error.RuntimeDirCreateFailed;
+ }
+ 
+ // =============================================================================

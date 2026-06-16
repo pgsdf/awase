@@ -107,8 +107,7 @@ const EXIT_INTERNAL: u8 = 20; // OOM, unexpected error
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
-fn signalHandler(sig: c_int) callconv(.c) void {
-    _ = sig;
+fn signalHandler(_: posix.SIG) callconv(.c) void {
     shutdown_requested.store(true, .seq_cst);
 }
 
@@ -974,7 +973,7 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
         // Inner loop: one user's path through identify -> password
         // -> (optional picker) -> submission -> auth outcome.
         while (running) {
-            const frame_start = std.time.nanoTimestamp();
+            const frame_start = compat.time.nowMonotonic();
 
             // Refresh network state on the cadence configured by
             // ui.NETWORK_REFRESH_INTERVAL_MS. Cheap when throttled
@@ -987,7 +986,7 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
 
             // SM-4: wall-clock caret blink phase; a flip warrants a
             // redraw only once typing has started (solid before).
-            const now_ms = std.time.milliTimestamp();
+            const now_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
             const blink_phase: u64 = @intCast(@mod(@divTrunc(now_ms, ui.CURSOR_BLINK_MS), 2));
             if (blink_phase != last_blink_phase) {
                 last_blink_phase = blink_phase;
@@ -1078,10 +1077,10 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
                         var s = s_const;
                         surface.destroy();
                         conn.disconnect();
-                        const launch_start_ns = std.time.nanoTimestamp();
+                        const launch_start_ns = compat.time.nowMonotonic();
                         const child_exit = doLaunch(alloc, &s);
                         const launch_elapsed_ns: u64 = @intCast(
-                            std.time.nanoTimestamp() - launch_start_ns,
+                            compat.time.nowMonotonic() - launch_start_ns,
                         );
                         s.user.deinit(alloc);
                         s.session.deinit(alloc);
@@ -1241,9 +1240,9 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             };
 
             // Frame pacing.
-            const elapsed: u64 = @intCast(std.time.nanoTimestamp() - frame_start);
+            const elapsed: u64 = @intCast(compat.time.nowMonotonic() - frame_start);
             if (elapsed < frame_ns) {
-                std.Thread.sleep(frame_ns - elapsed);
+                compat.time.sleep(compat.time.Duration.fromNanoseconds(frame_ns - elapsed));
             }
         }
 

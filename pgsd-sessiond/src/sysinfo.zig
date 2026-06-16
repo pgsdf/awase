@@ -29,11 +29,17 @@ const c = @cImport({
     @cInclude("sys/socket.h");
     @cInclude("sys/sysctl.h");
     @cInclude("netinet/in.h");
-    @cInclude("net/if.h");
     @cInclude("arpa/inet.h");
     @cInclude("ifaddrs.h");
     @cInclude("string.h");
 });
+
+// net/if.h is intentionally not @cInclude'd: on FreeBSD it transitively pulls
+// <sys/time.h>, whose bintime_shift inline trips a Zig 0.16 translate-c bug
+// ("@bitCast must have a known result type"). Only two interface-flag bits are
+// needed, declared here against the stable FreeBSD ABI.
+const IFF_UP: c_uint = 0x1;
+const IFF_LOOPBACK: c_uint = 0x8;
 
 pub const Error = error{
     HostnameFailed,
@@ -155,9 +161,9 @@ pub fn network(allocator: std.mem.Allocator) Error!?NetworkInfo {
 
         const flags = ifa.ifa_flags;
         // Must be UP.
-        if ((flags & c.IFF_UP) == 0) continue;
+        if ((flags & IFF_UP) == 0) continue;
         // Skip loopback (`lo0` etc.).
-        if ((flags & c.IFF_LOOPBACK) != 0) continue;
+        if ((flags & IFF_LOOPBACK) != 0) continue;
 
         // Cast to sockaddr_in to get the address.
         const sin: *const c.struct_sockaddr_in = @ptrCast(@alignCast(addr));

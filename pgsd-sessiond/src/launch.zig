@@ -32,7 +32,9 @@ const user_enum = @import("user_enum.zig");
 
 const c = @cImport({
     @cInclude("sys/types.h");
-    @cInclude("sys/stat.h");
+    // sys/stat.h omitted: in combination it transitively pulls <sys/time.h>,
+    // whose bintime_shift inline trips a Zig 0.16 translate-c bug. Only mkdir
+    // and chmod are needed, routed to std.c below.
     @cInclude("sys/wait.h");
     @cInclude("login_cap.h");
     @cInclude("pwd.h");
@@ -66,7 +68,7 @@ pub const Error = error{
 
 // Runtime dir base. ADR 0005 §Runtime directory specifies this path
 // shape; the per-uid subdir is created at launch time.
-const RUNTIME_DIR_BASE: []const u8 = "/var/run/pgsd";
+const RUNTIME_DIR_BASE: [:0]const u8 = "/var/run/pgsd";
 
 // Fallback PATH when login.conf has no class for the user. ADR 0005
 // §POSIX/FreeBSD specifies this exact string.
@@ -216,7 +218,7 @@ pub fn createRuntimeDir(uid: u32, gid: u32) Error!void {
     // install.sh to create this; we mkdir it idempotently in case
     // /var/run is tmpfs (default on FreeBSD) and gets wiped at reboot
     // before the rc.d script ran.
-    _ = c.mkdir(RUNTIME_DIR_BASE.ptr, 0o755);
+    _ = std.c.mkdir(RUNTIME_DIR_BASE.ptr, 0o755);
     // ignore EEXIST and other errors; the per-uid mkdir below will
     // surface a real failure.
 
@@ -227,7 +229,7 @@ pub fn createRuntimeDir(uid: u32, gid: u32) Error!void {
         .{ RUNTIME_DIR_BASE, uid },
     ) catch return Error.RuntimeDirCreateFailed;
 
-    if (c.mkdir(path.ptr, 0o700) != 0) {
+    if (std.c.mkdir(path.ptr, 0o700) != 0) {
         const err = errno();
         if (err != c.EEXIST) return Error.RuntimeDirCreateFailed;
     }
@@ -235,7 +237,7 @@ pub fn createRuntimeDir(uid: u32, gid: u32) Error!void {
     // Even on EEXIST, force ownership and mode to the expected values.
     // chown is no-op when already correct; chmod likewise.
     if (c.chown(path.ptr, uid, gid) != 0) return Error.RuntimeDirCreateFailed;
-    if (c.chmod(path.ptr, 0o700) != 0) return Error.RuntimeDirCreateFailed;
+    if (std.c.chmod(path.ptr, 0o700) != 0) return Error.RuntimeDirCreateFailed;
 }
 
 // =============================================================================
