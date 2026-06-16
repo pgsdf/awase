@@ -131,7 +131,7 @@ pub const EvdevInput = struct {
     pub fn deinit(self: *Self) void {
         for (self.input_fds[0..self.input_count]) |fd| {
             if (fd >= 0) {
-                posix.close(fd);
+                closeFd(fd);
             }
         }
         self.allocator.destroy(self);
@@ -159,7 +159,7 @@ pub const EvdevInput = struct {
             var path_buf: [32:0]u8 = undefined;
             const path = std.fmt.bufPrintZ(&path_buf, "/dev/input/event{}", .{i}) catch continue;
 
-            const fd = posix.open(
+            const fd = posix.openat(posix.AT.FDCWD, 
                 path,
                 .{ .ACCMODE = .RDONLY, .NONBLOCK = true },
                 0,
@@ -174,7 +174,7 @@ pub const EvdevInput = struct {
             devices_found += 1;
             const dev_type = detectDeviceType(fd);
             if (dev_type == .unknown) {
-                posix.close(fd);
+                closeFd(fd);
                 continue;
             }
 
@@ -478,4 +478,14 @@ test "testBit" {
     try std.testing.expect(testBit(1, &bits) == false);
     try std.testing.expect(testBit(2, &bits) == true);
     try std.testing.expect(testBit(11, &bits) == true);
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT2b): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
 }

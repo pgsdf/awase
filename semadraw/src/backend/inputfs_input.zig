@@ -174,7 +174,7 @@ pub const InputfsInput = struct {
             changes[0].flags = EV_ADD | EV_CLEAR;
             _ = std.posix.kevent(kq, &changes, &.{}, null) catch |err| {
                 if (!quiet) log.warn("kqueue bridge registration failed: {}; falling back to poll-timeout cadence", .{err});
-                std.posix.close(kq);
+                closeFd(kq);
                 break :blk null;
             };
             log.info("inputfs wake bridge: notify fd {} registered in kqueue fd {} (EVFILT_READ, EV_CLEAR)", .{ nfd, kq });
@@ -191,11 +191,11 @@ pub const InputfsInput = struct {
 
     pub fn deinit(self: *Self) void {
         if (self.wake_kq) |kq| {
-            std.posix.close(kq);
+            closeFd(kq);
             self.wake_kq = null;
         }
         if (self.notify_fd) |fd| {
-            std.posix.close(fd);
+            closeFd(fd);
             self.notify_fd = null;
         }
         self.reader.deinit();
@@ -667,4 +667,14 @@ test "real motion (dx or dy nonzero) emits one motion event" {
     try testing.expectEqual(backend.MouseEventType.motion, mice[0].event_type);
     try testing.expectEqual(@as(i32, 150), mice[0].x);
     try testing.expectEqual(@as(i32, 250), mice[0].y);
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT2b): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: std.posix.fd_t) void {
+    _ = std.posix.system.close(fd);
 }

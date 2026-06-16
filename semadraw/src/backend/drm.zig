@@ -313,10 +313,10 @@ pub const DrmBackend = struct {
         };
 
         // Open device
-        self.fd = posix.open(device_path, .{ .ACCMODE = .RDWR }, 0) catch {
+        self.fd = posix.openat(posix.AT.FDCWD, device_path, .{ .ACCMODE = .RDWR }, 0) catch {
             return error.OpenFailed;
         };
-        errdefer posix.close(self.fd);
+        errdefer closeFd(self.fd);
 
         // Try to become master
         _ = drm_ioctl(self.fd, DRM_IOCTL_SET_MASTER, @as(usize, 0));
@@ -482,7 +482,7 @@ pub const DrmBackend = struct {
         // Drop master and close
         _ = drm_ioctl(self.fd, DRM_IOCTL_DROP_MASTER, @as(usize, 0));
         if (self.fd >= 0) {
-            posix.close(self.fd);
+            closeFd(self.fd);
         }
 
         self.allocator.destroy(self);
@@ -855,4 +855,14 @@ fn monotonicNowNs() i128 {
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT2b): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
 }

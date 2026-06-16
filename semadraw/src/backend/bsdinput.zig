@@ -176,7 +176,7 @@ pub const BsdInput = struct {
         };
 
         // Open sysmouse for mouse input
-        self.mouse_fd = posix.open("/dev/sysmouse", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| blk: {
+        self.mouse_fd = posix.openat(posix.AT.FDCWD, "/dev/sysmouse", .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| blk: {
             log.warn("failed to open /dev/sysmouse: {} (is moused running?)", .{err});
             break :blk -1;
         };
@@ -327,7 +327,7 @@ pub const BsdInput = struct {
         while (i < 32) : (i += 1) {
             const path_z = std.fmt.bufPrintZ(&path_buf, "/dev/input/event{}", .{i}) catch continue;
 
-            const fd = posix.open(path_z, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| {
+            const fd = posix.openat(posix.AT.FDCWD, path_z, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch |err| {
                 if (i == 0) {
                     log.debug("failed to open /dev/input/event0: {}", .{err});
                 }
@@ -342,7 +342,7 @@ pub const BsdInput = struct {
                 return true;
             }
 
-            posix.close(fd);
+            closeFd(fd);
         }
 
         log.debug("no evdev keyboard devices found in /dev/input/", .{});
@@ -424,7 +424,7 @@ pub const BsdInput = struct {
         };
 
         for (kbd_paths) |path| {
-            self.console_fd = posix.open(path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
+            self.console_fd = posix.openat(posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY, .NONBLOCK = true }, 0) catch continue;
 
             // Successfully opened a keyboard device
             self.keyboard_mode = .vt_raw;
@@ -451,7 +451,7 @@ pub const BsdInput = struct {
         };
 
         for (tty_paths) |path| {
-            self.tty_fd = posix.open(path, .{ .ACCMODE = .RDWR, .NONBLOCK = true }, 0) catch continue;
+            self.tty_fd = posix.openat(posix.AT.FDCWD, path, .{ .ACCMODE = .RDWR, .NONBLOCK = true }, 0) catch continue;
 
             if (self.setTrueRawMode()) {
                 self.keyboard_mode = .tty_raw;
@@ -467,7 +467,7 @@ pub const BsdInput = struct {
                 return true;
             }
 
-            posix.close(self.tty_fd);
+            closeFd(self.tty_fd);
             self.tty_fd = -1;
         }
 
@@ -552,16 +552,16 @@ pub const BsdInput = struct {
         }
 
         if (self.mouse_fd >= 0) {
-            posix.close(self.mouse_fd);
+            closeFd(self.mouse_fd);
         }
         if (self.tty_fd >= 0) {
-            posix.close(self.tty_fd);
+            closeFd(self.tty_fd);
         }
         if (self.evdev_keyboard_fd >= 0) {
-            posix.close(self.evdev_keyboard_fd);
+            closeFd(self.evdev_keyboard_fd);
         }
         if (self.console_fd >= 0) {
-            posix.close(self.console_fd);
+            closeFd(self.console_fd);
         }
         self.allocator.destroy(self);
     }
@@ -1300,4 +1300,14 @@ fn monotonicNowMs() i64 {
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
     return ts.sec * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT2b): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
 }
