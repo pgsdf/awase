@@ -81,12 +81,13 @@ pub const SocketServer = struct {
         const fd = try compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
         errdefer closeFd(fd);
 
-        // Remove the stale file if it exists (after the probe confirmed
-        // no live listener). FileNotFound is fine; other errors propagate.
-        std.fs.cwd().deleteFile(path) catch |err| switch (err) {
-            error.FileNotFound => {},
-            else => return err,
-        };
+        // Remove the stale file if it exists (after the probe confirmed no
+        // live listener). ENOENT is fine; other errors propagate. Socket-path
+        // lifecycle stays raw posix, matching the fchmodat below, rather than
+        // routing through compat.fs (which is for regular-file I/O only).
+        const stale_pathz = try posix.toPosixPath(path);
+        const unlink_rc = posix.system.unlink(&stale_pathz);
+        if (unlink_rc != 0 and posix.errno(unlink_rc) != .NOENT) return error.SocketUnlinkFailed;
 
         try compat.posix.bind(fd, @ptrCast(&addr), addr_len);
 
@@ -119,7 +120,11 @@ pub const SocketServer = struct {
     /// Close the server socket and remove the socket file
     pub fn deinit(self: *SocketServer) void {
         closeFd(self.fd);
-        std.fs.cwd().deleteFile(self.path) catch {};
+        // Best-effort socket-file removal; raw posix unlink, matching the
+        // socket-path lifecycle (bind/fchmodat) rather than compat.fs.
+        if (posix.toPosixPath(self.path)) |pathz| {
+            _ = posix.system.unlink(&pathz);
+        } else |_| {}
     }
 };
 

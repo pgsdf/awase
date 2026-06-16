@@ -96,12 +96,6 @@ pub const Dir = struct {
         try self.inner.deleteTree(self.io, sub_path);
     }
 
-    /// Delete a single file (relative to this Dir, or absolute). Used for unix
-    /// socket path cleanup. Distinct from deleteTree, which is recursive.
-    pub fn deleteFile(self: Dir, sub_path: []const u8) !void {
-        try self.inner.deleteFile(self.io, sub_path);
-    }
-
     /// Close a directory handle obtained from `openDir`. The cwd handle from
     /// `cwd` is not owned and does not need closing.
     pub fn close(self: Dir) void {

@@ -191,36 +191,43 @@ This errata records that the originally scoped surface was an underestimate
 discovered during migration, not a change of architectural direction; the
 ownership principle and boundary layout (Decisions 1 through 3) are unchanged.
 
-### E2. compat.fs absolute-path and single-file-delete surface (P3 migration, semadraw)
+### E2. compat.fs absolute-path surface (P3 migration, semadraw)
 
-The semadraw daemon closure reached three filesystem operations not covered by
-the original scope or by E1: a single unix-socket path is deleted on listener
-teardown (socket_server), and two backends persist or read a regular file at a
+The semadraw daemon closure reached two regular-file operations not covered by
+the original scope or by E1: two backends persist or read a regular file at a
 fixed absolute path (drm and vulkan_console clipboard and debug-dump files).
 
 compat.fs is therefore extended, within Decision 3 (filesystem helpers live only
 in compat.fs) and without introducing a second filesystem layer, by these thin
 wrappers over std.Io.Dir:
 
-- Dir.deleteFile (single-file delete; distinct from the recursive deleteTree)
 - openFileAbsolute (open a regular file by absolute path, no owning Dir handle)
 - createFileAbsolute (create or truncate a regular file by absolute path)
 
-The absolute wrappers carry the Io handle inside the returned File, so call
-sites still never thread io or reference std.Io types, preserving the Decision 2
-and 3 boundary properties.
+Both carry the Io handle inside the returned File, so call sites still never
+thread io or reference std.Io types, preserving the Decision 2 and 3 boundary
+properties.
 
-Two boundary points are recorded with this errata:
+Three boundary points are recorded with this errata. Each draws the same line:
+compat.fs is for regular-file access; sockets and device descriptors stay in the
+raw-posix lineage.
 
-- deleteFileAbsolute is deliberately NOT added. No daemon-closure site deletes by
-  absolute path, and unused surface area violates the grow-only-what-is-needed
-  discipline (Decision 5). It can be added if and when a consumer appears.
+- Socket-path lifecycle stays raw posix, not compat.fs. The unix-socket file is
+  created by bind(), chmod-ed by raw posix.system.fchmodat (WT1), and removed by
+  raw posix.system.unlink (this tranche, P3-T2a). Routing only the removal
+  through compat.fs would split a coherent lifecycle across two layers and, since
+  SocketServer.bind and deinit carry no allocator, would force an io/Threaded
+  bootstrap with no natural allocator to draw on. A Dir.deleteFile wrapper was
+  considered for this and is deliberately NOT added: its only candidate consumer
+  is this socket-path delete, which is raw, so the wrapper would be unused surface
+  (grow-only-what-is-needed, Decision 5).
 - Device-descriptor acquisition does NOT route through compat.fs. The inputfs
   notify cdev (inputfs_input) was opened with std.fs.openFileAbsolute purely to
-  obtain its file descriptor for the kqueue bridge; it performs no file I/O.
-  That site moves to raw posix.openat, staying in the raw-fd lineage alongside
-  the WT2b device opens. compat.fs is for regular-file access; raw openat is for
-  device descriptors. This keeps the two intents legible at the call site.
+  obtain its file descriptor for the kqueue bridge; it performs no file I/O. That
+  site moves to raw posix.openat, staying in the raw-fd lineage alongside the
+  WT2b device opens.
+- deleteFileAbsolute is deliberately NOT added. No daemon-closure site deletes by
+  absolute path. It can be added if and when a consumer appears.
 
 As with E1, this records that the scoped surface was an underestimate discovered
 during migration, not a change of architectural direction; Decisions 1 through 3
