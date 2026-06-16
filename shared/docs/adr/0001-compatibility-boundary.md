@@ -174,6 +174,7 @@ wrappers over std.Io.Dir and std.Io.File:
 - Dir.makeDir (wrapping 0.16's renamed createDir with the platform default
   directory permissions)
 - Dir.deleteTree
+- Dir.close (for handles obtained from openDir)
 - File.stat
 
 Each wrapper carries the Io handle inside Dir, File, or Iterator, so call sites

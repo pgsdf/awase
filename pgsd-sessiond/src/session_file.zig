@@ -395,7 +395,9 @@ pub fn enumerateFrom(
     var result = EnumerateResult{};
     errdefer result.deinit(allocator);
 
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
+    var io_ctx = try compat.io.open(allocator);
+    defer io_ctx.deinit();
+    const dir = compat.fs.cwd(io_ctx.io()).openDir(dir_path, .{ .iterate = true }) catch |err| switch (err) {
         // Empty directory or missing directory is not a hard error;
         // just yields an empty result. The operator may not have
         // installed any .session files yet.
@@ -407,7 +409,7 @@ pub fn enumerateFrom(
     // Collect candidate filenames first, sort, then parse in order.
     // This means a single failing parse can't disrupt enumeration of
     // alphabetically later entries.
-    var candidates = std.ArrayListUnmanaged([]u8){};
+    var candidates: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (candidates.items) |s| allocator.free(s);
         candidates.deinit(allocator);
@@ -702,11 +704,14 @@ test "parseSessionFile strips whitespace around = per grammar" {
 test "enumerate on empty directory" {
     // Use a real tmp dir created via fs.cwd().makeDir.
     const tmp_name = "pgsd_s4_test_empty";
-    std.fs.cwd().makeDir(tmp_name) catch |e| switch (e) {
+    var io_ctx = try compat.io.open(testing.allocator);
+    defer io_ctx.deinit();
+    const root = compat.fs.cwd(io_ctx.io());
+    root.makeDir(tmp_name) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
-    defer std.fs.cwd().deleteTree(tmp_name) catch {};
+    defer root.deleteTree(tmp_name) catch {};
 
     var result = try enumerateFrom(testing.allocator, tmp_name);
     defer result.deinit(testing.allocator);
@@ -716,11 +721,14 @@ test "enumerate on empty directory" {
 
 test "enumerate finds and sorts valid sessions" {
     const tmp_name = "pgsd_s4_test_valid";
-    std.fs.cwd().makeDir(tmp_name) catch |e| switch (e) {
+    var io_ctx = try compat.io.open(testing.allocator);
+    defer io_ctx.deinit();
+    const root = compat.fs.cwd(io_ctx.io());
+    root.makeDir(tmp_name) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
-    defer std.fs.cwd().deleteTree(tmp_name) catch {};
+    defer root.deleteTree(tmp_name) catch {};
 
     // Write three valid sessions out of alphabetical order.
     try writeTestSession(tmp_name, "kiosk.session",
@@ -757,11 +765,14 @@ test "enumerate finds and sorts valid sessions" {
 
 test "enumerate skips malformed files with warnings" {
     const tmp_name = "pgsd_s4_test_malformed";
-    std.fs.cwd().makeDir(tmp_name) catch |e| switch (e) {
+    var io_ctx = try compat.io.open(testing.allocator);
+    defer io_ctx.deinit();
+    const root = compat.fs.cwd(io_ctx.io());
+    root.makeDir(tmp_name) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
-    defer std.fs.cwd().deleteTree(tmp_name) catch {};
+    defer root.deleteTree(tmp_name) catch {};
 
     try writeTestSession(tmp_name, "good.session",
         \\[PGSD Session]
@@ -790,11 +801,14 @@ test "enumerate skips malformed files with warnings" {
 
 test "enumerate ignores files not matching session-id regex" {
     const tmp_name = "pgsd_s4_test_filter";
-    std.fs.cwd().makeDir(tmp_name) catch |e| switch (e) {
+    var io_ctx = try compat.io.open(testing.allocator);
+    defer io_ctx.deinit();
+    const root = compat.fs.cwd(io_ctx.io());
+    root.makeDir(tmp_name) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
-    defer std.fs.cwd().deleteTree(tmp_name) catch {};
+    defer root.deleteTree(tmp_name) catch {};
 
     // Should NOT be enumerated:
     try writeTestSession(tmp_name, "Capital.session", "[PGSD Session]\nName=x\nExec=x\n");
@@ -821,11 +835,14 @@ test "enumerate ignores files not matching session-id regex" {
 
 test "lookupByIdFrom returns null when file is absent" {
     const tmp_name = "pgsd_s4_test_absent";
-    std.fs.cwd().makeDir(tmp_name) catch |e| switch (e) {
+    var io_ctx = try compat.io.open(testing.allocator);
+    defer io_ctx.deinit();
+    const root = compat.fs.cwd(io_ctx.io());
+    root.makeDir(tmp_name) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
-    defer std.fs.cwd().deleteTree(tmp_name) catch {};
+    defer root.deleteTree(tmp_name) catch {};
 
     const result = try lookupByIdFrom(testing.allocator, tmp_name, "does-not-exist");
     try testing.expect(result == null);
@@ -840,7 +857,9 @@ test "lookupByIdFrom rejects invalid session ids" {
 
 // Helper for tests.
 fn writeTestSession(dir: []const u8, filename: []const u8, contents: []const u8) !void {
-    var d = try std.fs.cwd().openDir(dir, .{});
+    var io_ctx = try compat.io.open(testing.allocator);
+    defer io_ctx.deinit();
+    const d = try compat.fs.cwd(io_ctx.io()).openDir(dir, .{});
     defer d.close();
     var f = try d.createFile(filename, .{ .truncate = true });
     defer f.close();

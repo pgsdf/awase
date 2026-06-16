@@ -95,6 +95,12 @@ pub const Dir = struct {
     pub fn deleteTree(self: Dir, sub_path: []const u8) !void {
         try self.inner.deleteTree(self.io, sub_path);
     }
+
+    /// Close a directory handle obtained from `openDir`. The cwd handle from
+    /// `cwd` is not owned and does not need closing.
+    pub fn close(self: Dir) void {
+        self.inner.close(self.io);
+    }
 };
 
 /// An iterator over a Dir's entries, carrying the Io handle so `next` takes no
