@@ -7,7 +7,7 @@ const shared_clock = @import("shared_clock");
 
 /// A pluggable clock source for the frame scheduler.
 ///
-/// The default is WallClockSource, which delegates to std.time.nanoTimestamp().
+/// The default is WallClockSource, which delegates to a monotonic clock (clock_gettime(CLOCK_MONOTONIC)).
 /// MockClockSource is provided for deterministic testing.
 /// ChronofsClockSource (defined in the chronofs module) will drive scheduling
 /// from the audio hardware clock for drift-free AV synchronisation.
@@ -25,7 +25,7 @@ pub const ClockSource = struct {
 // WallClockSource, production default
 // ============================================================================
 
-/// Clock source backed by std.time.nanoTimestamp().
+/// Clock source backed by a monotonic clock (clock_gettime(CLOCK_MONOTONIC)).
 /// Construct with WallClockSource.init(), then call .source() to get a
 /// ClockSource suitable for passing to FrameScheduler.init().
 pub const WallClockSource = struct {
@@ -43,7 +43,7 @@ pub const WallClockSource = struct {
     }
 
     fn nowImpl(_: *anyopaque) i128 {
-        return std.time.nanoTimestamp();
+        return monotonicNowNs();
     }
 };
 
@@ -103,7 +103,7 @@ pub const MockClockSource = struct {
 /// same timeline.
 ///
 /// When the clock is invalid (clock writer absent), `now()` falls back to
-/// std.time.nanoTimestamp() so the compositor keeps rendering at wall rate.
+/// the monotonic clock so the compositor keeps rendering.
 pub const ChronofsClockSource = struct {
     reader: shared_clock.ClockReader,
     _wall_fallback: WallClockSource,
@@ -136,7 +136,7 @@ pub const ChronofsClockSource = struct {
     pub fn isAdvancing(self: *const ChronofsClockSource) bool {
         if (!self.reader.isValid()) return false;
         const a = self.reader.read();
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+        sleepNs(50 * std.time.ns_per_ms);
         const b = self.reader.read();
         return b > a;
     }
@@ -156,7 +156,7 @@ pub const ChronofsClockSource = struct {
             const rate = self.reader.sampleRate();
             return @intCast(shared_clock.toNanoseconds(samples, rate));
         }
-        return std.time.nanoTimestamp();
+        return monotonicNowNs();
     }
 
     /// Current audio sample position (for embedding in events).
@@ -322,7 +322,7 @@ pub const FrameScheduler = struct {
     pub fn waitForDeadline(self: *Self) void {
         const wait_ns = self.getTimeUntilDeadline();
         if (wait_ns > 0) {
-            std.Thread.sleep(@intCast(wait_ns));
+            sleepNs(@intCast(wait_ns));
         }
     }
 
@@ -457,7 +457,7 @@ test "WallClockSource returns increasing time" {
     var wall = WallClockSource.init();
     const clock = wall.source();
     const t0 = clock.now();
-    std.Thread.sleep(1_000_000); // 1ms
+    sleepNs(1_000_000); // 1ms
     const t1 = clock.now();
     try std.testing.expect(t1 > t0);
 }
@@ -481,7 +481,7 @@ test "FrameScheduler basic with WallClock" {
     try std.testing.expectEqual(@as(u64, 16_666_666), sched.frame_interval_ns);
 
     var handle = sched.beginFrame();
-    std.Thread.sleep(1_000_000); // 1ms
+    sleepNs(1_000_000); // 1ms
     handle.end();
 
     try std.testing.expectEqual(@as(u64, 1), sched.stats.total_frames);
@@ -576,4 +576,30 @@ test "nextFrameTarget with MockClock via shared_clock.ClockWriter" {
     defer reader2.deinit();
     const target2 = nextFrameTarget(reader2, 60);
     try std.testing.expectEqual(@as(u64, 1600), target2);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 2): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+fn sleepNs(ns: u64) void {
+    var req: std.posix.timespec = .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    while (true) {
+        const rc = std.posix.system.nanosleep(&req, &req);
+        if (rc == 0) return;
+        if (std.posix.errno(rc) != .INTR) return;
+        // EINTR: req now holds the remaining interval; loop to finish it
+    }
 }

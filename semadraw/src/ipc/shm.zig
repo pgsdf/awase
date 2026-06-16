@@ -141,7 +141,7 @@ fn createAnonymousShm(size: usize) !posix.fd_t {
 fn fallbackAnonShm(size: usize) !posix.fd_t {
     // Generate unique name
     var name_buf: [64]u8 = undefined;
-    const timestamp: u64 = @intCast(std.time.nanoTimestamp());
+    const timestamp: u64 = @intCast(monotonicNowNs());
     const name = std.fmt.bufPrintZ(&name_buf, "/semadraw-{x}", .{timestamp}) catch unreachable;
 
     const fd = try shmOpen(name, size);
@@ -300,4 +300,17 @@ test "ShmBuffer create and access" {
     slice[4095] = 0xCD;
     try std.testing.expectEqual(@as(u8, 0xAB), slice[0]);
     try std.testing.expectEqual(@as(u8, 0xCD), slice[4095]);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 2): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

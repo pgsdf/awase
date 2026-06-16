@@ -275,7 +275,7 @@ pub const Compositor = struct {
         // frame interval. The stall measurement uses wall time
         // directly: the suspect clock cannot judge itself.
         if (has_damage and !should_composite and !self.clock_rewired_to_wall) {
-            const now_wall = std.time.nanoTimestamp();
+            const now_wall = monotonicNowNs();
             if (self.gate_stall_since_wall) |since| {
                 if (now_wall - since > GATE_STALL_REWIRE_NS) {
                     log.warn("frame pacing clock stalled {d} ms with damage pending; rewiring scheduler to wall clock", .{@divTrunc(now_wall - since, std.time.ns_per_ms)});
@@ -374,7 +374,7 @@ pub const Compositor = struct {
         if (have_region_damage and !self.damage_tracker.needs_full_repaint) {
             if (output.be.supportsClearRegion()) {
                 for (output_damages) |rect| {
-                    const t0: i128 = if (self.instrument) std.time.nanoTimestamp() else 0;
+                    const t0: i128 = if (self.instrument) monotonicNowNs() else 0;
                     output.be.clearRegion(.{
                         .framebuffer = .{
                             .width = output.config.width,
@@ -393,7 +393,7 @@ pub const Compositor = struct {
                         break;
                     };
                     if (self.instrument) {
-                        const t1 = std.time.nanoTimestamp();
+                        const t1 = monotonicNowNs();
                         instr_clear_ns += @intCast(t1 - t0);
                         instr_clear_calls += 1;
                         instr_clear_pixels += @as(u64, rect.width) * @as(u64, rect.height);
@@ -849,4 +849,17 @@ test "Compositor damage tracking" {
 
     try comp.damageSurface(1);
     try std.testing.expect(comp.damage_tracker.hasDamage());
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 2): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

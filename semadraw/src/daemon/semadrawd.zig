@@ -1513,7 +1513,7 @@ pub const Daemon = struct {
         const reply = protocol.FrameCompleteMsg{
             .surface_id = msg.surface_id,
             .frame_number = frame_number,
-            .timestamp_ns = @intCast(std.time.nanoTimestamp()),
+            .timestamp_ns = @intCast(realtimeNowNs()),
         };
         reply.serialize(&reply_buf);
         try session.client.sendMessage(.frame_complete, &reply_buf);
@@ -2006,7 +2006,7 @@ pub const Daemon = struct {
         const reply = protocol.FrameCompleteMsg{
             .surface_id = msg.surface_id,
             .frame_number = frame_number,
-            .timestamp_ns = @intCast(std.time.nanoTimestamp()),
+            .timestamp_ns = @intCast(realtimeNowNs()),
         };
         reply.serialize(&reply_buf);
         try session.send(.frame_complete, &reply_buf);
@@ -3100,4 +3100,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try dropPrivileges();
 
     try daemon.run();
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 2): file-local wall-clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. REALTIME preserves
+// the wall-clock semantics of these externally visible timestamp values.
+// Duplicated per file by design during migration; consolidation deferred.
+// ============================================================================
+
+fn realtimeNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.REALTIME, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

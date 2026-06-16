@@ -58,7 +58,7 @@ const SEQTS_SCRATCH_LEN: usize = 96;
 ///                 e.g. `,"client_id":1,"surface_id":2`
 ///                 Pass empty slice for lifecycle events with no extra fields.
 fn emitWithSamples(event_type: []const u8, fields_json: []const u8, ts_audio_samples: ?u64) void {
-    const ts: i64 = @intCast(std.time.nanoTimestamp());
+    const ts: i64 = @intCast(realtimeNowNs());
     const s = nextSeq();
 
     var line_buf: [2048]u8 = undefined;
@@ -466,4 +466,17 @@ test "seq/ts scratch fits maximum field widths (AD-43 silence root cause)" {
         ",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":",
         .{ worst_seq, worst_ts });
     try std.testing.expect(seqts.len <= SEQTS_SCRATCH_LEN);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 2): file-local wall-clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. REALTIME preserves
+// the wall-clock semantics of these externally visible timestamp values.
+// Duplicated per file by design during migration; consolidation deferred.
+// ============================================================================
+
+fn realtimeNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.REALTIME, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }
