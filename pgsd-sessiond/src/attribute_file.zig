@@ -20,6 +20,7 @@
 //     age_bracket, capabilities.
 
 const std = @import("std");
+const compat = @import("compat");
 
 // =============================================================================
 // Field types
@@ -145,9 +146,33 @@ pub fn loadFromDir(
         return attrs;
     };
 
-    const data = std.fs.cwd().readFileAlloc(allocator, path, MAX_FILE_SIZE) catch |err| switch (err) {
+    // Read through compat.fs: 0.16 routes the filesystem under std.Io. The Io
+    // context is owned locally (ADR shared 0001 Decision 2); this function
+    // already holds the allocator it needs to construct one. The oversize file
+    // surfaces as StreamTooLong from the bounded read, preserving the prior
+    // FileTooBig "ignore entirely" behaviour without a separate stat.
+    var io_ctx = compat.io.open(allocator) catch {
+        try addWarning(allocator, &attrs, "could not initialise I/O context");
+        return attrs;
+    };
+    defer io_ctx.deinit();
+
+    var file = compat.fs.cwd(io_ctx.io()).openFile(path) catch |err| switch (err) {
         error.FileNotFound => return attrs, // silent: ADR 0003 §Read strategy
-        error.FileTooBig => {
+        else => {
+            const msg = std.fmt.allocPrint(
+                allocator,
+                "could not read attribute file: {s}",
+                .{@errorName(err)},
+            ) catch return attrs;
+            try attrs.warnings.append(allocator, msg);
+            return attrs;
+        },
+    };
+    defer file.close();
+
+    const data = file.readToEndAlloc(allocator, MAX_FILE_SIZE) catch |err| switch (err) {
+        error.StreamTooLong => {
             try addWarning(allocator, &attrs, "attribute file exceeds 64 KiB; ignoring entirely");
             return attrs;
         },

@@ -37,6 +37,7 @@
 //   5. Files lacking [PGSD Session], Name, or Exec are skipped.
 
 const std = @import("std");
+const compat = @import("compat");
 
 // =============================================================================
 // Configuration
@@ -352,7 +353,13 @@ pub fn lookupByIdFrom(
         .{ dir, id, SESSION_EXT },
     ) catch return LookupError.InvalidSessionId;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+    // 0.16 routes the filesystem under std.Io; read through compat.fs with a
+    // locally owned Io context (ADR shared 0001 Decision 2). stat preserves the
+    // FileTooLarge pre-read check (ADR 0004).
+    var io_ctx = compat.io.open(allocator) catch return LookupError.IoError;
+    defer io_ctx.deinit();
+
+    var file = compat.fs.cwd(io_ctx.io()).openFile(path) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return LookupError.IoError,
     };

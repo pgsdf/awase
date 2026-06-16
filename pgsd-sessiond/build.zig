@@ -89,6 +89,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/attribute_file.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "compat", .module = compat_mod },
+            },
         }),
     });
     attribute_file_tests.root_module.link_libc = true;
@@ -98,6 +101,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/user_enum.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "compat", .module = compat_mod },
+            },
         }),
     });
     user_enum_tests.root_module.link_libc = true;
@@ -107,6 +113,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/session_file.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "compat", .module = compat_mod },
+            },
         }),
     });
     session_file_tests.root_module.link_libc = true;
@@ -116,6 +125,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/launch.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "compat", .module = compat_mod },
+            },
         }),
     });
     launch_tests.root_module.linkSystemLibrary("pam", .{});
