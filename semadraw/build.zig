@@ -1092,12 +1092,26 @@ pub fn build(b: *std.Build) void {
     // when run manually, and the pre-existing mapButtonBit test
     // had the same status.
 
+    // ADR semadraw 0019 Stage 1: shared SDCS decoder unit tests. Imports the
+    // sdcs module (the canonical opcode and framing source) so the decoder is
+    // checked against the same constants every consumer will use.
+    const sdcs_decode_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sdcs_decode.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "sdcs", .module = sdcs_mod }},
+        }),
+    });
+    const run_sdcs_decode_tests = b.addRunArtifact(sdcs_decode_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_simd_tests.step);
     test_step.dependOn(&run_inputfs_translate_tests.step);
     test_step.dependOn(&run_ipc_protocol_tests.step);
     test_step.dependOn(&run_client_connection_tests.step);
+    test_step.dependOn(&run_sdcs_decode_tests.step);
     // Note: bsdinput tests are in src/backend/bsdinput.zig but not included here
     // due to circular module dependencies. Run manually on FreeBSD if needed:
     // zig test src/backend/bsdinput.zig -lc -linput -ludev
