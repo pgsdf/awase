@@ -30,12 +30,12 @@ pub fn build(b: *std.Build) void {
     const semadraw_mod = semadraw_dep.module("semadraw");
 
     // shared/src/compat.zig: Awase compatibility boundary over churning std
-    // APIs. shared has no build.zig, so it is referenced by path like elsewhere.
-    const compat_mod = b.createModule(.{
-        .root_source_file = b.path("../shared/src/compat.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // APIs. Reuse the instance semadraw exposes rather than creating a second
+    // module over the same file: main imports compat directly and also pulls it
+    // in transitively through semadraw, and 0.16 forbids one file rooting two
+    // modules (the compat/compat0 collision). Sharing semadraw's instance keeps
+    // a single compat module across the whole graph.
+    const compat_mod = semadraw_dep.module("compat");
 
     const exe = b.addExecutable(.{
         .name = "pgsd-sessiond",

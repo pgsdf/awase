@@ -54,7 +54,10 @@ pub fn build(b: *std.Build) void {
 
     // shared/src/compat.zig: Awase compatibility boundary over churning std
     // APIs (process args here; the std.posix socket shim joins later).
-    const compat_mod = b.createModule(.{
+    // Exposed via b.addModule so downstream packages (pgsd-sessiond) can share
+    // this single instance instead of creating a second module over the same
+    // file, which 0.16 rejects (one file may root only one module).
+    const compat_mod = b.addModule("compat", .{
         .root_source_file = b.path("../shared/src/compat.zig"),
         .target = target,
         .optimize = optimize,
