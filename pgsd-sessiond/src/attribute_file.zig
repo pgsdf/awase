@@ -64,11 +64,11 @@ pub const Attributes = struct {
     default_session: ?[]const u8 = null,
     avatar_path: ?[]const u8 = null,
     age_bracket: AgeBracket = .unspecified,
-    capabilities: std.ArrayListUnmanaged([]const u8) = .{},
+    capabilities: std.ArrayListUnmanaged([]const u8) = .empty,
 
     // Warnings accumulated during parse. Each entry is a heap-allocated
     // human-readable message including line number where applicable.
-    warnings: std.ArrayListUnmanaged([]const u8) = .{},
+    warnings: std.ArrayListUnmanaged([]const u8) = .empty,
 
     pub fn deinit(self: *Attributes, allocator: std.mem.Allocator) void {
         if (self.display_name) |s| allocator.free(s);

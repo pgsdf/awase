@@ -48,7 +48,7 @@ pub const EnumeratedUser = struct {
 };
 
 pub const UserList = struct {
-    users: std.ArrayListUnmanaged(EnumeratedUser) = .{},
+    users: std.ArrayListUnmanaged(EnumeratedUser) = .empty,
 
     pub fn deinit(self: *UserList, allocator: std.mem.Allocator) void {
         for (self.users.items) |*u| u.deinit(allocator);
@@ -61,7 +61,7 @@ pub const UserList = struct {
 // =============================================================================
 
 const ShellSet = struct {
-    shells: std.ArrayListUnmanaged([]const u8) = .{},
+    shells: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn deinit(self: *ShellSet, allocator: std.mem.Allocator) void {
         for (self.shells.items) |s| allocator.free(s);

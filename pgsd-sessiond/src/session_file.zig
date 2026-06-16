@@ -116,8 +116,8 @@ pub const Warning = struct {
 };
 
 pub const EnumerateResult = struct {
-    sessions: std.ArrayListUnmanaged(SessionFile) = .{},
-    warnings: std.ArrayListUnmanaged(Warning) = .{},
+    sessions: std.ArrayListUnmanaged(SessionFile) = .empty,
+    warnings: std.ArrayListUnmanaged(Warning) = .empty,
 
     pub fn deinit(self: *EnumerateResult, allocator: std.mem.Allocator) void {
         for (self.sessions.items) |*s| s.deinit(allocator);

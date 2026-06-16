@@ -125,7 +125,7 @@ const EnvEntry = struct {
 };
 
 pub const EnvList = struct {
-    entries: std.ArrayListUnmanaged(EnvEntry) = .{},
+    entries: std.ArrayListUnmanaged(EnvEntry) = .empty,
 
     pub fn deinit(self: *EnvList, allocator: std.mem.Allocator) void {
         for (self.entries.items) |*e| e.deinit(allocator);
