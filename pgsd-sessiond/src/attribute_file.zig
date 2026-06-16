@@ -185,7 +185,7 @@ fn parseInto(
         line_no += 1;
 
         // Trim CR (for CRLF tolerance), then leading/trailing whitespace.
-        const no_cr = std.mem.trimRight(u8, raw_line, "\r");
+        const no_cr = std.mem.trimEnd(u8, raw_line, "\r");
         const line = std.mem.trim(u8, no_cr, " \t");
 
         if (line.len == 0) continue;

@@ -543,8 +543,8 @@ pub const State = struct {
         return State{
             .allocator = allocator,
             .field = .identify,
-            .username = .{},
-            .password = .{},
+            .username = .empty,
+            .password = .empty,
             .typing_started = false,
             .hostname = host,
             .network_str = net_str,
@@ -1575,8 +1575,8 @@ fn makeTestState(allocator: std.mem.Allocator) !State {
     return State{
         .allocator = allocator,
         .field = .identify,
-        .username = .{},
-        .password = .{},
+        .username = .empty,
+        .password = .empty,
         .typing_started = false,
         .hostname = try allocator.dupe(u8, "testhost"),
         .network_str = try allocator.dupe(u8, "lo0 127.0.0.1"),
