@@ -1,11 +1,16 @@
 # Zig 0.15.2 to 0.16.0 Migration
 
-Status: in progress, nearly complete. chronofs, semainput, inputfs, semasound,
-all of shared, the semadraw daemon, and pgsd-sessiond are benched green under the
-vendored 0.16.0 toolchain. The only remaining work is the semadraw standalone
-tools and the two example apps (mechanical Class E/F/G), off the daemon's
-critical path. chronofs was the first subproject carried all the way through and
-remains the reference implementation for the boundary architecture below.
+Status: complete. Every subsystem is benched green under the vendored 0.16.0
+toolchain on both build and test: chronofs, semainput, inputfs, semasound, all
+of shared, the semadraw daemon, pgsd-sessiond, and the semadraw standalone tools
+and apps. The final tools/apps sweep was benched green 2026-06-16 (cd semadraw &&
+../tools/zig build and ../tools/zig build test). Two files carry converted code
+that no bench step exercises and that were verified standalone instead:
+backend/process.zig (wired only as an unconsumed module) and the corpus-generator
+helpers in sdcs_fuzz (dead code unreachable from its main); both are recorded
+below for completeness. chronofs was the first subproject carried all
+the way through and remains the reference implementation for the boundary
+architecture below.
 Type: working notebook. It records per-class breaking-change detail and
 per-component port status under the architecture the migration surfaced
 (ADR shared 0001 and ADR shared 0002); it is not itself an architectural
@@ -423,17 +428,28 @@ All confirmed against the vendored stdlib:
    sockets but the non-socket surface across the daemon closure, credential
    family / Class E/F/G / PROT / time / backend raw-syscall, see the component
    status prose). pgsd-sessiond: green 2026-06-16 on build and build test, the
-   transitive client gate having cleared. Remaining: the semadraw standalone
-   tools (sdcs_make_* family, sdcs_dump, sdcs_replay, gesture_inspect,
-   idle_probe) and the semadraw-term / semadraw-demo apps, all mechanical Class
-   E/F/G off the daemon path (step 11).
+   transitive client gate having cleared. The semadraw standalone tools
+   (sdcs_make_* family, sdcs_dump, sdcs_replay, gesture_inspect, idle_probe) and
+   the semadraw-term / semadraw-demo apps followed in step 11, benched green
+   2026-06-16, completing the subproject.
 10. Aggregate verification: full ./tools/zig build green plus subsystem benches.
-11. semadraw tools and apps sweep: the last Pending population. Class E
-    std.fs.cwd -> compat.fs/io across the sdcs_make_* family and sdcs_dump;
-    Class G ArrayList .empty in sdcs_replay; Class F posix.write plus std.io and
-    Thread.sleep in gesture_inspect and idle_probe; std.fs.File in the term and
-    demo apps. Mechanical, repetitive, and isolated from the daemon; benched per
-    exe under cd semadraw && ../tools/zig build.
+    [DONE. semadraw build and build test green 2026-06-16, which builds and tests
+    every daemon, tool, and app exe; the other subsystems green on their own
+    steps as recorded above.]
+11. semadraw tools and apps sweep: the last Pending population. [DONE, benched
+    green 2026-06-16 on build and test.] Class E std.fs.cwd -> raw openCreateRdwr
+    fd (feeding Encoder.writeToFile) across the sdcs_make_* family; openReadOnly
+    plus posix.read for sdcs_dump; the FdReader / LimitedFileReader fd rework in
+    sdcs_replay; Class G ArrayList .empty in sdcs_replay; Class F posix.write to
+    compat.fs plus std.io.fixedBufferStream to std.Io.Writer.fixed and
+    Thread.sleep to compat.time in gesture_inspect and idle_probe; the term app's
+    pty.zig fork/exec/dup2/waitpid/exit/write/getenv to posix.system.* and
+    compat.args, and main.zig's milliTimestamp and reap waitpid. backend/
+    process.zig was converted to the same fork/exit/waitpid idiom and verified
+    standalone, and sdcs_fuzz's unreachable corpus generators (std.fs.cwd
+    makeDir/createFile) to the raw mkdir/openCreateRdwr idiom, closing the last
+    two latent files; a tree-wide scan then finds no removed-0.16 surface in any
+    path, live or dead.
 
 Survey result (2026-06-15): audiofs is a C kernel module and associated C
 tooling. It is not a Zig migration target and therefore has no Zig 0.16 stdlib
@@ -516,7 +532,7 @@ migration target (see the survey note under the execution plan).
     inputfs tools    Green       Green       n/a         n/a         Green       n/a         Green         n/a
     semasound        n/a         Green       n/a         Green       Green       n/a         Green         Green
     semadraw daemon  Green       Green       Green       Green       Green       Green       Green         Green
-    semadraw tools   n/a         Green       Green       Pending     Pending     Pending     Pending       n/a
+    semadraw tools   n/a         Green       Green       Green       Green       Green       Green         n/a
     pgsd-sessiond    Green       Green       Green       Green       Green       n/a         Green         Green*
 
 "n/a" means the component has no site in that class. The shared module rows
@@ -556,13 +572,37 @@ surface_registry, client_session), the PROT packed-struct literal (drawfs, drm,
 surface_registry), AcceptError sourced from compat.posix (socket_server,
 tcp_server), app.zig's nanoTimestamp/Thread.sleep to compat.time, and the
 backend raw-syscall paths (inputfs_input's kqueue/kevent wake bridge, drm's
-clipboard file I/O). semadraw tools is the remaining Pending population: the
-standalone sdcs_make_* family (Class E std.fs.cwd -> compat.fs/io), sdcs_dump,
-sdcs_replay (Class G), gesture_inspect and idle_probe (Class F posix.write,
-std.io, Thread.sleep), and the semadraw-term / semadraw-demo apps (std.fs.File).
-These are separate executables off the daemon's critical path; semadraw's C link
-and B args are Green (their build wiring and the arg model were already correct),
-so only E/F/G/concurrency remain, all mechanical.
+clipboard file I/O). semadraw tools is now green as well, benched 2026-06-16 on
+both ../tools/zig build and ../tools/zig build test: the standalone sdcs_make_*
+family (24 writers; std.fs.cwd().createFile was removed and Encoder.writeToFile
+already took a raw fd, so each adopted the file-local openCreateRdwr -> fd idiom
+from the converted siblings sdcs_test_malformed and sdcs_fuzz), sdcs_dump
+(openReadOnly plus posix.read and a relative seekByFd, readExact retyped to an
+fd), sdcs_replay (the one structural conversion: LimitedFileReader holds an fd, a
+by-value FdReader keeps readExact generic, and open / validateFile / seek / the
+PPM write route through the raw helpers), gesture_inspect and idle_probe (Class F
+posix.write to compat.fs stdout/stderr, std.io.fixedBufferStream to
+std.Io.Writer.fixed/buffered, Thread.sleep to compat.time), and the
+semadraw-term / semadraw-demo apps. The term app was the deepest: pty.zig's
+fork / dup2 / _exit / open / waitpid / write / getenv all left std.posix for
+posix.system.* and compat.args.getenv (raw waitpid takes a status pointer and
+returns the pid; the variadic open mode literal needs a fixed-size cast), and
+main.zig moved nine milliTimestamp sites to the monotonic-ms idiom with its reap
+waitpid to the raw form. semadraw's C link and B args were already correct, so
+the sweep was confined to E/F/G and concurrency.
+
+backend/process.zig was converted to the same fork / _exit / waitpid idiom (its
+close / write / pipe were already on raw libc helpers, and posix.read / kill
+survive). It is wired only as an unconsumed b.createModule, so no built artifact
+analyzes it and neither bench step exercises it; it was verified standalone via
+zig build-obj against its backend dependency (0 errors). The parallel case is
+sdcs_fuzz: its main path was converted in the sweep, but three corpus-generator
+helpers (generateCorpus and its callees), unreachable from main, retained
+std.fs.cwd().makeDir/createFile as dead code the compiler never analyzed. These
+were converted to the same raw mkdir / openCreateRdwr / writeAllFd idiom and
+verified by forcing analysis of the subtree (a comptime reference, 0 errors).
+With both closed, a tree-wide scan finds no remaining unconverted 0.16 surface in
+any code path, live or dead.
 
 pgsd-sessiond is benched green 2026-06-16 on both ../tools/zig build and
 ../tools/zig build test (nine test modules). Its prior "Blocked*" was a
