@@ -48,15 +48,17 @@ pub const BackendProcess = struct {
         }
 
         // Fork
-        const pid = try posix.fork();
+        const pid_rc = posix.system.fork();
+        if (pid_rc < 0) return error.ForkFailed;
+        const pid = pid_rc;
 
         if (pid == 0) {
             // Child process - this becomes the backend
             self.runBackendChild() catch |err| {
                 std.log.err("Backend child error: {}", .{err});
-                posix.exit(1);
+                posix.system._exit(1);
             };
-            posix.exit(0);
+            posix.system._exit(0);
         }
 
         // Parent process
@@ -80,8 +82,9 @@ pub const BackendProcess = struct {
         // Wait for child with timeout, then kill
         const start_ms = monotonicNowMs();
         while (monotonicNowMs() - start_ms < 1000) {
-            const result = posix.waitpid(self.pid, .{ .NOHANG = true });
-            if (result.pid != 0) {
+            var wstatus: c_int = undefined;
+            const wpid = posix.system.waitpid(self.pid, &wstatus, @intCast(posix.W.NOHANG));
+            if (wpid != 0) {
                 self.running = false;
                 break;
             }
@@ -91,7 +94,8 @@ pub const BackendProcess = struct {
         if (self.running) {
             // Force kill
             posix.kill(self.pid, posix.SIG.KILL) catch {};
-            _ = posix.waitpid(self.pid, .{});
+            var rstatus: c_int = undefined;
+            _ = posix.system.waitpid(self.pid, &rstatus, 0);
             self.running = false;
         }
 
