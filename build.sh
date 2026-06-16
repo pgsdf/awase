@@ -14,14 +14,20 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Every build path goes through the vendored, pinned toolchain. tools/zig
+# resolves sdk/zig/current and bootstraps it on first use (tools/bootstrap.sh);
+# the pinned version authority stays in tools/bootstrap.sh.
+ZIG="$SCRIPT_DIR/tools/zig"
+
 # Handle --check before setting up the log
 if [ "${1:-}" = "--check" ]; then
     echo "=== UTF dependency check ==="
     OK=1
-    if command -v zig >/dev/null 2>&1; then
-        echo "  ok  zig $(zig version)"
+    if [ -x "$ZIG" ] && ZIG_VER=$("$ZIG" version 2>/dev/null | head -1) && [ -n "$ZIG_VER" ]; then
+        echo "  ok  vendored zig $ZIG_VER (sdk/zig/current)"
     else
-        echo "  MISSING  zig — install from https://ziglang.org/download/"
+        echo "  MISSING  tools/zig could not provide a working compiler"
+        echo "           (it bootstraps sdk/zig/current on first use; needs network)"
         OK=0
     fi
     if [ -f "$SCRIPT_DIR/.config" ]; then
@@ -60,7 +66,7 @@ echo ""
     echo "Date:      $(date)"
     echo "Host:      $(uname -n)"
     echo "OS:        $(uname -sr)"
-    echo "Zig:       $(zig version 2>/dev/null || echo 'not found')"
+    echo "Zig:       $("$ZIG" version 2>/dev/null || echo 'not found')"
     echo "Config:    ${CONFIG} ($([ -f "$CONFIG" ] && echo found || echo not found))"
     echo "Flags:     ${BUILD_FLAGS:-none}"
     echo "Args:      $*"
@@ -71,13 +77,13 @@ echo ""
     # Build semasound, semainput, chronofs without flags
     for sub in semasound semainput chronofs; do
         echo "--- Building $sub ---"
-        zig build --build-file "$sub/build.zig" 2>&1 || exit 1
+        "$ZIG" build --build-file "$sub/build.zig" 2>&1 || exit 1
     done
 
     # Build semadraw with backend flags
     echo "--- Building semadraw ---"
     echo "DRAWFS_DRM:${DRAWFS_DRM:-false}"
-    ( cd semadraw && zig build $BUILD_FLAGS "$@" 2>&1 ) || exit 1
+    ( cd semadraw && "$ZIG" build $BUILD_FLAGS "$@" 2>&1 ) || exit 1
     STATUS=0
 
     echo ""

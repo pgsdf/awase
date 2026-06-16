@@ -94,7 +94,7 @@ which s6-svscan
 ## Step 3 — Clone awase
 
 The canonical location for the awase source tree on a deployed system
-is `/usr/local/src/UTF/`. This aligns with FreeBSD's `hier(7)`
+is `/usr/local/src/awase/`. This aligns with FreeBSD's `hier(7)`
 convention: `/usr/local/src/` is the reserved area for source of
 locally-installed third-party software, parallel to
 `/usr/local/bin/` for the binaries and `/usr/local/etc/rc.d/` for
@@ -107,7 +107,7 @@ sudo mkdir -p /usr/local/src
 sudo chown $(id -u):$(id -g) /usr/local/src
 cd /usr/local/src
 git clone https://github.com/pgsdf/awase.git
-cd UTF
+cd awase
 ```
 
 The clone is done as the regular operator user; `install.sh` later
@@ -335,7 +335,7 @@ the shims are transparent.
 **About the source tree post-install:** `install.sh` does not
 relocate, copy, or remove the source tree. If you followed
 Step 3's recommendation, the source remains at
-`/usr/local/src/UTF/` and can be left there for future rebuilds
+`/usr/local/src/awase/` and can be left there for future rebuilds
 (useful if you plan to track upstream or rebuild against a
 debug kernel). If you want to reclaim disk space, `rm -rf` of
 the source tree is safe after install completes; all deployed
@@ -535,6 +535,34 @@ daemons stay ReleaseSafe (no known issues there). Re-running
 and bring the panic back; until AD-14 closes, the Debug build
 is the operational mode for the terminal client.
 
+## Rebuilding
+
+To rebuild from a clean tree (after pulling changes, editing
+sources, or changing the Zig toolchain), clear the build
+artifacts and reinstall in one step:
+
+```
+sudo sh clean.sh --force && sudo sh install.sh
+```
+
+`clean.sh` removes every `.zig-cache/` and `zig-out/` directory
+under the checkout plus the root-level `build-*.log` files. It
+does not touch `.git/`, `.config`, source files, or anything
+under `/usr/src`, `/boot`, or `/usr/obj`. The drawfs and inputfs
+kernel modules under `/usr/src` are cleaned by their own
+`build.sh` scripts, not by `clean.sh`. Run `sh clean.sh --dry-run`
+first to see the candidate list without removing anything.
+
+`install.sh` then rebuilds every userland subproject, rebuilds
+and redeploys the kernel modules, and reinstalls, exactly as in
+Step 6. Because `install.sh` performs the userland build itself,
+a clean rebuild does not need a separate `build.sh` run.
+
+A clean rebuild is the reliable way to pick up a Zig toolchain
+change: stale `.zig-cache/` entries from a previous compiler
+version are a common source of confusing build errors, and
+clearing them removes that variable.
+
 ## Hazards
 
 These are mistakes that have actually caused install-time crashes
@@ -627,13 +655,14 @@ Repeated half-completes compound the corruption.
 
 ### Hazard 4 — Zig version mismatch
 
-Zig 0.14 and 0.15 have substantial syntax differences. UTF
-targets 0.15 and the build will fail loudly on 0.14 (errors
-about reserved syntax, missing imports, or wrong stdlib paths).
+Zig point releases have substantial syntax and stdlib
+differences. UTF targets 0.16; older toolchains (0.14, 0.15)
+fail loudly with errors about reserved syntax, missing imports,
+or wrong stdlib paths.
 
-If `zig version` reports 0.14, install 0.15 from the official
-Zig downloads or wait for `pkg install zig` to ship a 0.15
-build for your FreeBSD version.
+If `zig version` reports anything older than 0.16, install 0.16
+from the official Zig downloads or wait for `pkg install zig` to
+ship a 0.16 build for your FreeBSD version.
 
 ### Hazard 5 — `/var/run` not actually tmpfs
 
@@ -778,7 +807,7 @@ sudo sh install.sh --uninstall
 This removes the installed binaries, rc.d service files, the
 `drawfs_load` entry from `/boot/loader.conf`, and the daemon
 enable flags from `/etc/rc.conf`. It does not remove the
-source tree at `~/UTF` or anything under `/var/run/sema/`
+source tree at `~/awase` or anything under `/var/run/sema/`
 (transient; cleared on reboot).
 
 ## Next steps after a clean install
