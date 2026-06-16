@@ -152,3 +152,40 @@ Closure criteria:
 3. The socket boundary is implemented and all current socket consumers are
    migrated to it, at which point the migration is structurally complete and the
    boundary has its fourth concrete instance.
+
+## Errata
+
+### E1. compat.fs directory-operations surface (P3 migration)
+
+The filesystem surface scoped under Decision 4 proved slightly too small once
+real 0.16 migration reached the pgsd-sessiond filesystem sites. The session-file
+enumerator and its test scaffolding require directory traversal, directory
+creation, and recursive deletion, and the session-file reader checks file size
+before reading; none of these fell inside the original create-or-open, read,
+write, position, close scope.
+
+compat.fs is therefore extended, within Decision 3 (filesystem helpers live only
+in compat.fs) and without introducing a second filesystem layer, by these thin
+wrappers over std.Io.Dir and std.Io.File:
+
+- Dir.openDir (with an iterate flag)
+- Dir.iterate, plus an Iterator that carries the Io handle so next() takes no
+  io argument
+- Dir.makeDir (wrapping 0.16's renamed createDir with the platform default
+  directory permissions)
+- Dir.deleteTree
+- File.stat
+
+Each wrapper carries the Io handle inside Dir, File, or Iterator, so call sites
+still never thread io or reference std.Io types, preserving the Decision 2 and 3
+boundary properties.
+
+File.stat is added solely to preserve externally visible behaviour: the
+session-file reader surfaces FileTooLarge from a pre-read size check (ADR 0004)
+rather than letting an allocator-limit error replace it. It is not a
+general-purpose metadata surface, and new callers should not reach for it absent
+that specific need.
+
+This errata records that the originally scoped surface was an underestimate
+discovered during migration, not a change of architectural direction; the
+ownership principle and boundary layout (Decisions 1 through 3) are unchanged.

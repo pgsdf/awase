@@ -34,6 +34,20 @@ pub const CreateOptions = struct {
     truncate: bool = true,
 };
 
+/// Options for opening a directory. Mirrors only the iterate flag the tree
+/// uses; a Dir must be opened with iterate = true before `iterate` is called.
+pub const OpenDirOptions = struct {
+    iterate: bool = false,
+};
+
+/// A directory entry yielded by `Iterator.next`. Aliased so call sites name the
+/// type through compat.fs rather than std.Io.Dir.
+pub const Entry = std.Io.Dir.Entry;
+
+/// File metadata returned by `File.stat`. Aliased so call sites name the type
+/// through compat.fs rather than std.Io.File.
+pub const Stat = std.Io.File.Stat;
+
 /// A directory handle bound to an Io context. Obtain via `cwd`.
 pub const Dir = struct {
     inner: std.Io.Dir,
@@ -55,6 +69,43 @@ pub const Dir = struct {
     /// absolute). Errors if it cannot be accessed; used for existence tests.
     pub fn access(self: Dir, sub_path: []const u8) !void {
         try self.inner.access(self.io, sub_path, .{});
+    }
+
+    /// Open a subdirectory. Pass `.{ .iterate = true }` to allow `iterate`.
+    pub fn openDir(self: Dir, sub_path: []const u8, options: OpenDirOptions) !Dir {
+        const d = try self.inner.openDir(self.io, sub_path, .{ .iterate = options.iterate });
+        return .{ .inner = d, .io = self.io };
+    }
+
+    /// Iterate this directory's entries. The Dir must have been opened with
+    /// `.iterate = true`. The returned Iterator carries the Io handle, so its
+    /// `next` takes no argument.
+    pub fn iterate(self: Dir) Iterator {
+        return .{ .inner = self.inner.iterate(), .io = self.io };
+    }
+
+    /// Create a subdirectory with the platform default directory permissions.
+    /// 0.16 renamed makeDir to createDir and made the mode explicit; this keeps
+    /// the makeDir name and supplies .default_dir.
+    pub fn makeDir(self: Dir, sub_path: []const u8) !void {
+        try self.inner.createDir(self.io, sub_path, .default_dir);
+    }
+
+    /// Recursively delete a subtree. Used by test scaffolding to clean tmp dirs.
+    pub fn deleteTree(self: Dir, sub_path: []const u8) !void {
+        try self.inner.deleteTree(self.io, sub_path);
+    }
+};
+
+/// An iterator over a Dir's entries, carrying the Io handle so `next` takes no
+/// argument. Obtain via `Dir.iterate`; the source Dir must outlive it.
+pub const Iterator = struct {
+    inner: std.Io.Dir.Iterator,
+    io: std.Io,
+
+    /// The next entry, or null at end of directory.
+    pub fn next(self: *Iterator) !?Entry {
+        return self.inner.next(self.io);
     }
 };
 
@@ -159,5 +210,15 @@ pub const File = struct {
     pub fn close(self: *File) void {
         if (self.w) |*wr| wr.interface.flush() catch {};
         self.inner.close(self.io);
+    }
+
+    /// File metadata. Added solely to preserve externally visible behaviour:
+    /// the session-file reader checks the size before reading so an oversized
+    /// file surfaces FileTooLarge (ADR 0004), rather than being silently
+    /// replaced by an allocator-limit error mid-read. This is not a
+    /// general-purpose metadata surface; new callers should use the read
+    /// helpers above unless they specifically need the pre-read size check.
+    pub fn stat(self: *File) !Stat {
+        return self.inner.stat(self.io);
     }
 };
