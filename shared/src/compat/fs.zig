@@ -96,6 +96,12 @@ pub const Dir = struct {
         try self.inner.deleteTree(self.io, sub_path);
     }
 
+    /// Delete a single file (relative to this Dir, or absolute). Used for unix
+    /// socket path cleanup. Distinct from deleteTree, which is recursive.
+    pub fn deleteFile(self: Dir, sub_path: []const u8) !void {
+        try self.inner.deleteFile(self.io, sub_path);
+    }
+
     /// Close a directory handle obtained from `openDir`. The cwd handle from
     /// `cwd` is not owned and does not need closing.
     pub fn close(self: Dir) void {
@@ -118,6 +124,22 @@ pub const Iterator = struct {
 /// The current working directory, bound to `io`.
 pub fn cwd(io: std.Io) Dir {
     return .{ .inner = std.Io.Dir.cwd(), .io = io };
+}
+
+/// Open an existing file by absolute path, bound to `io`. For regular-file
+/// reads with no owning Dir handle, e.g. a cross-process artifact at a fixed
+/// path. The path must be absolute. Device descriptors use raw openat, not
+/// this (ADR shared 0001: device-fd acquisition stays in the raw-fd lineage).
+pub fn openFileAbsolute(io: std.Io, absolute_path: []const u8) !File {
+    const f = try std.Io.Dir.openFileAbsolute(io, absolute_path, .{});
+    return .{ .inner = f, .io = io };
+}
+
+/// Create (or truncate) a file by absolute path, bound to `io`. For
+/// regular-file writes with no owning Dir handle. The path must be absolute.
+pub fn createFileAbsolute(io: std.Io, absolute_path: []const u8, options: CreateOptions) !File {
+    const f = try std.Io.Dir.createFileAbsolute(io, absolute_path, .{ .truncate = options.truncate });
+    return .{ .inner = f, .io = io };
 }
 
 /// A console output stream (stdout or stderr). Conceptually a stream, not a
