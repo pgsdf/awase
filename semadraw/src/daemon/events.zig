@@ -1,5 +1,6 @@
 const std = @import("std");
 const session_mod = @import("session");
+const compat = @import("compat");
 
 // ============================================================================
 // Event emitter, unified schema stdout emission for semadraw
@@ -62,59 +63,36 @@ fn emitWithSamples(event_type: []const u8, fields_json: []const u8, ts_audio_sam
     const s = nextSeq();
 
     var line_buf: [2048]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&line_buf);
-    const w = stream.writer();
+    var off: usize = 0;
 
-    w.writeAll("{\"type\":\"") catch return;
-    w.writeAll(event_type) catch return;
-    w.writeAll("\",\"subsystem\":\"semadraw\",\"session\":\"") catch return;
-    w.writeAll(&session_hex) catch return;
-    w.writeByte('"') catch return;
+    if (!bufAppend(&line_buf, &off, "{\"type\":\"")) return;
+    if (!bufAppend(&line_buf, &off, event_type)) return;
+    if (!bufAppend(&line_buf, &off, "\",\"subsystem\":\"semadraw\",\"session\":\"")) return;
+    if (!bufAppend(&line_buf, &off, &session_hex)) return;
+    if (!bufAppend(&line_buf, &off, "\"")) return;
 
     var tmp: [SEQTS_SCRATCH_LEN]u8 = undefined;
     const seqts = std.fmt.bufPrint(&tmp,
         ",\"seq\":{d},\"ts_wall_ns\":{d},\"ts_audio_samples\":",
         .{ s, ts }) catch return;
-    w.writeAll(seqts) catch return;
+    if (!bufAppend(&line_buf, &off, seqts)) return;
 
     if (ts_audio_samples) |samples| {
         var ntmp: [24]u8 = undefined;
         const ns = std.fmt.bufPrint(&ntmp, "{d}", .{samples}) catch "null";
-        w.writeAll(ns) catch return;
+        if (!bufAppend(&line_buf, &off, ns)) return;
     } else {
-        w.writeAll("null") catch return;
+        if (!bufAppend(&line_buf, &off, "null")) return;
     }
 
-    w.writeAll(fields_json) catch return;
-    w.writeAll("}\n") catch return;
+    if (!bufAppend(&line_buf, &off, fields_json)) return;
+    if (!bufAppend(&line_buf, &off, "}\n")) return;
 
-    var file = std.fs.File.stdout();
-    var out_buf: [2048]u8 = undefined;
-    // AD-23: use writerStreaming rather than writer.
-    //
-    // `writer()` initialises File.Writer in `.positional` mode, which
-    // calls pwritev. On a pipe (stdout typically is one when the
-    // operator runs `daemon 2>&1 | tee /tmp/log`), pwritev returns
-    // ESPIPE. File.Writer's drain has an `error.Unseekable` fallback
-    // that transitions to streaming mode within the same drain, so a
-    // single emission's data does still land, but every emission
-    // pays the doomed pwritev syscall before falling through. Because
-    // this function constructs a fresh File.Writer per invocation,
-    // the streaming-mode transition never persists; every emit-call
-    // repeats the failed-syscall-then-fall-through dance. ktrace
-    // during AD-21 verification surfaced this as a tight loop of
-    // `pwritev(0x1, ..., 0) = -1 errno 29 Illegal seek` under
-    // emission load.
-    //
-    // `writerStreaming()` initialises in `.streaming` mode and calls
-    // writev directly, skipping the doomed syscall. Stdout for a
-    // daemon is conceptually append-only, there is no offset
-    // semantics worth preserving, so streaming is the correct mode
-    // regardless of whether the destination is a pipe, regular file,
-    // or terminal.
-    var out = file.writerStreaming(&out_buf);
-    out.interface.writeAll(stream.getWritten()) catch return;
-    out.interface.flush() catch return;
+    // AD-23 superseded: emit through compat.fs.stdout(), whose Stream.writeAll
+    // uses raw safeWrite (posix.system.write). The pwritev/ESPIPE problem the
+    // old writerStreaming workaround addressed cannot arise. See BACKLOG-history
+    // AD-23 for the supersession.
+    compat.fs.stdout().writeAll(line_buf[0..off]) catch return;
 }
 
 fn emit(event_type: []const u8, fields_json: []const u8) void {
@@ -390,36 +368,19 @@ pub fn emitCompositeGateDiagnostic(
 // Tests
 // ============================================================================
 
-// AD-23: confirm emitWithSamples's writer-construction pattern produces
-// intact, ordered output when stdout is a pipe.
+// AD-23 (superseded): confirm that emitting through a compat.fs.Stream over a
+// pipe produces intact, ordered output.
 //
-// Before the fix, emitWithSamples called `file.writer(buf)` which
-// initialises File.Writer in `.positional` mode, calling pwritev. On a
-// pipe (stdout typically is one when the operator runs
-// `daemon 2>&1 | tee /tmp/log`), pwritev returns ESPIPE. File.Writer's
-// drain has an `error.Unseekable` fallback that transitions to streaming
-// mode within the same drain, so a single emission's data does still
-// land, but every emission paid the doomed syscall before falling
-// through. Because emitWithSamples constructs a fresh File.Writer per
-// invocation, the streaming-mode transition never persisted; every
-// emit-call repeated the failed-syscall-then-fall-through dance. ktrace
-// during AD-21 verification surfaced this as a tight loop of
-// `pwritev(0x1, ..., 0) = -1 errno 29 Illegal seek` syscalls under
-// emission load.
-//
-// The fix changes the constructor to `file.writerStreaming(buf)`, which
-// initialises in `.streaming` mode and skips pwritev entirely.
-//
-// This test mirrors emitWithSamples's actual call shape (fresh writer
-// per emission) against a pipe(2) fd, asserting both that each emission
-// returns without error and that the bytes arrive intact and in order.
-// It verifies the wire-correct outcome but does not directly assert
-// "no pwritev syscall happened", that's confirmed by ktrace at
-// verification time, not by a unit test. The value of this test is to
-// lock in the writerStreaming choice so a future refactor that goes
-// back to writer() is caught at zig build test time rather than at
-// the next bare-metal verification round.
-test "emitWithSamples-style writes through pipe fd succeed (AD-23)" {
+// Historical context: emitWithSamples once built a File.Writer in positional
+// mode, whose pwritev returned ESPIPE on a pipe (e.g. `daemon 2>&1 | tee log`),
+// producing a tight loop of failed `pwritev ... Illegal seek` syscalls. AD-23
+// worked around it by selecting writerStreaming. That workaround is gone:
+// emitWithSamples now writes through compat.fs.stdout(), whose Stream.writeAll
+// calls raw posix.system.write, so positional mode and pwritev never enter the
+// picture. This test pins the wire-correct outcome of that path against a real
+// pipe(2) fd so a regression in the Stream write path is caught at zig build
+// test time.
+test "emitWithSamples-style writes through pipe fd succeed (AD-23 superseded)" {
     const testing = std.testing;
     const posix = std.posix;
 
@@ -427,23 +388,14 @@ test "emitWithSamples-style writes through pipe fd succeed (AD-23)" {
     defer closeFd(fds[0]);
     defer closeFd(fds[1]);
 
-    var file: std.fs.File = .{ .handle = fds[1] };
     const payload_a = "{\"type\":\"frame_complete\",\"backend\":\"software\"}\n";
     const payload_b = "{\"type\":\"client_connected\",\"client_id\":1}\n";
 
-    // Mirror emitWithSamples: fresh writer per call, write+flush.
-    {
-        var out_buf: [2048]u8 = undefined;
-        var out = file.writerStreaming(&out_buf);
-        try out.interface.writeAll(payload_a);
-        try out.interface.flush();
-    }
-    {
-        var out_buf: [2048]u8 = undefined;
-        var out = file.writerStreaming(&out_buf);
-        try out.interface.writeAll(payload_b);
-        try out.interface.flush();
-    }
+    // Mirror emitWithSamples: write each emission through a compat.fs.Stream
+    // over the pipe fd. Stream.writeAll uses raw safeWrite, so there is no
+    // pwritev and no ESPIPE to work around.
+    try (compat.fs.Stream{ .fd = fds[1] }).writeAll(payload_a);
+    try (compat.fs.Stream{ .fd = fds[1] }).writeAll(payload_b);
 
     var read_buf: [256]u8 = undefined;
     const n = try posix.read(fds[0], &read_buf);
@@ -497,4 +449,14 @@ fn pipeFds() ![2]std.posix.fd_t {
     var fds: [2]std.posix.fd_t = undefined;
     if (std.posix.system.pipe(&fds) != 0) return error.PipeFailed;
     return fds;
+}
+
+/// Append `s` to `buf` at `*off`, advancing the offset. Returns false on
+/// overflow so the caller can bail, matching the prior fixed-buffer writer's
+/// catch-return semantics.
+fn bufAppend(buf: []u8, off: *usize, s: []const u8) bool {
+    if (off.* + s.len > buf.len) return false;
+    @memcpy(buf[off.*..][0..s.len], s);
+    off.* += s.len;
+    return true;
 }

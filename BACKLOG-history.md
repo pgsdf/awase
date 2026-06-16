@@ -7797,6 +7797,19 @@ Persists across reboot.
 
 ### `[x]` AD-23: semadrawd `pwritev: Illegal seek` corrupts piped logs  *(Closed 2026-05-07, Small)*
 
+**Superseded (2026-06-16, P3-T2b).** The writerStreaming workaround this entry
+shipped no longer exists. During the Zig 0.16 filesystem migration, events.zig's
+`emitWithSamples` was rerouted to write through `compat.fs.stdout()`, whose
+`Stream.writeAll` calls raw `posix.system.write` (posix_safe.safeWrite). That
+path never constructs a `File.Writer` and never issues pwritev, so the
+positional-vs-streaming distinction, and the ESPIPE failure mode that motivated
+AD-23, can no longer arise. The `std.fs.File.stdout()` call and the
+`writerStreaming` constructor are both gone (the latter is also removed because
+0.16 relocated `std.fs.File` to `std.Io.File` and compat.fs owns that boundary).
+The regression test was kept and renamed (`... (AD-23 superseded)`); it now pins
+`compat.fs.Stream`'s pipe-write behaviour instead of the writerStreaming choice.
+The original closing note and analysis are retained below for historical context.
+
 **Closing note (2026-05-07).** Fix shipped: `events.zig`'s
 `emitWithSamples` now constructs its stdout writer via
 `std.fs.File.writerStreaming(&out_buf)` rather than
