@@ -893,7 +893,7 @@ pub const DrawfsBackend = struct {
 
     fn renderImpl(ctx: *anyopaque, request: backend.RenderRequest) anyerror!backend.RenderResult {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        const start = std.time.nanoTimestamp();
+        const start = monotonicNowNs();
 
         const buffer = self.surface_map orelse {
             return backend.RenderResult.failure(request.surface_id, "no surface mapped");
@@ -980,7 +980,7 @@ pub const DrawfsBackend = struct {
         self.blitToEfifb();
 
         self.frame_count += 1;
-        const end = std.time.nanoTimestamp();
+        const end = monotonicNowNs();
 
         return backend.RenderResult.success(
             request.surface_id,
@@ -2033,4 +2033,17 @@ test "fillRectFast: Clear mode equivalence" {
     fillRectFast(&fb_b, stride, 0, 0, 8, 2, 0);
 
     try std.testing.expectEqualSlices(u8, &fb_a, &fb_b);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 3): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

@@ -700,7 +700,7 @@ pub const DrmBackend = struct {
 
     fn renderImpl(ctx: *anyopaque, request: backend.RenderRequest) anyerror!backend.RenderResult {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        const start = std.time.nanoTimestamp();
+        const start = monotonicNowNs();
 
         const buffer = self.getBackBuffer() orelse {
             return backend.RenderResult.failure(request.surface_id, "no back buffer");
@@ -725,7 +725,7 @@ pub const DrmBackend = struct {
         // TODO: Execute SDCS commands (would integrate with software renderer)
         _ = request.sdcs_data;
 
-        const end = std.time.nanoTimestamp();
+        const end = monotonicNowNs();
         return backend.RenderResult.success(
             request.surface_id,
             self.frame_count,
@@ -842,4 +842,17 @@ test "DrmBackend struct size" {
 
 test "DumbBuffer struct size" {
     try std.testing.expect(@sizeOf(DumbBuffer) > 0);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 3): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

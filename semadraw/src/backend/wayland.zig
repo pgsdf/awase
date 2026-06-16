@@ -1413,7 +1413,7 @@ pub const WaylandBackend = struct {
 
     fn renderImpl(ctx: *anyopaque, request: backend.RenderRequest) anyerror!backend.RenderResult {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        const start_time = std.time.nanoTimestamp();
+        const start_time = monotonicNowNs();
 
         // Mark as rendering to prevent resize during render
         self.rendering = true;
@@ -1461,7 +1461,7 @@ pub const WaylandBackend = struct {
         self.present();
 
         self.frame_count += 1;
-        const end_time = std.time.nanoTimestamp();
+        const end_time = monotonicNowNs();
 
         return backend.RenderResult.success(
             request.surface_id,
@@ -1578,4 +1578,17 @@ fn blendChannel(src: u8, dst: u8, sa: f32, da: f32, out_a: f32) u8 {
     const d: f32 = @floatFromInt(dst);
     const result = (s * sa + d * da * (1.0 - sa)) / out_a;
     return @intFromFloat(@min(255.0, @max(0.0, result)));
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 3): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

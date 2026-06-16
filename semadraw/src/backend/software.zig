@@ -125,7 +125,7 @@ pub const SoftwareBackend = struct {
 
     fn renderImpl(ctx: *anyopaque, request: backend.RenderRequest) anyerror!backend.RenderResult {
         const self: *Self = @ptrCast(@alignCast(ctx));
-        const start_time = std.time.nanoTimestamp();
+        const start_time = monotonicNowNs();
 
         // Validate framebuffer
         const fb = self.framebuffer orelse return backend.RenderResult.failure(
@@ -153,7 +153,7 @@ pub const SoftwareBackend = struct {
         };
 
         self.frame_count += 1;
-        const end_time = std.time.nanoTimestamp();
+        const end_time = monotonicNowNs();
         const render_time: u64 = @intCast(end_time - start_time);
 
         return backend.RenderResult.success(
@@ -437,4 +437,17 @@ test "clampU8" {
     try std.testing.expectEqual(@as(u8, 128), clampU8(0.5));
     try std.testing.expectEqual(@as(u8, 255), clampU8(1.0));
     try std.testing.expectEqual(@as(u8, 255), clampU8(2.0));
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 3): file-local monotonic clock helper.
+// Replaces std.time.nanoTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval/pacing maths here. Duplicated per file by
+// design during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowNs() i128 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 }

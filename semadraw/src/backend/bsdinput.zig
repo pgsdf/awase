@@ -953,7 +953,7 @@ pub const BsdInput = struct {
 
     /// Process a byte from keyboard input
     fn processKeyByte(self: *Self, byte: u8) void {
-        const now = std.time.milliTimestamp();
+        const now = monotonicNowMs();
 
         // Handle escape sequences
         if (self.esc_buf_len > 0) {
@@ -1007,7 +1007,7 @@ pub const BsdInput = struct {
     /// Check for escape sequence timeout
     fn checkEscapeTimeout(self: *Self) void {
         if (self.esc_buf_len > 0) {
-            const now = std.time.milliTimestamp();
+            const now = monotonicNowMs();
             if (now - self.esc_timeout > 50) {
                 // Timeout - emit escape and clear buffer
                 if (self.esc_buf_len == 1) {
@@ -1287,4 +1287,17 @@ test "keyboard mode constants" {
     try std.testing.expect(K_RAW == 0);
     try std.testing.expect(K_XLATE == 1);
     try std.testing.expect(K_CODE == 2);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 3): file-local monotonic clock helper (ms).
+// Replaces std.time.milliTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval maths here. Duplicated per file by design
+// during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowMs() i64 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return ts.sec * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
 }

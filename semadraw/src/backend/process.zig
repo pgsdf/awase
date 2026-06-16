@@ -78,14 +78,14 @@ pub const BackendProcess = struct {
         self.sendShutdown() catch {};
 
         // Wait for child with timeout, then kill
-        const start = std.time.milliTimestamp();
-        while (std.time.milliTimestamp() - start < 1000) {
+        const start_ms = monotonicNowMs();
+        while (monotonicNowMs() - start_ms < 1000) {
             const result = posix.waitpid(self.pid, .{ .NOHANG = true });
             if (result.pid != 0) {
                 self.running = false;
                 break;
             }
-            std.Thread.sleep(10 * std.time.ns_per_ms);
+            sleepNs(10 * std.time.ns_per_ms);
         }
 
         if (self.running) {
@@ -308,4 +308,30 @@ test "BackendProcess init" {
 
     try std.testing.expect(!bp.running);
     try std.testing.expectEqual(@as(posix.pid_t, 0), bp.pid);
+}
+
+// ============================================================================
+// Migration time idiom (P2 Tranche 3): file-local monotonic clock helper (ms).
+// Replaces std.time.milliTimestamp(), removed in Zig 0.16. Monotonic is the
+// correct clock for the interval maths here. Duplicated per file by design
+// during migration; consolidation deferred.
+// ============================================================================
+
+fn monotonicNowMs() i64 {
+    var ts: std.posix.timespec = undefined;
+    _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
+    return ts.sec * 1000 + @divTrunc(ts.nsec, std.time.ns_per_ms);
+}
+
+fn sleepNs(ns: u64) void {
+    var req: std.posix.timespec = .{
+        .sec = @intCast(ns / std.time.ns_per_s),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    while (true) {
+        const rc = std.posix.system.nanosleep(&req, &req);
+        if (rc == 0) return;
+        if (std.posix.errno(rc) != .INTR) return;
+        // EINTR: req now holds the remaining interval; loop to finish it
+    }
 }
