@@ -19,7 +19,7 @@ pub const ShmBuffer = struct {
         // Use memfd_create for anonymous shared memory (Linux)
         // On FreeBSD, we'd use shm_open with SHM_ANON or a unique name
         const fd = try createAnonymousShm(size);
-        errdefer posix.close(fd);
+        errdefer closeFd(fd);
 
         const ptr = try posix.mmap(
             null,
@@ -45,7 +45,7 @@ pub const ShmBuffer = struct {
         errdefer allocator.free(name_z);
 
         const fd = try shmOpen(name_z, size);
-        errdefer posix.close(fd);
+        errdefer closeFd(fd);
 
         const ptr = try posix.mmap(
             null,
@@ -114,7 +114,7 @@ pub const ShmBuffer = struct {
             posix.munmap(byte_ptr[0..self.size]);
             self.mapped_ptr = null;
         }
-        posix.close(self.fd);
+        closeFd(self.fd);
 
         if (self.name) |name| {
             if (self.allocator) |alloc| {
@@ -130,7 +130,7 @@ pub const ShmBuffer = struct {
 fn createAnonymousShm(size: usize) !posix.fd_t {
     // Try memfd_create first (Linux 3.17+)
     if (@hasDecl(posix, "memfd_create")) {
-        return posix.memfd_create("semadraw", .{ .CLOEXEC = true }) catch {
+        return posix.memfd_create("semadraw", posix.MFD.CLOEXEC) catch {
             return fallbackAnonShm(size);
         };
     }
@@ -154,17 +154,14 @@ fn fallbackAnonShm(size: usize) !posix.fd_t {
 
 /// Open or create shared memory
 fn shmOpen(name: [:0]const u8, size: usize) !posix.fd_t {
-    const fd = posix.shm_open(
-        name,
-        .{ .ACCMODE = .RDWR, .CREAT = true },
-        0o600,
-    ) catch |err| {
-        return err;
-    };
-    errdefer posix.close(fd);
+    const flags: posix.O = .{ .ACCMODE = .RDWR, .CREAT = true };
+    const rc = posix.system.shm_open(name, @bitCast(flags), 0o600);
+    if (rc < 0) return error.ShmOpenFailed;
+    const fd: posix.fd_t = @intCast(rc);
+    errdefer closeFd(fd);
 
     // Set size
-    try posix.ftruncate(fd, @intCast(size));
+    try ftruncateFd(fd, @intCast(size));
 
     return fd;
 }
@@ -176,7 +173,7 @@ fn shmUnlink(name: []const u8) void {
     if (name.len < buf.len) {
         @memcpy(buf[0..name.len], name);
         buf[name.len] = 0;
-        posix.shm_unlink(buf[0..name.len :0]) catch {};
+        _ = posix.system.shm_unlink(buf[0..name.len :0]);
     }
 }
 
@@ -313,4 +310,19 @@ fn monotonicNowNs() i128 {
     var ts: std.posix.timespec = undefined;
     _ = std.posix.system.clock_gettime(std.posix.CLOCK.MONOTONIC, &ts);
     return @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT1): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design
+// during migration; consolidation deferred.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
+}
+
+fn ftruncateFd(fd: posix.fd_t, len: i64) !void {
+    if (posix.system.ftruncate(fd, len) != 0) return error.Truncate;
 }

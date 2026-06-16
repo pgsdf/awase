@@ -115,7 +115,7 @@ pub const AttachedBuffer = struct {
     pub fn deinit(self: *AttachedBuffer, allocator: std.mem.Allocator) void {
         self.unmap();
         if (self.shm_fd >= 0) {
-            posix.close(self.shm_fd);
+            closeFd(self.shm_fd);
         }
         // inline_data is now always an owned allocation made by attachInlineBuffer
         // (both immediate and deferred paths copy the caller's data). Free it
@@ -549,4 +549,15 @@ test "SurfaceRegistry z-order sorting" {
     try std.testing.expectEqual(s2.id, order[0].id); // z=5
     try std.testing.expectEqual(s1.id, order[1].id); // z=10
     try std.testing.expectEqual(s3.id, order[2].id); // z=15
+}
+
+// ============================================================================
+// Migration raw-fd idiom (P2 WT1): file-local close helper.
+// Replaces posix.close, removed in Zig 0.16, with the raw libc call. Mirrors
+// the closeFd precedent in socket_server. Duplicated per file by design
+// during migration; consolidation deferred.
+// ============================================================================
+
+fn closeFd(fd: posix.fd_t) void {
+    _ = posix.system.close(fd);
 }

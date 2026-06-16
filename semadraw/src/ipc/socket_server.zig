@@ -92,7 +92,9 @@ pub const SocketServer = struct {
 
         // Set socket permissions (owner+group read/write)
         // Mode 0660 = rw-rw----
-        posix.fchmodat(posix.AT.FDCWD, path, 0o660, 0) catch {};
+        if (posix.toPosixPath(path)) |pathz| {
+            _ = posix.system.fchmodat(posix.AT.FDCWD, &pathz, 0o660, 0);
+        } else |_| {}
 
         // Listen with reasonable backlog
         try compat.posix.listen(fd, 16);
