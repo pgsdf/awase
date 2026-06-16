@@ -116,9 +116,9 @@ export fn LLVMFuzzerTestOneInput(data: [*]const u8, size: usize) c_int {
 /// Corpus generation: create a set of valid and edge-case SDCS files.
 pub fn generateCorpus(output_dir: []const u8) !void {
     // Create output directory
-    std.fs.cwd().makeDir(output_dir) catch |err| {
-        if (err != error.PathAlreadyExists) return err;
-    };
+    var dir_buf = try posix.toPosixPath(output_dir);
+    const mkrc = posix.system.mkdir(&dir_buf, @as(posix.mode_t, 0o755));
+    if (mkrc != 0 and posix.errno(mkrc) != .EXIST) return error.MakeDirFailed;
 
     // Generate minimal valid file
     try generateMinimalValid(output_dir);
@@ -139,8 +139,8 @@ fn generateMinimalValid(output_dir: []const u8) !void {
     var path_buf: [256]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/minimal_valid.sdcs", .{output_dir});
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const fd = try openCreateRdwr(path, 0o644);
+    defer _ = posix.system.close(fd);
 
     // ChunkHeader: type(4) + flags(4) + offset(8) + bytes(8) + payload_bytes(8) = 32 bytes
     const chunk_hdr_size: usize = 32;
@@ -154,7 +154,7 @@ fn generateMinimalValid(output_dir: []const u8) !void {
     header[10] = sdcs.version_minor & 0xff;
     header[11] = (sdcs.version_minor >> 8) & 0xff;
     header[12] = 64;
-    try file.writeAll(&header);
+    try writeAllFd(fd, &header);
 
     // Write chunk header (32 bytes)
     var chunk: [32]u8 = undefined;
@@ -166,29 +166,29 @@ fn generateMinimalValid(output_dir: []const u8) !void {
     chunk[16] = chunk_hdr_size + 16;
     // payload_bytes = 16 (RESET + END) at byte 24
     chunk[24] = 16;
-    try file.writeAll(&chunk);
+    try writeAllFd(fd, &chunk);
 
     // RESET command
     var reset_cmd: [8]u8 = undefined;
     @memset(&reset_cmd, 0);
     reset_cmd[0] = sdcs.Op.RESET & 0xff;
     reset_cmd[1] = (sdcs.Op.RESET >> 8) & 0xff;
-    try file.writeAll(&reset_cmd);
+    try writeAllFd(fd, &reset_cmd);
 
     // END command
     var end_cmd: [8]u8 = undefined;
     @memset(&end_cmd, 0);
     end_cmd[0] = sdcs.Op.END & 0xff;
     end_cmd[1] = (sdcs.Op.END >> 8) & 0xff;
-    try file.writeAll(&end_cmd);
+    try writeAllFd(fd, &end_cmd);
 }
 
 fn generateAllOpcodes(output_dir: []const u8) !void {
     var path_buf: [256]u8 = undefined;
     const path = try std.fmt.bufPrint(&path_buf, "{s}/all_opcodes.sdcs", .{output_dir});
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const fd = try openCreateRdwr(path, 0o644);
+    defer _ = posix.system.close(fd);
 
     const chunk_hdr_size: usize = 32;
 
@@ -199,7 +199,7 @@ fn generateAllOpcodes(output_dir: []const u8) !void {
     header[8] = sdcs.version_major & 0xff;
     header[10] = sdcs.version_minor & 0xff;
     header[12] = 64;
-    try file.writeAll(&header);
+    try writeAllFd(fd, &header);
 
     // For simplicity, just write a minimal chunk with RESET and END
     // A full version would include all opcodes with valid payloads
@@ -209,19 +209,19 @@ fn generateAllOpcodes(output_dir: []const u8) !void {
     chunk[8] = 64;
     chunk[16] = chunk_hdr_size + 16;
     chunk[24] = 16;
-    try file.writeAll(&chunk);
+    try writeAllFd(fd, &chunk);
 
     var reset_cmd: [8]u8 = undefined;
     @memset(&reset_cmd, 0);
     reset_cmd[0] = sdcs.Op.RESET & 0xff;
     reset_cmd[1] = (sdcs.Op.RESET >> 8) & 0xff;
-    try file.writeAll(&reset_cmd);
+    try writeAllFd(fd, &reset_cmd);
 
     var end_cmd: [8]u8 = undefined;
     @memset(&end_cmd, 0);
     end_cmd[0] = sdcs.Op.END & 0xff;
     end_cmd[1] = (sdcs.Op.END >> 8) & 0xff;
-    try file.writeAll(&end_cmd);
+    try writeAllFd(fd, &end_cmd);
 }
 
 fn generateEdgeCases(output_dir: []const u8) !void {
@@ -229,16 +229,16 @@ fn generateEdgeCases(output_dir: []const u8) !void {
     {
         var path_buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}/empty.sdcs", .{output_dir});
-        const file = try std.fs.cwd().createFile(path, .{});
-        file.close();
+        const fd = try openCreateRdwr(path, 0o644);
+        _ = posix.system.close(fd);
     }
 
     // Just header, no chunks
     {
         var path_buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}/header_only.sdcs", .{output_dir});
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
+        const fd = try openCreateRdwr(path, 0o644);
+        defer _ = posix.system.close(fd);
 
         var header: [64]u8 = undefined;
         @memset(&header, 0);
@@ -246,15 +246,15 @@ fn generateEdgeCases(output_dir: []const u8) !void {
         header[8] = sdcs.version_major & 0xff;
         header[10] = sdcs.version_minor & 0xff;
         header[12] = 64;
-        try file.writeAll(&header);
+        try writeAllFd(fd, &header);
     }
 
     // Truncated header
     {
         var path_buf: [256]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}/truncated_header.sdcs", .{output_dir});
-        const file = try std.fs.cwd().createFile(path, .{});
-        defer file.close();
-        try file.writeAll(sdcs.Magic);
+        const fd = try openCreateRdwr(path, 0o644);
+        defer _ = posix.system.close(fd);
+        try writeAllFd(fd, sdcs.Magic);
     }
 }
