@@ -18,7 +18,7 @@ exec 2>&1
 
 SVCDIR="$(dirname "$0")"
 if [ -d "${SVCDIR}/supervise" ]; then
-    echo "$(date +%s)" > "${SVCDIR}/supervise/utf_run_started" 2>/dev/null || true
+    echo "$(date +%s)" > "${SVCDIR}/supervise/awase_run_started" 2>/dev/null || true
 fi
 
 kldstat -q -n audiofs.ko || kldload audiofs 2>/dev/null || true

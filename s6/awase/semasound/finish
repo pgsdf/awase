@@ -21,7 +21,7 @@
 # occurred within the last FAST_CRASH_WINDOW_S seconds, exit 125 to
 # tell s6-supervise to give up.
 #
-# State storage: a flat file at <servicedir>/supervise/utf_crash_log
+# State storage: a flat file at <servicedir>/supervise/awase_crash_log
 # with one Unix timestamp per line. Read on entry, prune entries
 # older than FAST_CRASH_WINDOW_S, append today's timestamp if this
 # was a fast crash, exit 125 if the count is above threshold.
@@ -52,7 +52,7 @@ FAST_CRASH_LIFETIME_S="${FAST_CRASH_LIFETIME_S:-10}"
 FAST_CRASH_WINDOW_S="${FAST_CRASH_WINDOW_S:-45}"
 FAST_CRASH_THRESHOLD="${FAST_CRASH_THRESHOLD:-5}"
 
-CRASH_LOG="${SVCDIR}/supervise/utf_crash_log"
+CRASH_LOG="${SVCDIR}/supervise/awase_crash_log"
 
 # We need the service's start time to know if this was a "fast"
 # crash. s6-svstat prints uptime in seconds as part of its output;
@@ -63,8 +63,8 @@ CRASH_LOG="${SVCDIR}/supervise/utf_crash_log"
 #
 # Instead: write a marker file when run starts, with the start
 # timestamp. finish reads it to compute lifetime. The run script
-# wrapper writes <svcdir>/supervise/utf_run_started.
-START_MARKER="${SVCDIR}/supervise/utf_run_started"
+# wrapper writes <svcdir>/supervise/awase_run_started.
+START_MARKER="${SVCDIR}/supervise/awase_run_started"
 
 now=$(date +%s)
 
@@ -91,7 +91,7 @@ echo "${svc_name}: finish: exit=${EXIT_CODE} signal=${SIGNAL_NUM} lifetime=${lif
 # s6-supervise has finished setting up), skip flap-protection
 # bookkeeping for this invocation. The next run will have supervise/
 # created. Without this guard, every cold-boot prints
-# "cannot create utf_crash_log: No such file or directory" because
+# "cannot create awase_crash_log: No such file or directory" because
 # the directory we want to write to literally doesn't exist yet.
 if [ ! -d "${SVCDIR}/supervise" ]; then
     echo "${svc_name}: supervise/ missing on this finish invocation; skipping flap accounting"

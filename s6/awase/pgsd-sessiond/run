@@ -36,7 +36,7 @@ exec 2>&1
 # other UTF services.
 SVCDIR="$(dirname "$0")"
 if [ -d "${SVCDIR}/supervise" ]; then
-    echo "$(date +%s)" > "${SVCDIR}/supervise/utf_run_started" 2>/dev/null || true
+    echo "$(date +%s)" > "${SVCDIR}/supervise/awase_run_started" 2>/dev/null || true
 fi
 
 exec /usr/local/bin/pgsd-sessiond --ui-only

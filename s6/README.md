@@ -7,7 +7,7 @@ Tracks AD-20 in BACKLOG.md.
 ## Layout
 
 ```
-utf/
+awase/
 ├── .s6-svscan/
 │   └── finish         # exits 0 on s6-svscan exit; FreeBSD has
 │                        no /bin/true so we don't exec one
@@ -79,7 +79,7 @@ implements time-windowed flap detection:
 
 - If `./run` exits within 10 seconds of starting, count it as a
   fast crash (timestamp appended to
-  `./supervise/utf_crash_log`).
+  `./supervise/awase_crash_log`).
 - Crash log entries older than 45 seconds are pruned on each
   `./finish` invocation.
 - If 5+ fast crashes accumulate in the window, exit 125 to tell

@@ -813,7 +813,7 @@ install_bin_required "$SCRIPT_DIR/inputfs/zig-out/bin/inputdump"
 
 # SM-1.9: pgsd-sessiond graphical login daemon. Installed
 # alongside the other UTF binaries. Stage 9a wires it under s6
-# supervision via the per-service files in s6/utf/pgsd-sessiond/
+# supervision via the per-service files in s6/awase/pgsd-sessiond/
 # and the rc.d wrapper generated below.
 install_bin_required "$SCRIPT_DIR/pgsd-sessiond/zig-out/bin/pgsd-sessiond"
 install_bin_required "$SCRIPT_DIR/semasound/zig-out/bin/semasound"
@@ -1428,7 +1428,7 @@ RCEOF
 
     SVC_ROOT="/var/service/utf"
     LOG_ROOT="/var/log/utf"
-    S6_SRC="$SCRIPT_DIR/s6/utf"
+    S6_SRC="$SCRIPT_DIR/s6/awase"
 
     if [ ! -d "$S6_SRC" ]; then
         echo "ERROR: s6 source tree not found at $S6_SRC" >&2

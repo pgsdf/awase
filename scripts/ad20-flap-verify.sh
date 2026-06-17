@@ -28,8 +28,8 @@ set -u
 
 SVC=/var/service/utf/semasound
 LOG=/var/log/utf/semasound/current
-MARKER="$SVC/supervise/utf_run_started"
-CLOG="$SVC/supervise/utf_crash_log"
+MARKER="$SVC/supervise/awase_run_started"
+CLOG="$SVC/supervise/awase_crash_log"
 FAILS=0
 
 # Precheck: the fixed finish must be deployed.

@@ -32,7 +32,7 @@ exec 2>&1
 # AD-20.3: see the AD-20 run-script pattern (marker guard).
 SVCDIR="$(dirname "$0")"
 if [ -d "${SVCDIR}/supervise" ]; then
-    echo "$(date +%s)" > "${SVCDIR}/supervise/utf_run_started" 2>/dev/null || true
+    echo "$(date +%s)" > "${SVCDIR}/supervise/awase_run_started" 2>/dev/null || true
 fi
 
 semadraw_flags="-b drawfs"
