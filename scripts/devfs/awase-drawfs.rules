@@ -1,0 +1,18 @@
+#
+# devfs rules for Awase / drawfs.
+#
+# /dev/draw is created root:wheel 0600 by default. This rule grants the
+# 'awase' group read/write access so semadrawd can be run without being
+# root in the ordinary case. Create the group with:
+#
+#   pw groupadd awase
+#   pw groupmod awase -m <user>
+#
+# And enable this ruleset in /etc/rc.conf:
+#
+#   devfs_system_ruleset="awase-drawfs"
+#
+# Then: service devfs restart
+
+[awase-drawfs=10]
+add path 'draw' mode 0660 group awase

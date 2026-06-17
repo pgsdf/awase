@@ -1,5 +1,5 @@
 #
-# devfs rules for UTF / inputfs.
+# devfs rules for Awase / inputfs.
 #
 # /dev/inputfs_notify is created by the inputfs kernel module
 # (AD-41.3 per inputfs/docs/adr/0021) with ownership and mode
@@ -17,18 +17,18 @@
 #
 # To use this ruleset:
 #
-#   pw groupadd utf
-#   pw groupmod utf -m <user>
+#   pw groupadd awase
+#   pw groupmod awase -m <user>
 #
 # Add to /etc/rc.conf:
 #
-#   devfs_system_ruleset="utf-inputfs"
+#   devfs_system_ruleset="awase-inputfs"
 #
 # Then: service devfs restart
 #
 # Note: there is only one devfs_system_ruleset setting. If you
-# also use utf-drawfs.rules, merge the two rulesets into a
+# also use awase-drawfs.rules, merge the two rulesets into a
 # combined ruleset rather than alternating between them.
 
-[utf-inputfs=11]
-add path 'inputfs_notify' mode 0660 group utf
+[awase-inputfs=11]
+add path 'inputfs_notify' mode 0660 group awase

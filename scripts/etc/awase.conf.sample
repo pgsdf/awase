@@ -1,7 +1,7 @@
 #
-# utf.conf.sample — UTF stack configuration
+# awase.conf.sample — Awase stack configuration
 #
-# Copy to /usr/local/etc/utf/utf.conf and edit as needed. Each daemon
+# Copy to /usr/local/etc/awase/awase.conf and edit as needed. Each daemon
 # reads its own section; keys not listed here fall back to compiled-in
 # defaults.
 #
@@ -14,14 +14,14 @@ clock_path = /var/run/sema/clock
 # Ring buffer capacity, in events, per subscribed subsystem.
 ring_capacity = 65536
 
-# Audio: semasound (the AD-3 broker, ADR 0029) does not read utf.conf.
+# Audio: semasound (the AD-3 broker, ADR 0029) does not read awase.conf.
 # Its policy is per-target files at /usr/local/etc/semasound/<target>.policy
 # (grammar and surfaces: ADR 0026/0027; supervision: semasound/docs/
 # SUPERVISION.md).
 
 # Input: semainputd is retired (AD-2a Phase 3, 2026-05-08); the
 # gesture logic lives in libsemainput, configured by its consumer
-# (semadrawd), not by utf.conf.
+# (semadrawd), not by awase.conf.
 
 [semadrawd]
 # Backend preference order. First available wins.
