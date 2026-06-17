@@ -22,7 +22,7 @@ It does not specify ioctl numbers, struct layouts, or a schedule. Those
 belong in follow-on ADRs.
 
 This proposal is the first named application of the discipline stated
-in `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`: **UTF depends only on code
+in `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`: **UTF depends only on code
 written with UTF's guarantees in mind**. evdev is an external
 dependency whose authors were not thinking about UTF's determinism or
 stability commitments; it sits inside UTF's guarantee path; therefore
@@ -271,7 +271,7 @@ This is a deliberate commitment, not an oversight. Keeping evdev as
 a standby would keep it in the guarantee path — a bug or change in
 evdev could affect UTF whenever the fallback activated or whenever
 its presence changed timing. The discipline in
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` says external code stays out
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` says external code stays out
 of the guarantee path; that applies to fallbacks too. Either inputfs
 works or UTF does not run on this code path.
 

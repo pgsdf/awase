@@ -28,7 +28,7 @@ audit was specified to be.
 
 ADR 0006 decides UTF replaces snd(4) in full. Its primary
 rationale (ADR 0006 "Rationale", and
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` "Governance
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` "Governance
 independence") is that a dependency on snd(4) is a
 dependency on its maintainers' governance, goals, and
 cadence: when UTF needs a driver-level capability that is

@@ -28,7 +28,7 @@ byte-by-byte; it calls FreeBSD's `hid_locate`, `hid_get_data`,
 `hid_start_parse`, `hid_get_item`, and `hid_end_parse` from
 `<dev/hid/hid.h>`. The descriptor walker is FreeBSD kernel
 code at `/usr/src/sys/dev/hid/hid.c`, accepted as platform
-transport per `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`. inputfs
+transport per `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`. inputfs
 is the *consumer* of that walker's outputs, not the walker
 itself.
 

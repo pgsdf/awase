@@ -42,12 +42,12 @@ events. Tap, swipe, and pinch are touch-domain recognisers; N-click is the
 mouse-domain equivalent. Mirroring the design keeps the codebase coherent.
 
 The audio sample clock makes timing principled. Conventional double-click
-thresholds are expressed in milliseconds (Windows 500 ms, X11 250 ms). UTF
+thresholds are expressed in milliseconds (Windows 500 ms, X11 250 ms). Awase
 can express the threshold in sample frames against `samples_written`, which
 makes the threshold frame-accurate relative to anything else timestamped on
 the same clock — useful for music software, accessibility tools, or any
 context where click rhythm interacts with audio. This is one of the small
-ways UTF's substrate becomes visibly better than what came before.
+ways Awase's substrate becomes visibly better than what came before.
 
 The unified event log captures both raw and recognised events with seq
 numbers, so consumers choose either layer. A terminal might only handle
@@ -289,10 +289,10 @@ have no canonical origin: they are a relative sum.
 ### Backward compatibility
 
 Backward compatibility with external consumers of the JSON event log
-is not preserved. This is acceptable at UTF's current maturity — the
+is not preserved. This is acceptable at Awase's current maturity — the
 event schema is not yet under a stability contract, the unified
 envelope was itself a recent change, and there are no known external
-consumers beyond UTF's own daemons. If a stability contract is later
+consumers beyond Awase's own daemons. If a stability contract is later
 adopted, this extension should be visible in any schema diff at that
 point.
 

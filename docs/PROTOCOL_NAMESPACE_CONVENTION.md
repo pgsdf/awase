@@ -252,7 +252,7 @@ Concretely:
     messages, and design discussions going forward. ADR 0017-rev2
     already does this implicitly (`semadraw_ipc 0x9030` for
     `gesture_event`); make it explicit in the writing-style note in
-    `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`.
+    `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`.
 
 If a future event makes Option 2 or 3 worthwhile (e.g. a third protocol
 joins the JSON and the visual collision count grows past tolerable),

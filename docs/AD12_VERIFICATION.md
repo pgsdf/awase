@@ -21,7 +21,7 @@ The AD-12 sub-stages whose work this doc verifies:
 - **AD-12.4** rc.d stop-with-confirmation (SIGTERM-wait-SIGKILL,
   preserve pidfile on SIGKILL failure).
 - **AD-12.5** daemon-under-dependency-absence ADR
-  (`docs/UTF_DAEMON_DEPENDENCY_ABSENCE.md`). Policy only; no code.
+  (`docs/AWASE_DAEMON_DEPENDENCY_ABSENCE.md`). Policy only; no code.
 
 ## 1. rc.d ordering at boot
 
@@ -255,7 +255,7 @@ everything when one piece changes).
 ## References
 
 - `BACKLOG.md` AD-12 — the lifecycle work this doc verifies.
-- `docs/UTF_DAEMON_DEPENDENCY_ABSENCE.md` — the AD-12.5 ADR whose
+- `docs/AWASE_DAEMON_DEPENDENCY_ABSENCE.md` — the AD-12.5 ADR whose
   enforcement test (item 4) cannot run until Posture 3 is
   implemented.
 - `docs/FAILURE_MODES.md` — where per-failure-mode documentation

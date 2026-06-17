@@ -1,6 +1,6 @@
-# Does UTF have a framebuffer?
+# Does Awase have a framebuffer?
 
-*A short question about UTF's graphics stack turns out to have a
+*A short question about Awase's graphics stack turns out to have a
 surprisingly long answer. It's worth writing up, because the answer
 illuminates the architecture.*
 
@@ -10,7 +10,7 @@ illuminates the architecture.*
 
 Yes, but not in the sense most people mean.
 
-UTF's kernel module, `drawfs`, provides per-surface framebuffers as
+Awase's kernel module, `drawfs`, provides per-surface framebuffers as
 `mmap(2)`-able swap-backed pixel buffers. Every live surface is a
 framebuffer. A process can have dozens of them simultaneously.
 
@@ -20,7 +20,7 @@ and display live in userspace, by design.
 
 In the optional DRM/KMS build — disabled by default, opted into at
 `configure` time — `drawfs` can additionally allocate GEM dumb
-buffers and drive page-flips. That is the only place in UTF where a
+buffers and drive page-flips. That is the only place in Awase where a
 framebuffer in the strict "the display controller is scanning this
 memory right now" sense exists, and it is absent from a default build.
 
@@ -54,7 +54,7 @@ The word is overloaded. Four meanings worth separating:
    it's the root window's backing pixmap or the composite extension
    off-screen pixmap.
 
-UTF has (1), deliberately avoids (2), has (3) only when the optional
+Awase has (1), deliberately avoids (2), has (3) only when the optional
 DRM path is compiled in, and treats (4) as a pluggable userspace
 concern. Each of these choices is architectural, not accidental.
 
@@ -136,17 +136,17 @@ someone else's job.
 Because `/dev/fb0` carries three assumptions that don't hold in a
 semantic multimedia substrate:
 
-- **One screen, one resolution, one format, globally agreed.** UTF
+- **One screen, one resolution, one format, globally agreed.** Awase
   wants per-surface coordinate systems, resolution independence, and
   the ability for different consumers (a terminal, a video decoder,
   a DRM driver) to see different things at different times.
 - **Writes are presentations.** In fbdev, the act of writing pixels
   to the mapping is the act of making them visible. That fuses two
-  separate decisions (rendering vs presenting) that UTF wants kept
+  separate decisions (rendering vs presenting) that Awase wants kept
   apart, not least because the chronofs temporal fabric wants to
   schedule *when* something becomes visible relative to an audio
   sample clock.
-- **There is one consumer: the display controller.** UTF's consumers
+- **There is one consumer: the display controller.** Awase's consumers
   include `semadrawd` in software mode (paints into its own
   memory), `semadrawd` in Vulkan mode (uploads to a GPU texture),
   `semadrawd` in Wayland mode (attaches to a `wl_buffer`), and a
@@ -224,7 +224,7 @@ the module logs a warning, resets the sysctl to `"swap"`, and
 continues. A broken GPU driver cannot prevent `drawfs.ko` from
 loading.
 
-This is the only UTF code path where meaning (3) of "framebuffer" —
+This is the only Awase code path where meaning (3) of "framebuffer" —
 hardware scanout buffer — is present. It's opt-in for a specific
 reason: the project's primary invariant is that the DRM-less swap
 path is the unbreakable default. Adding a hard dependency on
@@ -247,11 +247,11 @@ If you don't, you never see it. The default build produces a
 
 ---
 
-## So, does UTF have a framebuffer?
+## So, does Awase have a framebuffer?
 
 Pick your definition:
 
-| Meaning | Present in UTF? |
+| Meaning | Present in Awase? |
 |---|---|
 | Pixel-grid memory | Yes — every drawfs surface |
 | Kernel-owned global display memory (`/dev/fb0`) | No, by design |
@@ -265,7 +265,7 @@ The most useful one-line answer for a BSD/kernel audience:
 > userspace concerns. A hardware-backed framebuffer exists only in
 > the optional DRM build path.
 
-The deeper answer is that UTF's architecture rejects the
+The deeper answer is that Awase's architecture rejects the
 "framebuffer" abstraction as a useful unit of analysis. The question
 "where is the framebuffer" presupposes a single answer. The system
 is built on the premise that there isn't one, and that refusing to

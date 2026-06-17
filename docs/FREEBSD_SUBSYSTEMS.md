@@ -1,7 +1,7 @@
-# FreeBSD Subsystem Disposition in UTF
+# FreeBSD Subsystem Disposition in Awase
 
-This document lists FreeBSD subsystems that UTF touches and records
-each subsystem's disposition under UTF's architectural discipline.
+This document lists FreeBSD subsystems that Awase touches and records
+each subsystem's disposition under Awase's architectural discipline.
 It is a navigation aid, not an authoritative source: the governing
 document for each disposition is the ADR cited in the Reference
 column. When a disposition changes, update the ADR first and this
@@ -9,34 +9,34 @@ table second.
 
 ## Why this document exists
 
-UTF does not aim to be faster or lighter than FreeBSD's stock
+Awase does not aim to be faster or lighter than FreeBSD's stock
 input, graphics, or audio stacks. It aims for architectural
-coherence: every component in UTF's guarantee path is either
-owned by UTF or explicitly accepted as a named dependency.
-Nothing in that path evolves invisibly to UTF.
+coherence: every component in Awase's guarantee path is either
+owned by Awase or explicitly accepted as a named dependency.
+Nothing in that path evolves invisibly to Awase.
 
 Reliability, performance, and maintainability are likely
-consequences of coherence, not goals in themselves. UTF accepts
+consequences of coherence, not goals in themselves. Awase accepts
 that pursuing coherence sometimes produces code that is less
 immediately performant or less feature-rich than what it
 replaces. The architectural discipline document records the
 trade-offs this entails.
 
 This table is the inventory form of that discipline. Each row
-states whether the listed FreeBSD subsystem is Replaced by UTF,
+states whether the listed FreeBSD subsystem is Replaced by Awase,
 Accepted as a named dependency, or Removed from UTF Mode.
 
 ## Disposition categories
 
 Dispositions use the three categories defined in
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`:
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`:
 
-- **Replace**: UTF has its own implementation that takes over the
+- **Replace**: Awase has its own implementation that takes over the
   subsystem's role.
-- **Accept**: the subsystem is in UTF's guarantee path; UTF does
+- **Accept**: the subsystem is in Awase's guarantee path; Awase does
   not own it but relies on it, and this reliance is explicitly
   recorded.
-- **Remove**: UTF excises reliance on the subsystem; it is not
+- **Remove**: Awase excises reliance on the subsystem; it is not
   replaced by UTF and does not run under UTF Mode.
 
 A fourth designation, **(unresolved)**, marks subsystems whose
@@ -48,7 +48,7 @@ prompt for a future ADR, not a commitment.
 Two modes are defined:
 
 - **Base FreeBSD Mode**: stock FreeBSD with stock userland.
-  Nothing UTF-specific is loaded. Input flows through evdev,
+  Nothing Awase-specific is loaded. Input flows through evdev,
   graphics through Xorg or Wayland, audio through pulseaudio or
   similar.
 - **UTF Mode**: UTF components are loaded and own their respective
@@ -74,12 +74,12 @@ out of scope.
 | utouch (USB touchscreen) | Replace | ADR 0007 | Displaced at boot under UTF Mode. |
 | hpen (HID digitizer pen) | Replace | ADR 0007 | Displaced at boot under UTF Mode if present. |
 | hidmap (HID-to-evdev bridge) | Remove | ADR 0007 | Bridges to evdev, which UTF replaces; no role under UTF Mode. |
-| hidbus (HID bus driver) | Accept | ADR 0007, `docs/UTF_USB_HID_BOUNDARY.md` | inputfs attaches as a hidbus child. |
-| usbhid (USB-to-HID transport) | Accept | ADR 0007, `docs/UTF_USB_HID_BOUNDARY.md` | Transport layer below hidbus; not owned by UTF. |
-| hid (HID protocol library) | Accept | ADR 0007, `docs/UTF_USB_HID_BOUNDARY.md` | `hid_start_parse`, `hid_get_item`, etc. used by inputfs. |
+| hidbus (HID bus driver) | Accept | ADR 0007, `docs/AWASE_USB_HID_BOUNDARY.md` | inputfs attaches as a hidbus child. |
+| usbhid (USB-to-HID transport) | Accept | ADR 0007, `docs/AWASE_USB_HID_BOUNDARY.md` | Transport layer below hidbus; not owned by Awase. |
+| hid (HID protocol library) | Accept | ADR 0007, `docs/AWASE_USB_HID_BOUNDARY.md` | `hid_start_parse`, `hid_get_item`, etc. used by inputfs. |
 | devd (auto-load daemon) | (unresolved) | TBD | Auto-loads hms and friends; under UTF Mode, its input-related rules need to be scrubbed or the daemon configured to not fight inputfs. Observed during Stage B.2 testing. |
-| sysmouse | (unresolved) | TBD | Kernel console mouse interface. Whether UTF coexists with or displaces this needs investigation. |
-| kbdmux (keyboard multiplexer) | (unresolved) | TBD | Whether UTF owns this or displaces it is unclear. |
+| sysmouse | (unresolved) | TBD | Kernel console mouse interface. Whether Awase coexists with or displaces this needs investigation. |
+| kbdmux (keyboard multiplexer) | (unresolved) | TBD | Whether Awase owns this or displaces it is unclear. |
 | vt(4) console input | (unresolved) | TBD | When inputfs owns HID keyboards under UTF Mode, the vt console loses keystrokes unless UTF provides its own console path. Scope decision pending. |
 
 ## Graphics subsystem
@@ -113,25 +113,25 @@ resolved by the AD-3 decision record (ADRs 0001-0029).
 | Subsystem | Disposition | Reference | Notes |
 |-----------|-------------|-----------|-------|
 | MATE / KDE / GNOME | Remove | UTF Mode definition | Assume evdev, dbus, Xorg; not part of UTF Mode. Not "deprecated", just absent. |
-| dbus | (unresolved) | TBD | Widely assumed by desktop software. Accepted as an app-level dependency but not in UTF's guarantee path. Whether semadrawd itself uses dbus is a design question. |
+| dbus | (unresolved) | TBD | Widely assumed by desktop software. Accepted as an app-level dependency but not in Awase's guarantee path. Whether semadrawd itself uses dbus is a design question. |
 
 ## Infrastructure retained as-is
 
-These FreeBSD subsystems are in UTF's guarantee path and are
+These FreeBSD subsystems are in Awase's guarantee path and are
 retained. Listed for completeness so future readers can distinguish
 "intentionally kept" from "not yet considered".
 
 | Subsystem | Disposition | Notes |
 |-----------|-------------|-------|
-| kernel (FreeBSD) | Accept | UTF modules run inside the FreeBSD kernel. |
-| ZFS | Accept (at PGSD layer) | UTF substrate is filesystem-agnostic; PGSD distribution requires ZFS. See `docs/UTF_STORAGE_DEPENDENCY.md`. |
+| kernel (FreeBSD) | Accept | Awase modules run inside the FreeBSD kernel. |
+| ZFS | Accept (at PGSD layer) | Awase substrate is filesystem-agnostic; PGSD distribution requires ZFS. See `docs/AWASE_STORAGE_DEPENDENCY.md`. |
 | geom | Accept | Block layer. |
 | devfs | Accept | Device filesystem. |
-| rc.d | Accept | UTF services land here as new rc scripts. |
-| network stack, ipfw, pf | Accept | UTF does not touch networking. |
+| rc.d | Accept | Awase services land here as new rc scripts. |
+| network stack, ipfw, pf | Accept | Awase does not touch networking. |
 | libc, libthr | Accept | Standard userland runtime. |
 | clang, ld | Accept | Toolchain. |
-| hier(7) filesystem layout | Accept | UTF installs follow FreeBSD conventions. |
+| hier(7) filesystem layout | Accept | Awase installs follow FreeBSD conventions. |
 
 ## How to update this document
 
@@ -149,14 +149,14 @@ first. Then:
 If an entry cannot be reduced to one of Replace / Accept / Remove,
 leave it as `(unresolved)` until an ADR resolves it. Do not invent
 new disposition categories without amending
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` first.
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` first.
 
 ## Scope boundaries
 
-This document records only subsystems UTF touches or may touch.
-FreeBSD subsystems outside UTF's concern (mail transport, NFS
+This document records only subsystems Awase touches or may touch.
+FreeBSD subsystems outside Awase's concern (mail transport, NFS
 server, network time) are omitted. Adding an entry here is itself
-a statement that UTF cares about the subsystem in some way.
+a statement that Awase cares about the subsystem in some way.
 
 Entries marked `(unresolved)` are invitations for future ADRs, not
 backlog items. The relationship to BACKLOG.md is: if an unresolved

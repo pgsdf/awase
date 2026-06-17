@@ -1,26 +1,26 @@
-# FreeBSD Code Improvements Identified Through UTF Development
+# FreeBSD Code Improvements Identified Through Awase Development
 
-This document catalogs concrete issues in FreeBSD's legacy code that UTF
-development has uncovered, and records where UTF's design or implementation
+This document catalogs concrete issues in FreeBSD's legacy code that Awase
+development has uncovered, and records where Awase's design or implementation
 represents a measurable improvement over the existing approach. It is a
 companion to `docs/FREEBSD_SUBSYSTEMS.md`, which records the disposition of
-each FreeBSD subsystem under UTF's architectural discipline. This document
+each FreeBSD subsystem under Awase's architectural discipline. This document
 records the findings; that document records the resulting structural choice.
 
 ## Why this document exists
 
-UTF's primary goal is architectural coherence, not reliability or
+Awase's primary goal is architectural coherence, not reliability or
 performance per se. Coherence means that every component in the guarantee
-path is either owned by UTF or explicitly accepted as a named dependency.
-Pursuing that goal forces close reading of the FreeBSD code UTF interacts
+path is either owned by Awase or explicitly accepted as a named dependency.
+Pursuing that goal forces close reading of the FreeBSD code Awase interacts
 with, and that reading has, repeatedly, surfaced concrete defects, missing
 abstractions, and silent failure modes in the legacy stack.
 
 The findings here are not a critique of FreeBSD as a whole. They are a
-record of specific places where UTF had to do something different because
+record of specific places where Awase had to do something different because
 the existing code could not be used as found. Each entry names the issue,
-the location in the FreeBSD tree where it lives, the UTF context in which
-it was discovered, and the improvement UTF's design represents. Several of
+the location in the FreeBSD tree where it lives, the Awase context in which
+it was discovered, and the improvement Awase's design represents. Several of
 the entries are realistic candidates for upstream patches against
 `subr_bus.c`, the HID stack, or the vt(4) console.
 
@@ -30,10 +30,10 @@ Each entry uses the following structure:
 
 * **Issue.** One-sentence statement of the defect or missing abstraction.
 * **Location.** Files or subsystems in the FreeBSD tree where the issue lives.
-* **Discovery context.** The UTF work that surfaced it.
-* **UTF improvement.** What UTF does differently and why that is better.
+* **Discovery context.** The Awase work that surfaced it.
+* **Awase improvement.** What Awase does differently and why that is better.
 * **Upstream candidate.** Whether the improvement is plausibly a FreeBSD
-  patch, a UTF-internal architectural choice, or both.
+  patch, a Awase-internal architectural choice, or both.
 
 The catalog is grouped by FreeBSD subsystem.
 
@@ -59,7 +59,7 @@ manual sequence of `devctl detach` on each populated child followed by
 `devctl rescan` on each populated bus instance, applied across `hidbus0`
 through `hidbus6`.
 
-**UTF improvement.** UTF documents the manual recovery sequence in
+**Awase improvement.** Awase documents the manual recovery sequence in
 `inputfs/docs/STAGING.md` and ships a script that performs it correctly
 across all bus instances rather than just the first one. The architectural
 fix, however, is a kernel change: a `BUS_REPROBE_CHILDREN` callback fired
@@ -71,7 +71,7 @@ Silently doing nothing is the worst possible default.
 
 **Upstream candidate.** Yes. A focused patch against `subr_bus.c` adding
 the callback would be welcome upstream and would benefit every loadable
-driver, not only UTF.
+driver, not only Awase.
 
 ### NB-2: Probe priority constants are coarse and underdocumented
 
@@ -91,7 +91,7 @@ hkbd, and hmt for the same TLCs), or something else. The folklore answer
 ("return BUS_PROBE_DEFAULT and arrange for the other drivers not to be
 loaded") is unsatisfying.
 
-**UTF improvement.** UTF's docs/FREEBSD_SUBSYSTEMS.md names the drivers it
+**Awase improvement.** Awase's docs/FREEBSD_SUBSYSTEMS.md names the drivers it
 displaces explicitly rather than relying on probe-priority arithmetic.
 This is more legible than a numeric tiebreaker and survives kernel-version
 changes that might renumber the constants.
@@ -114,7 +114,7 @@ GhostBSD netdriver bootstrap work, and the early xconfig sessions all hit
 the same wall: a driver that should have attached did not, and no
 mechanism existed to retrieve the reason.
 
-**UTF improvement.** UTF logs every probe and attach event from its own
+**Awase improvement.** Awase logs every probe and attach event from its own
 modules at `kern.devctl` verbosity, which is a partial workaround for its
 own drivers but does nothing for incumbents. The architectural fix is a
 `kern.devctl.probe_log` ring buffer in the kernel, capturing the last N
@@ -137,7 +137,7 @@ rescan hidbus1` and reported success, while the actual mice and keyboards
 were spread across `hidbus0` through `hidbus6`. The script logged that it
 had completed its work. Nothing had been re-probed.
 
-**UTF improvement.** UTF's recovery script enumerates every bus instance
+**Awase improvement.** Awase's recovery script enumerates every bus instance
 under `devinfo` and operates on each. The clearer kernel-side fix is a
 triplet of verbs with explicit logging at configurable verbosity:
 `devctl rescan-bus`, `devctl reprobe-device`, `devctl evict-and-reprobe`,
@@ -162,7 +162,7 @@ expansion in `sys/sys/module.h`.
 updates that reinstalled `hms.ko` and `hkbd.ko` into `/boot/kernel/`,
 causing inputfs to lose its claim on devices it had previously attached.
 
-**UTF improvement.** UTF documents the conflict in
+**Awase improvement.** Awase documents the conflict in
 `docs/FREEBSD_SUBSYSTEMS.md` and ships a pkg-lock entry that prevents the
 relevant base packages from being reinstalled in PGSD. The cleaner fix is
 a per-driver opt-in: a `MODULE_PNP_INFO_OPT_IN` variant or a per-driver
@@ -197,7 +197,7 @@ on the target system. ADR 0006 was superseded by ADR 0007, which
 re-architected inputfs to attach at hidbus with HID Top-Level Collection
 matching instead of USB interface class matching.
 
-**UTF improvement.** UTF maintains `docs/FREEBSD_SUBSYSTEMS.md`, which
+**Awase improvement.** Awase maintains `docs/FREEBSD_SUBSYSTEMS.md`, which
 records the disposition (Replace, Accept, Remove) of each FreeBSD
 subsystem against the loaded state of the system, not the source tree.
 The discipline is: check `kldstat` before designing.
@@ -223,13 +223,13 @@ and was producing events on the kernel side. A GhostBSD VM was
 provisioned for subsequent testing because the live machine could not be
 recovered without rebooting.
 
-**UTF improvement.** UTF owns the full path from device to event consumer
+**Awase improvement.** Awase owns the full path from device to event consumer
 rather than hot-swapping underneath running userland. semainput, drawfs's
 input injection path, and semadrawd are designed as a single coherent
 stack. When that stack is in control, it does not need to negotiate with
 moused or devd for ownership of the mouse.
 
-**Upstream candidate.** No. The fix is architectural and belongs in UTF,
+**Upstream candidate.** No. The fix is architectural and belongs in Awase,
 not in FreeBSD's existing per-driver detach paths.
 
 ### HID-3: evdev is a Linux compatibility layer carrying Linux semantics into FreeBSD
@@ -248,18 +248,18 @@ Crucially, evdev has no awareness of any clock other than
 the Linux `KEY_*` numbering verbatim to interoperate with evdev. The
 chronofs work then revealed the deeper problem: evdev's timestamps come
 from `CLOCK_MONOTONIC`, not from the audio sample position that the rest
-of UTF uses as its master clock.
+of Awase uses as its master clock.
 
-**UTF improvement.** UTF's long-term direction is to replace evdev with a
+**Awase improvement.** Awase's long-term direction is to replace evdev with a
 native FreeBSD input path. The intermediate step, already in place, is
 semainput's audio-clock timestamping: events are stamped with the audio
-sample position at the moment they enter UTF's event path, so that
+sample position at the moment they enter Awase's event path, so that
 downstream consumers (semadrawd, semadraw-term) see a clock consistent
 with the rest of the system. The full replacement runs through the
-inputfs kernel module and bypasses evdev entirely for the devices UTF
+inputfs kernel module and bypasses evdev entirely for the devices Awase
 claims.
 
-**Upstream candidate.** No. Replacing evdev is a UTF-internal goal and
+**Upstream candidate.** No. Replacing evdev is a Awase-internal goal and
 would not be welcome upstream because the FreeBSD project values Linux
 input-stack compatibility.
 
@@ -281,7 +281,7 @@ single-bit requirement; the ADR was corrected with an Errata section, and
 the parse loop was rewritten to call `hid_start_parse` three times, once
 per item kind.
 
-**UTF improvement.** UTF's ADR 0008 records the corrected pattern. The
+**Awase improvement.** Awase's ADR 0008 records the corrected pattern. The
 fix in the FreeBSD code is a documentation update on `usbhid(9)` and
 ideally a `KASSERT` in `hid_start_parse` that catches the multi-bit case
 in debug kernels.
@@ -308,9 +308,9 @@ failed with no useful diagnostic. The working alternative turned out to
 be `EVIOCGRAB` on the evdev devices, which is undocumented as a vt(4)
 interaction.
 
-**UTF improvement.** semainput uses `EVIOCGRAB` to obtain exclusive
+**Awase improvement.** semainput uses `EVIOCGRAB` to obtain exclusive
 access on the devices it cares about. The long-term improvement, on the
-UTF side, is to replace vt(4) on the input side as drawfs already does on
+Awase side, is to replace vt(4) on the input side as drawfs already does on
 the display side.
 
 **Upstream candidate.** Documentation patch on `kbdcontrol(1)` and
@@ -333,7 +333,7 @@ short-circuits to the system control paths.
 machine. The fix required disabling three sysctls at semadrawd startup
 and restoring them at shutdown.
 
-**UTF improvement (historical).** The pre-AD-20 start.sh launcher
+**Awase improvement (historical).** The pre-AD-20 start.sh launcher
 disabled the three sysctls on launch and restored them on `--stop`;
 that launcher was removed under F.6 (ADR 0029) with the supervised
 lifecycle replacing it. The cleaner fix on the FreeBSD side remains
@@ -359,7 +359,7 @@ to confirm it could be the sole console consumer on a kernel built
 without vt or efifb. The audit script categorized every symbol drawfs
 references as STABLE (kernel core), VT_DEP, EFIFB_DEP, or UNKNOWN.
 
-**UTF improvement.** drawfs discovers the EFI framebuffer via
+**Awase improvement.** drawfs discovers the EFI framebuffer via
 `preload_search_info(MODINFOMD_EFI_FB)`, mapping the framebuffer through
 the EFI runtime services and `pmap_mapdev_attr`. None of its symbols are
 VT_DEP or EFIFB_DEP, which means drawfs runs cleanly on a kernel built
@@ -405,10 +405,10 @@ because each is more general than any single defect.
   pin downstream consumers to Linux semantics. A FreeBSD-native input
   path is a different artifact, not a refinement of the evdev one.
 
-* **Coherence is the goal, not reliability.** UTF accepts that its
+* **Coherence is the goal, not reliability.** Awase accepts that its
   approach is sometimes less performant or less feature-rich than the
   legacy stack it replaces. The trade-off is that every component in
-  UTF's guarantee path is either owned by UTF or named as an accepted
+  Awase's guarantee path is either owned by Awase or named as an accepted
   dependency. The findings above are the cost of paying close enough
   attention to the legacy stack to maintain that property.
 
@@ -420,6 +420,6 @@ location in the FreeBSD tree that is specific enough to find with a
 single `grep`. Entries that are speculative or aesthetic do not belong
 here; they belong in the relevant ADR.
 
-When a finding leads to a UTF code change, the ADR that records the
+When a finding leads to a Awase code change, the ADR that records the
 change should cite the entry here. When a finding leads to an upstream
 patch, the patch URL or PR number should be added to the entry.

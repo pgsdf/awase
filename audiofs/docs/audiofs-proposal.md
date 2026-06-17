@@ -23,7 +23,7 @@ struct layouts, the audio-data path, or a schedule. Those
 belong in follow-on ADRs.
 
 This proposal is the second named application of the
-discipline stated in `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`:
+discipline stated in `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`:
 **UTF depends only on code written with UTF's guarantees in
 mind**. OSS is an external dependency whose authors were not
 thinking about UTF's determinism, clock model, or stability
@@ -608,7 +608,7 @@ the decision is explicit-by-deferral rather than implicit.
   arguments and migration shape there transfer directly,
   with the audio-data-path question as the substantial new
   addition.
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` provides the broader
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` provides the broader
   framing.
 - `docs/Thoughts.md` "Audio as Source of Truth" establishes
   why audio's clock role makes the substrate question

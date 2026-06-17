@@ -8,7 +8,7 @@ Tracks AD-41 sub-item AD-41.2. This ADR records the design
 decision for a new notification surface that lets userspace
 consumers wake on inputfs event publication. It does not
 itself land code; AD-41.3 is the implementation step. The
-pre-code grep mandate from `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`
+pre-code grep mandate from `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`
 applies before any code is written against this ADR.
 
 ### Supersedes AD-1's pollable-fd sub-item (added 2026-05-27 evening)
@@ -361,7 +361,7 @@ BACKLOG.md.
 
 ## Pre-code verification
 
-Per `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`, before any code
+Per `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`, before any code
 is written for AD-41.3:
 
 - A grep against `inputfs.c` for `selinfo`, `selrecord`,

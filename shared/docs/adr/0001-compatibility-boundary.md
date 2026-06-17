@@ -9,7 +9,7 @@ independently of the current Zig I/O implementation (Decision 3), closure
 criterion 3 strengthened from existence to usage, and an explicit non-goal added
 to scope (Decision 4). The first ADR in the shared series, opened during the Zig
 0.15.2 to 0.16.0 migration. It generalizes the boundary principle that AD-6
-(`shared/src/posix_safe.zig`, documented in `docs/UTF_ZIG_STDLIB_BOUNDARY.md`)
+(`shared/src/posix_safe.zig`, documented in `docs/AWASE_ZIG_STDLIB_BOUNDARY.md`)
 first instantiated for read/write, and it governs how the rest of the tree
 absorbs the 0.16 standard-library churn. It authorizes the compatibility-layer
 architecture and the `compat.io` module; the per-class source sweeps that follow
@@ -125,7 +125,7 @@ The boundary covers std surfaces Awase depends on whose volatility, behavioural
 or structural, would otherwise propagate into application or subsystem code. It
 is deliberately narrow. It is not a wholesale wrapper around the standard
 library, and it does not relitigate the determinism-boundary audit in
-`docs/UTF_ZIG_STDLIB_BOUNDARY.md`; that document continues to govern which
+`docs/AWASE_ZIG_STDLIB_BOUNDARY.md`; that document continues to govern which
 behaviours are verified at correctness-critical paths. This ADR adds the
 shape-insulation concern and unifies both under one ownership principle. Stable
 std surfaces (slices, math, formatting, comptime facilities) are used directly.

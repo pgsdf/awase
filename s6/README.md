@@ -1,4 +1,4 @@
-# UTF supervision tree (s6)
+# Awase supervision tree (s6)
 
 This directory holds the s6 service-directory layout that
 `install.sh` copies to `/var/service/utf/` on installation.

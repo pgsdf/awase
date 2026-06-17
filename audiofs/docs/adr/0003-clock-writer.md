@@ -225,7 +225,7 @@ the hardware read path outright (no external semantic
 remains to drift once UTF reads the position register
 itself).
 
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` Operating Rule 1
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` Operating Rule 1
 requires that any ADR introducing a new guarantee-path
 dependency on external code not already accepted as platform
 transport must address whether that code is acceptable, with

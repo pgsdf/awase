@@ -1,4 +1,4 @@
-# UTF daemon behaviour under dependency absence
+# Awase daemon behaviour under dependency absence
 
 Status: Stated, 2026-05-05. Updated 2026-06-05 for the post-F.6
 stack: subjects are now `semasound`, `semadrawd`, and
@@ -7,11 +7,11 @@ stack: subjects are now `semasound`, `semadrawd`, and
 while rc.d retains boot ordering; semaaud and semainputd are
 retired. The posture doctrine itself is unchanged.
 
-This document states what UTF userspace daemons do when their
+This document states what Awase userspace daemons do when their
 substrate dependencies are not yet present at startup. It applies
 uniformly to `semasound`, `semadrawd`, `pgsd-sessiond`, and any
-future UTF daemon that depends on substrate files, kernel
-modules, or other UTF daemons. It does not apply to the kernel
+future Awase daemon that depends on substrate files, kernel
+modules, or other Awase daemons. It does not apply to the kernel
 itself, whose absence is an unrecoverable
 configuration error, not a runtime condition.
 
@@ -24,7 +24,7 @@ disqualifies it.
 
 ## Context
 
-UTF daemons exist in a dependency graph. The shape was captured in
+Awase daemons exist in a dependency graph. The shape was captured in
 the BACKLOG.md AD-12 entry; the relevant edges for this discussion:
 
 ```
@@ -63,7 +63,7 @@ realistic scenarios:
    without the dependency they were started against.
 
 The substrate dependencies themselves are runtime-detectable: every
-UTF substrate is a published file (state region, event ring, focus
+Awase substrate is a published file (state region, event ring, focus
 region, clock region, surface registry). The dependent daemon can
 check whether the file exists, whether it has the expected magic
 bytes, and whether it is being updated. The question this ADR
@@ -168,7 +168,7 @@ require the missing dependency, and advertises its state.
 
 ## The principle from architectural discipline
 
-`UTF_ARCHITECTURAL_DISCIPLINE.md` commits UTF to determinism and
+`AWASE_ARCHITECTURAL_DISCIPLINE.md` commits Awase to determinism and
 stability as central guarantees. The daemons are part of the
 guarantee path: a recording made when semadrawd was running against
 inputfs should replay against a future inputfs and produce the
@@ -212,7 +212,7 @@ the recovery is automatic.
 
 ## Decision
 
-UTF daemons implement **Posture 3 (degraded mode with rigorous
+Awase daemons implement **Posture 3 (degraded mode with rigorous
 advertising)** as the primary policy, with **Posture 2 (exit and
 restart)** reserved for unrecoverable configuration errors that an
 operator must address.
@@ -237,12 +237,12 @@ The distinction:
 
 The line between them is **whether the missing dependency is
 expected to become present without operator action**. A substrate
-dependency from a sibling UTF daemon is expected to appear soon
+dependency from a sibling Awase daemon is expected to appear soon
 (rc.d will start it); a hard platform dependency is not.
 
 ### Required mechanism for Posture 3
 
-Every UTF daemon implementing Posture 3 must:
+Every Awase daemon implementing Posture 3 must:
 
 1. **Check dependencies at startup**, before binding any sockets
    or accepting clients. Record whether each dependency is present
@@ -299,7 +299,7 @@ Every UTF daemon implementing Posture 3 must:
 
 ## Per-daemon application
 
-The general policy translates to specific behaviours per UTF
+The general policy translates to specific behaviours per Awase
 daemon:
 
 ### semasound
@@ -312,7 +312,7 @@ kldload audiofs`) before exec, and the audiofs rc.d loader
 (REQUIRE: FILESYSTEMS) normally has it loaded long before
 supervision starts.
 
-No soft dependencies on other UTF daemons. semasound is at the
+No soft dependencies on other Awase daemons. semasound is at the
 bottom of the userland stack; nothing it needs is produced by
 semadrawd or pgsd-sessiond.
 
@@ -358,9 +358,9 @@ in the tree. This section is retained as the pointer: the
 retirement record is in `BACKLOG-history.md` and the semainput
 ADRs.
 
-### Future UTF daemons
+### Future Awase daemons
 
-Any future UTF daemon implementing soft substrate dependencies
+Any future Awase daemon implementing soft substrate dependencies
 applies Posture 3 by default. Hard platform dependencies apply
 Posture 2 by default. Departures from these defaults must be
 justified in a per-daemon ADR.
@@ -395,7 +395,7 @@ justified in a per-daemon ADR.
 - **Each daemon must implement the advertising machinery.** The
   state header, the structured error responses, the broadcast
   events, the documented behaviours. This is real engineering
-  work not currently present in any UTF daemon other than
+  work not currently present in any Awase daemon other than
   inputfs's focus-file retry.
 
 - **The advertising must be threaded through every operation.**
@@ -443,7 +443,7 @@ The first concrete implementation work this ADR enables:
 1. **semadrawd degraded-mode advertising** for absent inputfs
    substrate. Adds a state field to the `hello` response and a
    broadcast event for state transitions. Client-side handling
-   (in semadraw-term and any future UTF clients) prints a clear
+   (in semadraw-term and any future Awase clients) prints a clear
    message: "semadrawd reports input substrate not available; key
    and pointer events will not arrive until inputfs is loaded."
    This closes the loop on Bug 4.
@@ -466,7 +466,7 @@ work begins.
 
 ## References
 
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`, the principle this ADR
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`, the principle this ADR
   derives from.
 - `docs/FAILURE_MODES.md`, where per-daemon degraded behaviours
   are documented as they land.

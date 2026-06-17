@@ -12,7 +12,7 @@ distribution maintainer) and operators (the parties who deploy
 PGSD on actual hardware). It does not take positions on the
 merits of any law or regulatory framework.
 
-This document covers the substrate (UTF) and the distribution
+This document covers the substrate (Awase) and the distribution
 (PGSD) together where relevant, and notes the layer split where
 it matters. See README.md for the substrate-versus-distribution
 framing.
@@ -129,7 +129,7 @@ PGSD does not implement the following:
   - **An age-signal API for applications.** PGSD does not
     provide an operating-system-level API by which applications
     may query a signal regarding the user's age or age bracket.
-    No such API exists in UTF substrate or in PGSD distribution
+    No such API exists in Awase substrate or in PGSD distribution
     layer.
   - **Parental-consent workflows.** PGSD does not implement any
     workflow that requires a parent or legal guardian to verify

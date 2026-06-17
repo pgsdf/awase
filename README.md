@@ -382,7 +382,7 @@ inputfs replaced `semainput` (the userspace evdev daemon) on the PGSD
 target: the Stage E cutover executed and AD-2 closed 2026-05-17. Awase
 runs on inputfs alone, with no evdev fallback in any code path, by
 deliberate commitment to the discipline at
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`.
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`.
 
 inputfs also feeds FreeBSD's `vt(4)` console keyboard input through a
 bridge driver (the `inputfs_kbd` kbd-layer driver inside the inputfs

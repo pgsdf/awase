@@ -241,7 +241,7 @@ should include hardware production - and how that relates
 to firmware-blob obstruction - was previously recorded
 here as a foundational open question deliberately kept out
 of the audio record. It has since been resolved as its own
-deliberate act in `docs/UTF_PROJECT_SCOPE.md`: PGSD's scope
+deliberate act in `docs/AWASE_PROJECT_SCOPE.md`: PGSD's scope
 includes both software and hardware, sequenced into stages;
 software audio support for 2016+ chipsets is the primary
 near-term goal; hardware production is in-scope but

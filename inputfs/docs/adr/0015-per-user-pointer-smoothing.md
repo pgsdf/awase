@@ -47,7 +47,7 @@ of, or coincident with, routing. Two candidate points exist:
    a new shared-memory region.
 
 Path 1 is more consistent with the substrate/policy boundary
-stated in `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`: the kernel
+stated in `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`: the kernel
 publishes hardware truth, userland applies user-visible policy.
 It implies moving D.4 routing out of the kernel. It also reopens
 landed Stage D work, requires designing a new compositor-to-client
@@ -198,7 +198,7 @@ This decision places policy data inside the substrate's hot
 path. The kernel applies smoothing the kernel did not choose,
 using parameters from a region the kernel did not author. This
 is a small but real impurity in the substrate/policy boundary
-stated in `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`.
+stated in `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`.
 
 The alternative — moving routing to userland alongside
 smoothing — was considered and rejected for this iteration on
@@ -209,7 +209,7 @@ been designed). The reversal remains available as a future
 move if the precedent established here begins generating
 more cases that erode the boundary.
 
-A short addendum to `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`
+A short addendum to `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`
 acknowledges policy-data-applied-by-substrate as the chosen
 pattern for cross-consumer-consistent input policy, and names
 the consistency-vs-purity tradeoff explicitly. The addendum is
@@ -298,7 +298,7 @@ consistency-disagreement bug.
 
 - The next ADR number for the discipline-doc addendum is a
   top-level UTF concern, not an inputfs ADR. The addendum
-  lands directly in `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`.
+  lands directly in `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`.
 - The byte-level spec in `shared/INPUT_SMOOTHING.md` lands
   in the same change set as this ADR, before any code that
   reads or writes the region is written.

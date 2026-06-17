@@ -42,7 +42,7 @@ read by a single load, and that store is single-copy-atomic only by virtue
 of the region being mapped at a page-aligned address, which keeps the eight
 bytes at offsets 12-19 inside one cache line. On amd64 a store that does not
 cross a cache-line boundary is atomic even when unaligned, so the field is
-safe on the architecture UTF ships on (pgsd-bare-metal, amd64).
+safe on the architecture Awase ships on (pgsd-bare-metal, amd64).
 
 This is an amd64-scoped guarantee, not a portable one. On a non-x86,
 non-TSO target (for example aarch64) a 64-bit access to a 4-byte-aligned
@@ -55,12 +55,12 @@ is recorded here so a future port does not rediscover it the hard way.
 ### clock_source: observability metadata
 
 `clock_source` exists to let readers and diagnostic tools identify which
-writer produced the region without guessing. UTF's clock is audio-driven
+writer produced the region without guessing. Awase's clock is audio-driven
 by construction (see `docs/Thoughts.md` and
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`); this field does not enable a
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`); this field does not enable a
 runtime fallback to a different clock source. Values 2 (wall) and 3 (tsc)
 are reserved for writers that may exist in test scaffolding or
-alternative builds; they are not used by the canonical UTF stack.
+alternative builds; they are not used by the canonical Awase stack.
 
 The field was promoted from a previously-reserved padding byte at offset 6
 without bumping `version`. Compatibility holds in both directions:

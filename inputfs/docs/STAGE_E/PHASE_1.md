@@ -494,5 +494,5 @@ several commits per the planning document yet to be drafted.
 - `shared/INPUT_EVENTS.md` for the event ring's wire format.
 - `shared/src/input.zig` for the `EventRingReader` API.
 - `BACKLOG.md` AD-2a entry (added in commit ba4f7ca).
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` for the no-fallback
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` for the no-fallback
   commitment that Phase 3 ultimately enforces.

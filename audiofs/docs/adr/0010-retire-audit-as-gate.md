@@ -119,7 +119,7 @@ gate for AD-3's progression. Specifically:
 
 5. **Architectural-discipline doc unchanged.** The
    governance-independence principle in
-   `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` is not affected.
+   `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` is not affected.
    ADR 0006's primary rationale stands as principled and
    non-measurement-contingent. What this ADR retires is the
    procedural step that was designed to characterise the

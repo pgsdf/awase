@@ -336,7 +336,7 @@ above let any operator close the gap when convenient.
 - `docs/AD12_VERIFICATION.md` — verification doc whose pattern
   this one mirrors. The cross-component verification doc
   format established 2026-05-05.
-- `docs/UTF_DAEMON_DEPENDENCY_ABSENCE.md` — the AD-12.5 ADR
+- `docs/AWASE_DAEMON_DEPENDENCY_ABSENCE.md` — the AD-12.5 ADR
   that scopes related operational-discipline policy for
   daemon-side error states. AD-13 covers the kernel-side
   analogue for inputfs's logging surface.

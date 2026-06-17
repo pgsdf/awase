@@ -356,7 +356,7 @@ pub const SessionType = enum {
     /// explicit.
     pub fn detail(self: SessionType) []const u8 {
         return switch (self) {
-            .terminal => "Default UTF Session",
+            .terminal => "Default Awase Session",
             .x11, .wayland, .nde => "not installed",
         };
     }

@@ -1,7 +1,7 @@
 # pgsd-sessiond
 
 PGSD's graphical login provider. Authenticates users against the
-system password database via PAM, then launches their chosen UTF
+system password database via PAM, then launches their chosen Awase
 session.
 
 ## What it is
@@ -16,10 +16,10 @@ user and execs the session leader specified by that user's
 or an NDE session).
 
 The component sits in the PGSD distribution layer (the `pgsd-`
-prefix marks distribution-layer components, distinct from UTF
-userland's `sema-` prefix). It depends on UTF substrate via
-stable contracts but is not part of UTF itself; a different
-distribution built on UTF could supply its own session manager
+prefix marks distribution-layer components, distinct from Awase
+userland's `sema-` prefix). It depends on Awase substrate via
+stable contracts but is not part of Awase itself; a different
+distribution built on Awase could supply its own session manager
 in place of `pgsd-sessiond`.
 
 ## What it is NOT
@@ -28,7 +28,7 @@ in place of `pgsd-sessiond`.
     LT, custom applications) are separate; `pgsd-sessiond` only
     authenticates and launches them.
   - An X11 display manager. PGSD is not X11-based; the login
-    screen draws via UTF/semadraw.
+    screen draws via Awase/semadraw.
   - A DBus session manager. Userspace IPC is not in scope.
   - A user-account management tool. Account creation and
     modification continue to use FreeBSD's `pw(8)`,
@@ -92,22 +92,22 @@ this layout section will be updated.
 
 ### Build-time
 
-  - **Zig** 0.15.2 or compatible (matches the rest of UTF).
+  - **Zig** 0.15.2 or compatible (matches the rest of Awase).
   - **FreeBSD libpam** (`-lpam`, the OpenPAM implementation that
     ships in FreeBSD base).
   - **FreeBSD libc** for `setuid`, `setgid`, `initgroups`,
     `getpwnam`, `getusershell`, the standard credential and
     user-database primitives.
 
-No external Zig dependencies beyond what UTF substrate already
+No external Zig dependencies beyond what Awase substrate already
 uses (the `shared/` modules).
 
 ### Runtime
 
-  - **A working UTF substrate**: drawfs, inputfs, semadrawd
-    running. `pgsd-sessiond` is a UTF client of semadrawd.
+  - **A working Awase substrate**: drawfs, inputfs, semadrawd
+    running. `pgsd-sessiond` is a Awase client of semadrawd.
     Stages 5-9 won't function without it; stages 1-4 are
-    CLI tools and don't require UTF.
+    CLI tools and don't require Awase.
   - **A configured PAM stack** at `/etc/pam.d/pgsd-sessiond`.
     Stage 1 of the implementation falls back to `/etc/pam.d/login`
     if the pgsd-sessiond service file isn't installed; later
@@ -149,7 +149,7 @@ In order of usefulness for someone new to the design:
 
 ## Conventions
 
-`pgsd-sessiond` follows the UTF repo conventions:
+`pgsd-sessiond` follows the Awase repo conventions:
 
   - **Zig** for new code.
   - **No em dashes** in prose or documentation.

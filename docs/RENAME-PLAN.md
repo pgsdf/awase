@@ -12,7 +12,7 @@ session's edits.
 
 - README.md: DONE this session (title, descriptor with formerly-UTF
   note, 29 prose occurrences; the one remaining UTF is the
-  docs/UTF_ARCHITECTURAL_DISCIPLINE.md path reference, which waits
+  docs/AWASE_ARCHITECTURAL_DISCIPLINE.md path reference, which waits
   for R2).
 - BACKLOG.md (55 occurrences): framing and section headers only.
   The Long-term section header is DONE (it is cross-referenced from
@@ -25,7 +25,7 @@ session's edits.
 - docs/ living references: POLICY.md, FAILURE_MODES.md,
   FREEBSD_IMPROVEMENTS.md, FREEBSD_ISSUES.md, FREEBSD_SUBSYSTEMS.md,
   PROTOCOL_NAMESPACE_CONVENTION.md, docs/README.md,
-  does-utf-have-a-framebuffer.md (content pass; the filename itself
+  does-awase-have-a-framebuffer.md (content pass; the filename itself
   is R2).
 - Subsystem living docs: semadraw/README.md, ARCHITECTURE.md,
   WM_CLIENT_CONTRACT.md; semainput/README.md and design docs;
@@ -36,15 +36,15 @@ session's edits.
 ### R2: file renames and code comments (one batch, build-verified)
 
 - Five docs/UTF_*.md files rename to docs/AWASE_*.md, plus
-  does-utf-have-a-framebuffer.md. Every cross-reference updates in
+  does-awase-have-a-framebuffer.md. Every cross-reference updates in
   the same commit: ADR texts that cite the paths keep their wording
   but a path is a pointer, not prose, so pointers update even in
   historical files (flagged for operator ratification: alternative
   is leaving stubs at the old paths).
 - Zig comment references: shared/src/posix_safe.zig (UTF prose and
-  the UTF_ZIG_STDLIB_BOUNDARY.md path), shared/src/clock.zig
+  the AWASE_ZIG_STDLIB_BOUNDARY.md path), shared/src/clock.zig
   ("canonical UTF" comments and constants commentary, and the
-  UTF_ARCHITECTURAL_DISCIPLINE.md path). Comment-only, but source
+  AWASE_ARCHITECTURAL_DISCIPLINE.md path). Comment-only, but source
   changes ride a clean rebuild: zig build test across subsystems,
   then the standard bare-metal flow.
 

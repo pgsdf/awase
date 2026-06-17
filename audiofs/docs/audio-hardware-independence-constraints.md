@@ -57,7 +57,7 @@ layer; anything failing it does not belong here.
    firmware-blob trend, on `sound(4)`/`uaudio` evolution,
    or on any external roadmap UTF does not control. This
    is the governance-independence principle
-   (`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`) applied to the
+   (`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`) applied to the
    feasibility question; it is referenced, not newly
    decided here.
 
@@ -81,7 +81,7 @@ Whether PGSD's scope definition includes hardware
 production is a meta-architectural, project-identity
 question. When this note was written it was deliberately
 not addressed here. It has since been resolved as its own
-deliberate act in `docs/UTF_PROJECT_SCOPE.md` (PGSD's
+deliberate act in `docs/AWASE_PROJECT_SCOPE.md` (PGSD's
 scope includes both software and hardware, sequenced into
 stages, with the hardware stage trigger-activated by
 observed firmware-blob obstruction). This note now
@@ -98,7 +98,7 @@ ratification coupling.
 The audio system has firm, stable constraints (Layer 1).
 It also has a real implementation fork (Layer 2) and the
 project-identity question (Layer 3) is resolved in
-`docs/UTF_PROJECT_SCOPE.md`. Layer 1 is recorded. Layer 2
+`docs/AWASE_PROJECT_SCOPE.md`. Layer 1 is recorded. Layer 2
 is deliberately not recorded here and its absence is
 intentional: this note exists to
 let the stable constraints be written down without

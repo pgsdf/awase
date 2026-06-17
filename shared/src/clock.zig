@@ -29,7 +29,7 @@ const posix = std.posix;
 //
 // clock_source is observability metadata, not a fallback selector. Awase's
 // clock is audio-driven by construction (see docs/Thoughts.md and
-// docs/UTF_ARCHITECTURAL_DISCIPLINE.md). The field exists so readers and
+// docs/AWASE_ARCHITECTURAL_DISCIPLINE.md). The field exists so readers and
 // diagnostic tools can identify which writer produced the region without
 // guessing. Values 2 (wall) and 3 (tsc) are reserved for future writers
 // that may exist in test scaffolding or alternative builds; they are not

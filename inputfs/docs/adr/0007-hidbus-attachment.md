@@ -172,7 +172,7 @@ Alternative approaches rejected:
 - `hidbus` and `usbhid` are accepted dependencies under UTF's
   architectural discipline. They are not UTF-authored code and
   they are in the guarantee path. This must be recorded in
-  `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` under "Accepted
+  `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` under "Accepted
   dependencies." The alternative (reimplementing USB HID transport
   inside inputfs) is substantially larger work than UTF's scope
   permits in the foreseeable future.
@@ -237,7 +237,7 @@ regions, and no ioctls. Those remain Stage B.3 onwards.
    - `dmesg | tail -20` to verify the attach log line.
    - `kldunload inputfs` to verify clean detach.
 
-4. Update `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` to record
+4. Update `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` to record
    `usbhid`, `hidbus`, and `hid` as accepted dependencies in the
    guarantee path. This is a separate commit, not part of the B.2
    code commit.

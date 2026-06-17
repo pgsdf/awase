@@ -16,7 +16,7 @@
 //! byte count check it themselves; callers that just want "did the
 //! call succeed" use `try` / `catch break`.
 //!
-//! See `docs/UTF_ZIG_STDLIB_BOUNDARY.md` for the full discussion.
+//! See `docs/AWASE_ZIG_STDLIB_BOUNDARY.md` for the full discussion.
 //! The original inline implementation in
 //! `semadraw/src/backend/drawfs.zig` predates this module; future
 //! cleanup may route that site through here.

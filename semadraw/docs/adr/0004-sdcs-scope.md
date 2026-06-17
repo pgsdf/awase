@@ -146,7 +146,7 @@ in the same direction but do not name SDCS specifically and
 do not address compute or video. This ADR fills that gap.
 
 The decision aligns with UTF's broader architectural
-discipline (`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`): UTF
+discipline (`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`): UTF
 depends only on code written with UTF's guarantees in mind.
 SDCS is one such guarantee path. Code that needs 3D, video,
 or compute does not share UTF's determinism commitments by

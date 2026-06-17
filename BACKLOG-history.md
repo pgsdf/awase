@@ -4456,7 +4456,7 @@ the .7 path rides with DF-6.
 
 The project's discipline (UTF depends only on code written with UTF's
 guarantees in mind) is stated in full at
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`. This section tracks the work
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`. This section tracks the work
 streams that apply the discipline to subsystems where external
 dependencies currently sit inside UTF's guarantee path. Items here
 represent multi-stage replacements, not individual features; each
@@ -4826,7 +4826,7 @@ sentence above is resolved into two concrete sub-items:
   `inputfs/docs/adr/0015-per-user-pointer-smoothing.md` and
   `shared/INPUT_SMOOTHING.md` (commit `329197b`). Discipline-
   doc addendum landed (2026-05-01) in
-  `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` (commit `1285753`).
+  `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` (commit `1285753`).
 
   **Parked at stage 3 (2026-05-09).** Stages 1-3 landed and
   pushed:
@@ -4889,13 +4889,13 @@ implementation does not depend on the daemon retirement.
 
 ### `[x]` AD-5: Formalise ZFS as accepted dependency  *(Done 2026-05-05, Small)*
 
-**Tracks**: `docs/UTF_STORAGE_DEPENDENCY.md` (new),
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` (updated),
+**Tracks**: `docs/AWASE_STORAGE_DEPENDENCY.md` (new),
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` (updated),
 `docs/FREEBSD_SUBSYSTEMS.md` (updated).
 
 The acceptance is now explicit. UTF the substrate is
 filesystem-agnostic; PGSD the distribution requires ZFS. The
-chain is recorded in `docs/UTF_STORAGE_DEPENDENCY.md` along with
+chain is recorded in `docs/AWASE_STORAGE_DEPENDENCY.md` along with
 what UTF actually does with storage (POSIX file I/O via VFS,
 `mmap` of regular files, atomic rename, `tmpfs` for
 `/var/run/sema/` publications), what UTF does *not* use (no
@@ -4916,9 +4916,9 @@ Doc-only commit; no code changes.
 
 ### `[x]` AD-6: Audit Zig stdlib usage at determinism boundaries  *(Done 2026-05-05, Small-Medium)*
 
-**Tracks**: `docs/UTF_ZIG_STDLIB_BOUNDARY.md` (new),
+**Tracks**: `docs/AWASE_ZIG_STDLIB_BOUNDARY.md` (new),
 `shared/src/posix_safe.zig` (new),
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` (updated reference),
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` (updated reference),
 `chronofs/build.zig` (wires posix_safe into resolver_mod),
 `chronofs/src/resolver.zig` (uses safeRead in ingestionThread).
 
@@ -4936,7 +4936,7 @@ scheduling. Out of scope: build scripts, error formatting, log
 emission, test harness, dump-and-print tools.
 
 The audit's findings are recorded in
-`docs/UTF_ZIG_STDLIB_BOUNDARY.md`. The most concrete boundary
+`docs/AWASE_ZIG_STDLIB_BOUNDARY.md`. The most concrete boundary
 issue UTF has hit is `std.posix.read`/`write` panicking via
 `unexpectedErrno` on errnos that fall outside stdlib's
 "known" set. UTF's kernel cdevs (drawfs, inputfs) and accepted
@@ -4962,7 +4962,7 @@ shared helper.
   any non-stdlib-known errno (rare but documented under SIGINT
   during shutdown).
 
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`: the existing line
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`: the existing line
   about stdlib determinism-boundary verification now references
   the new doc and the `posix_safe` helper.
 
@@ -4980,15 +4980,15 @@ Other call sites reviewed:
 
 Doc-and-helper commit; no behavioural changes to existing code
 beyond the chronofs ingestion site. Same shape as AD-5
-(`UTF_STORAGE_DEPENDENCY.md`) and AD-7
-(`UTF_USB_HID_BOUNDARY.md`); together AD-5, AD-6, and AD-7 form
+(`AWASE_STORAGE_DEPENDENCY.md`) and AD-7
+(`AWASE_USB_HID_BOUNDARY.md`); together AD-5, AD-6, and AD-7 form
 the explicit-boundary trilogy for UTF's three largest accepted
 dependencies (storage, language toolchain, USB/HID transport).
 
 ### `[x]` AD-7: Audit and document USB / HID dependency boundary  *(Done 2026-05-05, Small)*
 
-**Tracks**: `docs/UTF_USB_HID_BOUNDARY.md` (new),
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` (updated),
+**Tracks**: `docs/AWASE_USB_HID_BOUNDARY.md` (new),
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` (updated),
 `docs/FREEBSD_SUBSYSTEMS.md` (updated).
 
 The boundary is now explicit. inputfs uses eleven entry points
@@ -4999,7 +4999,7 @@ below those entry points (USB host controllers, the USB stack,
 publication ring at `/var/run/sema/input` and the userspace
 consumers).
 
-The new doc `docs/UTF_USB_HID_BOUNDARY.md` enumerates:
+The new doc `docs/AWASE_USB_HID_BOUNDARY.md` enumerates:
 
 - The eleven `hidbus_*` and `hid_*` entry points inputfs depends
   on, each with the required behaviour.
@@ -5023,7 +5023,7 @@ platform (NetBSD, OpenBSD, future major-version FreeBSD with
 significant HID changes) is bounded by this document.
 
 Doc-only commit; no code changes. Same shape as AD-5
-(`UTF_STORAGE_DEPENDENCY.md`); together they form the
+(`AWASE_STORAGE_DEPENDENCY.md`); together they form the
 explicit-boundary pair for UTF's two largest accepted
 dependencies. AD-6 (Zig stdlib) and AD-10 (vt(4)) remain as
 the next boundaries to formalise.
@@ -5904,7 +5904,7 @@ relationships are all currently undeclared.
 
 - **AD-12.5** *(landed, this commit)*:
   daemon-under-dependency-absence ADR.
-  `docs/UTF_DAEMON_DEPENDENCY_ABSENCE.md` states the policy:
+  `docs/AWASE_DAEMON_DEPENDENCY_ABSENCE.md` states the policy:
   Posture 3 (degraded mode with rigorous advertising) for soft
   substrate dependencies, Posture 2 (exit and let rc.d retry)
   for hard platform dependencies. The ADR explicitly forbids
@@ -10141,7 +10141,7 @@ The entry body chronicle, preserved verbatim:
 
 semaaud currently uses OSS (FreeBSD's kernel audio framework) for
 audio output. OSS is accepted as platform transport today
-(`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`). Direct hardware driving,
+(`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`). Direct hardware driving,
 analogous to how inputfs replaces evdev, would remove this
 dependency entirely.
 
@@ -10227,7 +10227,7 @@ content). The work exceeded the original six-question frame:
 list. AD-2 has closed (see AD-2 entry). The
 governance-independence rationale and its inputfs/`hms(4)`
 precedent are recorded in
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`. The premise-
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`. The premise-
 validation method is specified (not performed) in
 `audiofs/docs/snd4-gap-governance-audit.md`.
 
@@ -10764,7 +10764,7 @@ measurement-contingent, per ADR 0006 lines 50-54). ADR
 0008's overall structure stands (F.0-F.7 sub-stage
 breakdown, dependency ordering, owed inputs). The
 governance-independence principle in
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` stands. ADR-before-
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` stands. ADR-before-
 code discipline holds. What is retired is one specific
 procedural step (the audit gate), not the broader
 discipline that produced ADRs 0001-0009.

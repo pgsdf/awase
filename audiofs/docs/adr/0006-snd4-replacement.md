@@ -102,7 +102,7 @@ observed. Because UTF owned the input path through inputfs,
 UTF delivered them itself and verified them on real
 hardware (AD-2, Phase 2.5). The full precedent and the
 governance-independence principle are recorded in
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` ("Governance
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` ("Governance
 independence: why ownership, not just correctness"). The
 audio decision applies that proven principle, not an
 untested one. Note the precedent's careful epistemic form:
@@ -149,7 +149,7 @@ are part of the guarantee and are not under UTF's control
 while snd(4) drivers remain in the path.
 
 This is the architectural-discipline argument
-(`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`) taken to its
+(`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`) taken to its
 conclusion for audio specifically: external code with "its
 own goals, constraints, and future plans" in the guarantee
 path is a risk, and for the audio clock the risk surface

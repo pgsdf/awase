@@ -32,7 +32,7 @@ The proposal frames three plausible postures:
 > for that reason, but worth having on the list.
 
 The architectural discipline at
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md` says external code
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` says external code
 stays out of the guarantee path. Stage E of the inputfs
 proposal applies this principle to evdev: keeping evdev as a
 standby would keep it in the guarantee path, since a bug or

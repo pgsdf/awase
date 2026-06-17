@@ -26,7 +26,7 @@ This region mirrors `shared/INPUT_EVENTS.md` in structure
 lock-free single-producer/multi-consumer, role plus event_type
 dispatch, pollable fd). The taxonomy differs (audio event
 families instead of input ones); the mechanics are identical
-for maximal consistency across the UTF substrate.
+for maximal consistency across the Awase substrate.
 
 ## Events file
 

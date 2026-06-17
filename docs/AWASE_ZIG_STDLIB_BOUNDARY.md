@@ -1,28 +1,28 @@
-# UTF Zig stdlib boundary
+# Awase Zig stdlib boundary
 
-This document describes UTF's relationship to the Zig standard
+This document describes Awase's relationship to the Zig standard
 library. The library is accepted as platform transport (per the
 discipline doc's accepted-dependency list), but the discipline
-also says: at determinism boundaries, UTF verifies stdlib
+also says: at determinism boundaries, Awase verifies stdlib
 behaviour rather than assuming it. AD-6 makes that boundary
 explicit.
 
 ## What's in scope, what isn't
 
-UTF is roughly 30,000 lines of Zig across 100-odd files. A
+Awase is roughly 30,000 lines of Zig across 100-odd files. A
 wholesale audit of every stdlib call would not be productive,
 most calls are in non-boundary code (build helpers, tool I/O,
 config loaders) where stdlib's exact error semantics or version
-behaviour does not affect UTF's guarantees.
+behaviour does not affect Awase's guarantees.
 
 The audit targets **determinism boundaries**: code paths where
-UTF's correctness or its guarantees of timing, delivery, or
+Awase's correctness or its guarantees of timing, delivery, or
 publication consistency depend on what stdlib does. These
 boundaries are concentrated in five areas:
 
 1. **Kernel cdev I/O.** `read`/`write`/`ioctl`/`mmap` against
-   UTF's own kernel modules (drawfs, inputfs) and against
-   UTF's own kernel cdevs in the guarantee path (`/dev/audiofs0`
+   Awase's own kernel modules (drawfs, inputfs) and against
+   Awase's own kernel cdevs in the guarantee path (`/dev/audiofs0`
    for semasound's audio output).
 
 2. **Inter-daemon socket and ring I/O.** semadrawd ↔ clients,
@@ -45,15 +45,15 @@ Out of scope: build scripts, error formatting, log emission,
 test harness, dump-and-print tools, anything in the `tests/`
 trees of any subsystem.
 
-## What UTF requires of the stdlib
+## What Awase requires of the stdlib
 
-The required surface is small because UTF deliberately uses a
+The required surface is small because Awase deliberately uses a
 narrow subset. The ones we depend on the *behaviour* of, not just
 the existence of:
 
 ### `std.posix`: system call wrappers
 
-UTF uses `std.posix.read`, `std.posix.write`, `std.posix.poll`,
+Awase uses `std.posix.read`, `std.posix.write`, `std.posix.poll`,
 `std.posix.mmap`, `std.posix.munmap`, `std.posix.open`,
 `std.posix.close`, and `std.posix.fd_t`.
 
@@ -67,18 +67,18 @@ UTF uses `std.posix.read`, `std.posix.write`, `std.posix.poll`,
   load and store at the requested protections, with the caller
   responsible for matching `munmap`.
 - `fd_t` is `c_int` on FreeBSD; this is checked at compile time
-  by the existing UTF code.
+  by the existing Awase code.
 
 **Boundary risk: `unexpectedErrno` panic on errnos outside the
 stdlib's "known" list.**
 
-This is the most concrete boundary issue UTF has hit. `std.posix.read`
+This is the most concrete boundary issue Awase has hit. `std.posix.read`
 ships with a hand-maintained list of expected errno values for
 `read(2)`. Any errno outside that list flows through
 `unexpectedErrno`, which dumps a stack trace and propagates a
 panic-style error.
 
-UTF's kernel cdevs (drawfs, inputfs) return errnos that fall
+Awase's kernel cdevs (drawfs, inputfs) return errnos that fall
 outside the stdlib's known set:
 - drawfs returns `ENXIO` (errno 6 on FreeBSD) when a session is
   in its closing state.
@@ -88,10 +88,10 @@ outside the stdlib's known set:
   device-specific errnos for stream failure modes (semasound is
   the sole opener of `/dev/audiofs0`).
 
-These are legitimate errnos for the UTF semantics involved, but
+These are legitimate errnos for the Awase semantics involved, but
 stdlib treats them as "this should never happen" and panics.
 
-**Mitigation**: UTF uses a `safeRead` wrapper at one site
+**Mitigation**: Awase uses a `safeRead` wrapper at one site
 (`semadraw/src/backend/drawfs.zig`, line 171) that calls
 `posix.system.read` directly (the un-wrapped syscall layer)
 and treats every error uniformly as `error.ReadFailed`. The
@@ -103,13 +103,13 @@ or queued for future application.
 
 ### `std.fs`: filesystem operations
 
-UTF uses `std.fs.openFileAbsolute`, `std.fs.createFileAbsolute`,
+Awase uses `std.fs.openFileAbsolute`, `std.fs.createFileAbsolute`,
 `std.fs.makeDirAbsolute`, and `std.fs.path.dirname`.
 
 **Required behaviour**: the same as POSIX. `openFileAbsolute` must
 produce a `File` whose `.handle` is a `posix.fd_t`. `makeDirAbsolute`
 must return `error.PathAlreadyExists` (or the equivalent) when the
-directory exists, allowing UTF's "ensure directory" patterns to
+directory exists, allowing Awase's "ensure directory" patterns to
 work.
 
 **Boundary risk: API shape changes across Zig versions.**
@@ -121,13 +121,13 @@ Zig 0.14 → 0.15 changed:
   the current wrapper at `drawfs.zig:172` uses the post-0.15
   shape with `@bitCast` of `usize` to `isize` to detect errors.
 
-UTF's policy for stdlib-API drift: pin a Zig version in
+Awase's policy for stdlib-API drift: pin a Zig version in
 `build.zig`, audit the API surface at version-pin update time,
 and update the `safeRead`/`safeWrite` shims as needed.
 
 ### `std.io`: formatted I/O
 
-UTF uses `std.io.Writer` minimally, primarily for diagnostic
+Awase uses `std.io.Writer` minimally, primarily for diagnostic
 output in tools and tests. The compositor's hot-path output
 goes through the kernel cdev (drawfs publication) and never
 touches `std.io.Writer`.
@@ -135,20 +135,20 @@ touches `std.io.Writer`.
 **Required behaviour**: stable enough that the existing
 diagnostic prints continue to compile across Zig minor releases.
 
-**Boundary risk: low.** UTF's correctness does not depend on
+**Boundary risk: low.** Awase's correctness does not depend on
 formatted I/O. Format-string changes (e.g. `{any}` semantics)
 affect only diagnostic appearance.
 
 ### `std.mem`: memory utilities
 
-UTF uses `std.mem.readInt`, `std.mem.writeInt`, `std.mem.eql`,
+Awase uses `std.mem.readInt`, `std.mem.writeInt`, `std.mem.eql`,
 `std.mem.indexOfScalar`, `std.mem.indexOfScalarPos`,
 `std.mem.sliceTo`.
 
 **Required behaviour**:
 - `readInt` and `writeInt` must respect the explicit endianness
   argument (`.little` or `.big`) regardless of host endianness.
-  All UTF wire formats are little-endian; host is amd64 (also
+  All Awase wire formats are little-endian; host is amd64 (also
   little-endian) but the explicit endianness in the call sites
   is intentional documentation.
 
@@ -158,7 +158,7 @@ sensitive to platform changes.
 
 ### `std.atomic` and `@atomicLoad` / `@atomicStore`
 
-UTF uses Zig built-in atomic operations exclusively in the
+Awase uses Zig built-in atomic operations exclusively in the
 publication-region writers and readers. The choice between
 `std.atomic.Value` (a wrapper struct) and the bare `@atomicLoad`/
 `@atomicStore` builtins varies by call site.
@@ -178,7 +178,7 @@ not in question.
 
 ### `std.fmt.parseInt` and JSON parsers
 
-UTF uses `parseInt` in protocol decoders and JSON ingestion
+Awase uses `parseInt` in protocol decoders and JSON ingestion
 paths. `std.json` is used by chronofs ingestion (the historical
 semaaud/semainput line formats, retained unwired per ADR 0029
 Decision 6, and the semadraw line-format reader).
@@ -191,29 +191,29 @@ Decision 6, and the semadraw line-format reader).
 
 **Boundary risk: medium.** JSON parsing is the surface where
 adversarial or unexpectedly-formatted input is most likely to
-appear. UTF's response to parse errors is explicit: log once,
+appear. Awase's response to parse errors is explicit: log once,
 ignore the line, continue. The chronofs ingestion path
 (`chronofs/src/resolver.zig`) demonstrates this pattern.
 
-## What UTF deliberately does not use
+## What Awase deliberately does not use
 
-The boundary cuts cleanly here too. The discipline says UTF
+The boundary cuts cleanly here too. The discipline says Awase
 accepts the stdlib; that does not mean every stdlib facility is
-appropriate for UTF code:
+appropriate for Awase code:
 
 - **`std.heap.GeneralPurposeAllocator`** in the kernel-adjacent
-  guarantee path. UTF uses `std.heap.page_allocator` or the
+  guarantee path. Awase uses `std.heap.page_allocator` or the
   caller-supplied allocator at boundaries; GPA's allocation
   traces and double-free detection are useful in tests but add
   variance to hot paths.
 
-- **`std.Thread.Pool`** for compositor scheduling. UTF spawns
+- **`std.Thread.Pool`** for compositor scheduling. Awase spawns
   worker threads explicitly via `std.Thread.spawn` and manages
   lifetimes via condition variables. The Pool abstraction's
   scheduling decisions are not deterministic enough for
   audio-clock-driven work.
 
-- **`std.io.tty`** for terminal detection. UTF's terminals
+- **`std.io.tty`** for terminal detection. Awase's terminals
   (semadraw-term) are full-screen apps with their own input
   handling; auto-detecting "is this a tty" would interfere.
 
@@ -222,7 +222,7 @@ appropriate for UTF code:
   not spawn subprocesses; that pattern lives in tools and
   tests, not in production code.
 
-- **`std.log` configuration through `std.Options`.** UTF's
+- **`std.log` configuration through `std.Options`.** Awase's
   daemons use `std.log.scoped` directly with per-daemon scope
   tags rather than relying on the global log level dispatch,
   which has changed shape across Zig versions.
@@ -258,7 +258,7 @@ Other sites reviewed:
 
 ## What changes in stdlib would notice us
 
-### Changes that would break UTF
+### Changes that would break Awase
 
 - **Renaming or removing any of `std.posix.{read,write,poll,mmap,
   munmap,open,close,fd_t}`.** These are surface-level changes
@@ -270,7 +270,7 @@ Other sites reviewed:
   changes it again requires updating the `safeRead`/`safeWrite`
   helpers. Bounded by the small number of call sites.
 
-- **Changing `mmap` slice protection semantics.** UTF assumes
+- **Changing `mmap` slice protection semantics.** Awase assumes
   that `posix.mmap(..., PROT.READ | PROT.WRITE, ...)` produces
   a slice that supports both reads and writes via standard Zig
   pointer access. A future version that requires explicit
@@ -280,12 +280,12 @@ Other sites reviewed:
   no signal of such a change. Would force re-evaluation of
   publication-marker semantics across the board.
 
-### Changes that would silently affect UTF
+### Changes that would silently affect Awase
 
 - **`unexpectedErrno`'s known-errno list shrinking.** A Zig
   version that pulled errnos out of the "known" list would make
   more code paths panic where they previously returned a known
-  Zig error. UTF's exposure here is limited because the
+  Zig error. Awase's exposure here is limited because the
   safe-wrappers bypass `unexpectedErrno` entirely; non-wrapped
   call sites are at risk.
 
@@ -296,26 +296,26 @@ Other sites reviewed:
   visible as "ingestion drops lines"; the once-per-error log
   suppression catches it.
 
-### Changes UTF will not notice
+### Changes Awase will not notice
 
-- **`std.heap` allocator implementation changes.** UTF code does
+- **`std.heap` allocator implementation changes.** Awase code does
   not depend on allocation tracking metadata or specific
   fragmentation behaviour.
 
-- **`std.Thread` scheduling internals.** UTF threads communicate
+- **`std.Thread` scheduling internals.** Awase threads communicate
   via shared-memory publication with explicit atomic ordering;
   thread-pool scheduling is not in our path.
 
 - **Format-string syntax changes in `std.fmt`.** Diagnostic
-  output appearance may change; UTF correctness does not depend
+  output appearance may change; Awase correctness does not depend
   on it.
 
 ## Why this layering matters
 
 Two practical consequences:
 
-1. **The work to update UTF for a Zig version bump is bounded.**
-   Most of UTF compiles cleanly across Zig minor versions; the
+1. **The work to update Awase for a Zig version bump is bounded.**
+   Most of Awase compiles cleanly across Zig minor versions; the
    sites at risk are enumerated above and are concentrated in
    `shared/src/posix_safe.zig` and the `safeRead`/`safeWrite`
    call sites. A future major-version Zig bump (say 0.16 → 1.0)
@@ -330,12 +330,12 @@ Two practical consequences:
 
 ## References
 
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`, accepted-dependency
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`, accepted-dependency
   list and operating rules. The "Language and toolchain" entry
   references this document.
-- `docs/UTF_STORAGE_DEPENDENCY.md`, sibling boundary doc, same
+- `docs/AWASE_STORAGE_DEPENDENCY.md`, sibling boundary doc, same
   shape, storage instead of stdlib.
-- `docs/UTF_USB_HID_BOUNDARY.md`, sibling boundary doc, USB/HID
+- `docs/AWASE_USB_HID_BOUNDARY.md`, sibling boundary doc, USB/HID
   instead of stdlib.
 - `shared/src/posix_safe.zig`, the safe-wrapper module landed
   by this commit.

@@ -181,7 +181,7 @@ Tranche A may land on ratification of this ADR. Tranche B lands per its own benc
 ### D7. Path pointers in historical files are updated when their targets move
 
 Tranche A renames the `docs/UTF_*.md` boundary documents (and
-`does-utf-have-a-framebuffer.md`) to their Awase names. Roughly twenty historical
+`does-awase-have-a-framebuffer.md`) to their Awase names. Roughly twenty historical
 and ratified files reference those documents by path. A path is a pointer, not
 prose: a reference that no longer resolves is a defect, not a preserved decision.
 So when a target file is renamed, its references update even inside otherwise

@@ -15,7 +15,7 @@ historical multi-phase retirement plan is the AD-2a entry in the
 root `BACKLOG.md`.
 
 The kernel-side input substrate that replaced the daemon's role
-is `inputfs/` (see `inputfs/docs/`). UTF's runtime input path no
+is `inputfs/` (see `inputfs/docs/`). Awase's runtime input path no
 longer involves a userspace evdev daemon.
 
 ## Historical note

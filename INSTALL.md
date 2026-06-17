@@ -17,14 +17,14 @@ manually (not from loader.conf), start daemons.
 - Root access via `sudo` or direct login.
 - The `/usr/src` tree if you intend to build the PGSD kernel
   (see `pgsd-kernel/README.md`). Optional for first install;
-  GENERIC works for most UTF testing.
+  GENERIC works for most Awase testing.
 
 ## Step 1 — Mount `/var/run` as tmpfs
 
 Awase publishes shared-memory regions under `/var/run/sema/`. The
 default `/var/run` on FreeBSD is on the same filesystem as `/var`,
 which makes shared-memory writes more expensive and leaves stale
-state files across reboots. UTF assumes tmpfs.
+state files across reboots. Awase assumes tmpfs.
 
 Add to `/etc/fstab`:
 
@@ -247,26 +247,26 @@ CLI — not the kernel module. The kernel module is built by
 
 ## Step 5.5 — Build the PGSD kernel (recommended)
 
-The stock GENERIC kernel works for first install and basic UTF
-testing, but several in-tree drivers compete with UTF for
+The stock GENERIC kernel works for first install and basic Awase
+testing, but several in-tree drivers compete with Awase for
 ownership of hardware:
 
 - `hkbd`, `ukbd`, `hms`, `hmt`, `hgame`, `hcons`, `hsctrl`,
   `utouch`, `hpen`, `hidmap`: HID class drivers that claim
   USB keyboards, mice, and touchpads before `inputfs` can.
-  Without the PGSD kernel, input under UTF may not work
+  Without the PGSD kernel, input under Awase may not work
   (Hazard 2 below).
 - `vt`, `vt_efifb`, `sc`, `vga`, `splash`: in-tree console
   drivers that write to the EFI framebuffer in parallel with
   drawfs, causing cursor sprites and other compositor output
   to be overwritten by console repaints (Hazard 7 below).
 
-The PGSD kernel removes all of these. For full UTF behaviour
+The PGSD kernel removes all of these. For full Awase behaviour
 including reliable input and contention-free framebuffer
 rendering, build and install PGSD.
 
 If you do not need input or visible cursor tracking on this
-install (for example, you are bringing up UTF on a remote bench
+install (for example, you are bringing up Awase on a remote bench
 that you will only access over SSH for kernel-module testing),
 you can skip this step and stay on GENERIC.
 
@@ -281,7 +281,7 @@ sudo shutdown -r now
 
 Plan 30-60 minutes for the build. See `pgsd-kernel/README.md`
 for what each step does, the pkgbase versus source-built install
-variations, the PGSD-DEBUG variant for kernel-side UTF
+variations, the PGSD-DEBUG variant for kernel-side Awase
 development, and recovery procedures if a build or boot goes
 wrong. Read it before running the commands if this is your
 first PGSD build.
@@ -389,7 +389,7 @@ which is started in Step 8. inputfs cannot be loaded via
 `/boot/loader.conf` (see Hazard 1) and must wait until `/var/run`
 is mounted.
 
-## Step 8 — Start UTF services
+## Step 8 — Start Awase services
 
 On a deployed PGSD system (this is what these install steps
 produce), use the `service` interface. This is the only
@@ -597,7 +597,7 @@ during install. To start it without rebooting:
 sudo service inputfs start
 ```
 
-Older installs of UTF and an earlier draft of this hazard
+Older installs of Awase and an earlier draft of this hazard
 recommended adding `kldload inputfs` to `/etc/rc.local`. That
 recipe is superseded by the rc.d service. If you have an
 `/etc/rc.local` line from a previous install, remove it; the
@@ -615,7 +615,7 @@ FreeBSD GENERIC includes `hkbd` and `ukbd` statically. These
 attach to USB keyboards before inputfs sees them, leaving
 inputfs with no devices to own. Symptoms: `kldstat` shows
 inputfs loaded but `ls /var/run/sema/input/` shows the state
-region has no devices, and keyboard input does not reach UTF
+region has no devices, and keyboard input does not reach Awase
 clients.
 
 Resolutions, in increasing order of effort:
@@ -625,7 +625,7 @@ Resolutions, in increasing order of effort:
    `BACKLOG.md` AD-8 for context.
 
 2. **Build and install the PGSD kernel.** This is the
-   supported configuration for full UTF testing. See
+   supported configuration for full Awase testing. See
    `pgsd-kernel/README.md` for the build steps, including the
    pkgbase-aware install path. Plan 30-60 minutes for the
    build.
@@ -656,7 +656,7 @@ Repeated half-completes compound the corruption.
 ### Hazard 4 — Zig version mismatch
 
 Zig point releases have substantial syntax and stdlib
-differences. UTF targets 0.16; older toolchains (0.14, 0.15)
+differences. Awase targets 0.16; older toolchains (0.14, 0.15)
 fail loudly with errors about reserved syntax, missing imports,
 or wrong stdlib paths.
 
@@ -666,7 +666,7 @@ ship a 0.16 build for your FreeBSD version.
 
 ### Hazard 5 — `/var/run` not actually tmpfs
 
-Step 1's verification is not optional. UTF's shared-memory
+Step 1's verification is not optional. Awase's shared-memory
 publication assumes tmpfs and may produce confusing failures
 (stale region files from previous boots, write performance
 degradation, file-mode mismatches) on a regular `/var/run`.
@@ -705,13 +705,13 @@ When semadraw-term (or any drawfs client) draws to the EFI
 framebuffer, the FreeBSD console (vt(4)) is still writing to
 that same physical memory. Boot messages, daemon startup output,
 and any dmesg entries written after semadrawd takes over will
-flash across the screen behind the UTF surface. Typing into
+flash across the screen behind the Awase surface. Typing into
 semadraw-term may also produce visible artifacts as vt(4)
 redraws its scrollback.
 
-This is not a UTF bug per se — drawfs maps the framebuffer for
+This is not a Awase bug per se — drawfs maps the framebuffer for
 its own use but does not negotiate exclusive ownership with
-vt(4). A real UTF session needs that handshake (see BACKLOG.md
+vt(4). A real Awase session needs that handshake (see BACKLOG.md
 AD-10). Until that lands, the workaround is to mute the console:
 
 ```
@@ -752,7 +752,7 @@ Recommendation:
   mute is fine.
 - **Multi-user or unattended hardware**: do *not* put
   `conscontrol mute on` in `/etc/rc.local`. Run it manually
-  per session when starting a UTF surface, accept that
+  per session when starting a Awase surface, accept that
   early-boot kernel messages will be visible behind the
   surface during the brief startup window.
 - **Either case**: the structural fix (BACKLOG.md AD-10;
@@ -795,7 +795,7 @@ the recovery steps in order:
 4. **Reboot** — fresh state for everything user- and
    kernel-side.
 5. **If reboot panics** — boot from FreeBSD USB rescue, mount
-   the root, edit `/boot/loader.conf` to remove anything UTF
+   the root, edit `/boot/loader.conf` to remove anything Awase
    added, and reboot. See Hazard 3.
 
 ## Uninstall
@@ -816,12 +816,12 @@ source tree at `~/awase` or anything under `/var/run/sema/`
   `inputfs/docs/D_VERIFICATION.md` to confirm the substrate is
   working.
 - Read `BACKLOG.md` to see the open work surface.
-- Read `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` for the framing
+- Read `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` for the framing
   that all the work descends from.
 
 ## Why this document exists
 
-UTF's install steps were previously distributed across several
+Awase's install steps were previously distributed across several
 documents (`README.md`, `pgsd-kernel/README.md`, `install.sh`
 comments, the inputfs proposal). A first-install operator had
 to triangulate. This document is the single end-to-end walkthrough

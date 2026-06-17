@@ -1,46 +1,46 @@
-# UTF USB / HID dependency boundary
+# Awase USB / HID dependency boundary
 
-This document describes the contract UTF expects from FreeBSD's
-USB and HID stacks, the specific surface UTF depends on, and the
-behaviours UTF would notice if those layers changed. It exists
-because UTF declines to own USB and to own the HID transport
+This document describes the contract Awase expects from FreeBSD's
+USB and HID stacks, the specific surface Awase depends on, and the
+behaviours Awase would notice if those layers changed. It exists
+because Awase declines to own USB and to own the HID transport
 layer, and that decision needs to be explicit at the boundary
 rather than spread across a dozen ADRs.
 
 ## Two layers, one contract
 
-UTF's input substrate (`inputfs`) attaches into FreeBSD's input
-hierarchy at one specific layer. Below that layer, UTF accepts the
-platform; above it, UTF owns the stack.
+Awase's input substrate (`inputfs`) attaches into FreeBSD's input
+hierarchy at one specific layer. Below that layer, Awase accepts the
+platform; above it, Awase owns the stack.
 
 ```
-              UTF owns:    semadrawd, clients (semainputd retired 2026-05-08)
+              Awase owns:    semadrawd, clients (semainputd retired 2026-05-08)
                               ▲
                               │  /var/run/sema/input ring
                               │
-             UTF owns:    inputfs.ko (this repository)
+             Awase owns:    inputfs.ko (this repository)
                               ▲
                               │  hidbus child attachment
                               │  HID report descriptor parsing
                               │  HID interrupt callbacks
                               │
-        UTF accepts:     hidbus, hid, usbhid (FreeBSD)
+        Awase accepts:     hidbus, hid, usbhid (FreeBSD)
                               ▲
                               │  USB endpoint I/O
                               │
-        UTF accepts:     usb, ehci/xhci/uhci/ohci (FreeBSD)
+        Awase accepts:     usb, ehci/xhci/uhci/ohci (FreeBSD)
                               ▲
                               │  PCI bus
                               │
-        UTF accepts:     pci, kernel (FreeBSD)
+        Awase accepts:     pci, kernel (FreeBSD)
 ```
 
-The horizontal line is the boundary this document records. UTF
-sees `hidbus_get_usage`, `hid_get_item`, `hid_intr_start`. UTF
+The horizontal line is the boundary this document records. Awase
+sees `hidbus_get_usage`, `hid_get_item`, `hid_intr_start`. Awase
 does not see USB endpoints, USB requests, or USB device
 descriptors; those live below the line.
 
-## What UTF requires of the platform
+## What Awase requires of the platform
 
 The required-surface enumeration is small. inputfs uses eleven
 specific entry points across `<dev/hid/hid.h>` and
@@ -71,7 +71,7 @@ contract.
 
 ### From the matching protocol
 
-UTF's `inputfs_devs[]` table at the top of `inputfs.c` lists the
+Awase's `inputfs_devs[]` table at the top of `inputfs.c` lists the
 TLCs (top-level collections) inputfs claims:
 
 - Generic Desktop / Mouse (0x01 / 0x02)
@@ -86,9 +86,9 @@ inputfs depends on `hidbus` matching its child drivers against
 this table. The table is the negotiation surface between inputfs
 and hidbus; ADR 0007 covers the design rationale.
 
-## What UTF deliberately does not use
+## What Awase deliberately does not use
 
-The boundary cuts here, not below. UTF's source tree does not
+The boundary cuts here, not below. Awase's source tree does not
 include any of the following, and the discipline says it should
 not:
 
@@ -99,10 +99,10 @@ not:
   All of that lives in `usbhid` and below.
 
 - **USB controller drivers.** `xhci`, `ehci`, `uhci`, `ohci` are
-  accepted as-is. UTF has no opinion on host-controller
+  accepted as-is. Awase has no opinion on host-controller
   selection or on which USB version the platform supports.
 
-- **Kernel HID report parsing internals.** UTF calls
+- **Kernel HID report parsing internals.** Awase calls
   `hid_start_parse` / `hid_get_item` and treats the returned
   `hid_item` as a stable struct, but does not look inside the
   parser state machine or implement its own descriptor walker.
@@ -116,7 +116,7 @@ not:
 
 - **HID-over-I²C.** Currently routed through `iichid` →
   hidbus; inputfs benefits from this transparently because the
-  hidbus child surface is the same. UTF does not depend on the
+  hidbus child surface is the same. Awase does not depend on the
   I²C path being present, only on hidbus producing a child when
   one is. Confirmed working on touchscreen-equipped laptops at
   Stage B.5 verification.
@@ -124,7 +124,7 @@ not:
 ## What changes in the platform would notice us
 
 The contract is most useful for predicting which platform
-changes UTF must adapt to and which it can absorb silently.
+changes Awase must adapt to and which it can absorb silently.
 
 ### Changes that would break inputfs
 
@@ -141,7 +141,7 @@ changes UTF must adapt to and which it can absorb silently.
   changes the usage encoding format, inputfs's match logic
   needs updating.
 
-- **Changing `hid_item` struct layout (binary).** UTF compiles
+- **Changing `hid_item` struct layout (binary).** Awase compiles
   against FreeBSD kernel headers and re-builds per release.
   ABI-level changes to `hid_item` are a recompile event, not a
   port event, but the rebuild is required. A field rename
@@ -149,7 +149,7 @@ changes UTF must adapt to and which it can absorb silently.
   as a compile error.
 
 - **Removing the kernel-mode HID parser.** If FreeBSD pushed
-  HID descriptor parsing entirely into userland, UTF would need
+  HID descriptor parsing entirely into userland, Awase would need
   its own parser or to ship one alongside inputfs. This is
   hypothetical; no signal of such a change exists.
 
@@ -159,7 +159,7 @@ changes UTF must adapt to and which it can absorb silently.
   inputfs sees the symptom (events stop arriving for a device)
   but cannot diagnose below the hidbus boundary. The user-visible
   effect is "input device sometimes loses events"; the hidbus and
-  USB layers below would need debugging. UTF's response is to
+  USB layers below would need debugging. Awase's response is to
   log the gap once via the AD-13.2 suppression flag and continue.
 
 - **Power-management transitions losing HID state.** USB HID
@@ -179,7 +179,7 @@ changes UTF must adapt to and which it can absorb silently.
   must adapt to (extending the match table or accepting the
   device under a different role).
 
-### Changes UTF will not notice
+### Changes Awase will not notice
 
 - **USB controller swaps within a host-controller family.** If
   a system goes from `ehci` to `xhci` (USB 2 to USB 3), inputfs
@@ -196,10 +196,10 @@ changes UTF must adapt to and which it can absorb silently.
   byte stream but the parsed result is equivalent. inputfs
   re-classifies on attach; nothing else is required.
 
-## What UTF does if the boundary fails
+## What Awase does if the boundary fails
 
-Storage failure has its own document (`UTF_STORAGE_DEPENDENCY.md`)
-and a daemon-side ADR (`UTF_DAEMON_DEPENDENCY_ABSENCE.md`). The
+Storage failure has its own document (`AWASE_STORAGE_DEPENDENCY.md`)
+and a daemon-side ADR (`AWASE_DAEMON_DEPENDENCY_ABSENCE.md`). The
 USB/HID failure modes are smaller and live entirely in the
 kernel.
 
@@ -236,7 +236,7 @@ daemon side.
 
 Two practical consequences of recording the boundary:
 
-1. **The work to port UTF to a non-FreeBSD platform is bounded
+1. **The work to port Awase to a non-FreeBSD platform is bounded
    by this document.** A NetBSD or OpenBSD port of inputfs needs
    either a `hidbus`-equivalent layer on those platforms or a
    re-implementation of the eleven entry points above. Neither
@@ -244,9 +244,9 @@ Two practical consequences of recording the boundary:
    future major-version FreeBSD that significantly changes the
    HID stack.
 
-2. **UTF's substrate stays on the right side of the
+2. **Awase's substrate stays on the right side of the
    `accept-fence-replace` decision for USB/HID.** The discipline
-   doc says UTF accepts FreeBSD's USB stack and the controller
+   doc says Awase accepts FreeBSD's USB stack and the controller
    drivers; this document confirms that the acceptance is not
    begrudging. The eleven entry points are stable, the contract
    is small, the failure modes are recoverable. There is no
@@ -256,16 +256,16 @@ Two practical consequences of recording the boundary:
 
 ## References
 
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`, accepted-dependency
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`, accepted-dependency
   list. The "USB and HID transport" entry references this
   document for the boundary detail.
 - `docs/FREEBSD_SUBSYSTEMS.md`, subsystem-by-subsystem
   classification. The "Input subsystem" table covers the
   per-driver disposition; this document covers the contract
-  with the layers UTF accepts.
-- `docs/UTF_STORAGE_DEPENDENCY.md`, sibling doc, same shape,
+  with the layers Awase accepts.
+- `docs/AWASE_STORAGE_DEPENDENCY.md`, sibling doc, same shape,
   storage instead of input.
-- `docs/UTF_DAEMON_DEPENDENCY_ABSENCE.md`, daemon-side
+- `docs/AWASE_DAEMON_DEPENDENCY_ABSENCE.md`, daemon-side
   failure-mode policy (Posture 3 degradation).
 - `inputfs/docs/adr/0006-usb-device-ownership.md`, design
   rationale for not owning the USB transport layer.

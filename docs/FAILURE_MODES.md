@@ -1,20 +1,20 @@
-# UTF Failure Modes
+# Awase Failure Modes
 
 Status: Stated, 2026-04-29. Updated 2026-06-05 for the post-F.6
 stack: the clock writer is the audiofs kernel module (F.4, ADR
 0018), the audio daemon is semasound under s6 supervision, and
 the semaaud-era entries are replaced.
 
-This document catalogs the runtime failure modes of UTF
+This document catalogs the runtime failure modes of Awase
 substrates. Each entry names a mode, describes what triggers
 it, gives the log signal an operator can grep for, states
-how UTF responds, and explains how to recover.
+how Awase responds, and explains how to recover.
 
 The catalog is meant for operators and contributors. It is
 not exhaustive: software bugs (assertion failures, kernel
 panics from broken hardware, build errors) are out of scope
 here. Those are bugs to fix, not modes to document. What is
-in scope is the set of runtime conditions UTF deliberately
+in scope is the set of runtime conditions Awase deliberately
 handles, where the response is part of the design rather
 than an accident.
 
@@ -395,7 +395,7 @@ exits; s6-log records it under
 applies flap protection if the failure persists.
 
 **Response.** Posture 2 per
-`UTF_DAEMON_DEPENDENCY_ABSENCE.md`: exit cleanly, let
+`AWASE_DAEMON_DEPENDENCY_ABSENCE.md`: exit cleanly, let
 supervision retry. The clock is unaffected in either
 direction (the kernel writes it; a dead broker stops mixing,
 not time).
@@ -426,7 +426,7 @@ diagnose from the s6-log.
 
 ### Status verb run unprivileged misreports supervision
 
-**Trigger.** `service semasound status` (or any UTF shim's
+**Trigger.** `service semasound status` (or any Awase shim's
 status/stop verb) run without sudo. `supervise/` is
 root-owned mode 0700, so `s6-svok` fails with EACCES, which
 is indistinguishable from absence by exit code.
@@ -467,11 +467,11 @@ Tooling must implement this, not bare pkill.
 ### tmpfs at /var/run fills up
 
 **Trigger.** Some other process on the system fills
-`/var/run` (UTF's publication files are a few KB to
+`/var/run` (Awase's publication files are a few KB to
 ~70 KB each, well below the size that would cause this
 on a typical tmpfs).
 
-**Signal.** UTF processes that try to create or extend
+**Signal.** Awase processes that try to create or extend
 files under `/var/run/sema/` log ENOSPC errors per the
 inputfs vn_open mode above.
 
@@ -513,16 +513,16 @@ behaviour the code does not deliver.
 The structure deliberately avoids prescribing operator
 runbooks beyond the immediate recovery step. Specific
 operational procedures (escalation, alerting thresholds,
-maintenance windows) belong to the operator, not to UTF.
+maintenance windows) belong to the operator, not to Awase.
 
 Related documents:
 
 - `docs/Thoughts.md`: the temporal-substrate framing,
   including drift handling and the three graphics
   strategies.
-- `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`: the
+- `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`: the
   replace/accept/remove discipline that informs which
-  failure modes UTF chooses to handle versus delegate
+  failure modes Awase chooses to handle versus delegate
   to the platform.
 - `inputfs/docs/adr/0013-publication-permissions.md`:
   the threat model that informs the permission-denied

@@ -532,7 +532,7 @@ test "parseSessionFile happy path" {
     const sample =
         \\# default.session
         \\[PGSD Session]
-        \\Name=Default UTF Session
+        \\Name=Default Awase Session
         \\Exec=exec semadraw-term --fullscreen --scale 3
         \\Comment=PGSD's default session
         \\
@@ -540,7 +540,7 @@ test "parseSessionFile happy path" {
     var session = try parseSessionFile(testing.allocator, "default", sample);
     defer session.deinit(testing.allocator);
     try testing.expectEqualStrings("default", session.id);
-    try testing.expectEqualStrings("Default UTF Session", session.name);
+    try testing.expectEqualStrings("Default Awase Session", session.name);
     try testing.expectEqualStrings("exec semadraw-term --fullscreen --scale 3", session.exec);
     try testing.expectEqualStrings("PGSD's default session", session.comment.?);
 }
@@ -739,7 +739,7 @@ test "enumerate finds and sorts valid sessions" {
     );
     try writeTestSession(tmp_name, "default.session",
         \\[PGSD Session]
-        \\Name=Default UTF Session
+        \\Name=Default Awase Session
         \\Exec=default-cmd
         \\Comment=PGSD default
         \\

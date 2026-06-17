@@ -83,7 +83,7 @@
  * are not supported for verification.
  *
  * This file is part of the Awase project. See:
- *   docs/UTF_ARCHITECTURAL_DISCIPLINE.md
+ *   docs/AWASE_ARCHITECTURAL_DISCIPLINE.md
  *   inputfs/docs/inputfs-proposal.md
  *   inputfs/docs/foundations.md
  *   inputfs/docs/adr/0001-module-charter.md

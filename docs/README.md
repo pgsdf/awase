@@ -15,19 +15,19 @@ are accurate as of their stated date.
 
 | Document | Class | Subject |
 |---|---|---|
-| UTF_ARCHITECTURAL_DISCIPLINE.md | LIVING | The guarantee-path doctrine: what UTF writes vs accepts. |
-| UTF_PROJECT_SCOPE.md | LIVING | Substrate vs distribution scope. |
-| UTF_DAEMON_DEPENDENCY_ABSENCE.md | LIVING | Startup postures under missing dependencies. |
+| AWASE_ARCHITECTURAL_DISCIPLINE.md | LIVING | The guarantee-path doctrine: what Awase writes vs accepts. |
+| AWASE_PROJECT_SCOPE.md | LIVING | Substrate vs distribution scope. |
+| AWASE_DAEMON_DEPENDENCY_ABSENCE.md | LIVING | Startup postures under missing dependencies. |
 | FAILURE_MODES.md | LIVING | Operator-facing runtime failure catalog. |
-| UTF_STORAGE_DEPENDENCY.md | LIVING | Filesystem and persistence expectations. |
-| UTF_USB_HID_BOUNDARY.md | LIVING | Where UTF's input ownership begins. |
-| UTF_ZIG_STDLIB_BOUNDARY.md | LIVING | Which stdlib facilities the guarantee path may use. |
+| AWASE_STORAGE_DEPENDENCY.md | LIVING | Filesystem and persistence expectations. |
+| AWASE_USB_HID_BOUNDARY.md | LIVING | Where Awase's input ownership begins. |
+| AWASE_ZIG_STDLIB_BOUNDARY.md | LIVING | Which stdlib facilities the guarantee path may use. |
 | FREEBSD_SUBSYSTEMS.md | LIVING | Disposition table for FreeBSD subsystems. |
-| FREEBSD_IMPROVEMENTS.md | LIVING | Improvements UTF would want upstream. |
-| FREEBSD_ISSUES.md | LIVING | Known platform issues affecting UTF. |
+| FREEBSD_IMPROVEMENTS.md | LIVING | Improvements Awase would want upstream. |
+| FREEBSD_ISSUES.md | LIVING | Known platform issues affecting Awase. |
 | POLICY.md | LIVING | PGSD account model and regulatory posture. |
 | PROTOCOL_NAMESPACE_CONVENTION.md | LIVING | Protocol naming rules. |
-| does-utf-have-a-framebuffer.md | LIVING | The framebuffer question, answered. |
+| does-awase-have-a-framebuffer.md | LIVING | The framebuffer question, answered. |
 | Thoughts.md | RECORD | chronofs architecture design (the design held; ADRs govern changes). |
 | PROTOCOL_MISMATCH_FINDINGS.md | RECORD | Integration audit, resolved. |
 | AD12_VERIFICATION.md | RECORD | AD-12 sign-off, 2026-05-05. |

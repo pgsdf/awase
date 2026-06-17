@@ -572,7 +572,7 @@ and bind to localhost if you do."
     address."
   - **BACKLOG AD-31 entry**: scope summary and stage
     breakdown.
-  - **`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`**: the
+  - **`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`**: the
     discipline grounding for why this work matters.
     semadrawd's runtime privilege is "external" in the
     sense that running as root means the daemon's bugs

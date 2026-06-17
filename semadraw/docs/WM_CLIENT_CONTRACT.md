@@ -147,7 +147,7 @@ policy traces, session snapshots).
 
 ## Milestone sequencing (NDE ROADMAP)
 
-NDE's own ROADMAP scopes Milestone 1 (which UTF NDE-1 tracks) as
+NDE's own ROADMAP scopes Milestone 1 (which Awase NDE-1 tracks) as
 "basic window policy: focus, raise, close", not the full section 3.2.
 That maps to the substrate cleanly: raise is set_z_order (provided),
 close is destroy_surface (provided), and focus is Gap 1. So only

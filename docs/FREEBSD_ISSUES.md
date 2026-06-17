@@ -1,19 +1,19 @@
-# FreeBSD Issues Encountered by UTF
+# FreeBSD Issues Encountered by Awase
 
-This document catalogues issues UTF has encountered with the
+This document catalogues issues Awase has encountered with the
 underlying FreeBSD kernel, userland, or development tools. Each
 entry records the symptom, the localised cause, the diagnostic
 evidence, and the current disposition (unresolved, worked-around,
 upstreamed, etc.). The intent is to keep institutional memory
-about kernel-side behaviours that affect UTF's design, so future
+about kernel-side behaviours that affect Awase's design, so future
 sessions can recognise familiar symptoms and avoid rediscovering
 known issues from scratch.
 
 This is a catalogue, not a list of grievances. FreeBSD is the
-substrate UTF runs on; issues here are recorded with respect for
+substrate Awase runs on; issues here are recorded with respect for
 the platform and with the assumption that, where the cause is in
 FreeBSD, the right long-term answer involves upstreaming a fix.
-Where UTF works around an issue, the entry documents the
+Where Awase works around an issue, the entry documents the
 workaround and its trade-offs.
 
 ## Format
@@ -36,8 +36,8 @@ The probe sequence or bench cycle that pinned down the cause.
 ### Disposition
 Open / worked-around / upstreamed / fixed.
 
-### UTF's response
-How UTF currently deals with this (or plans to).
+### Awase's response
+How Awase currently deals with this (or plans to).
 
 ### Related
 ADRs, BACKLOG entries, or other documents.
@@ -45,11 +45,11 @@ ADRs, BACKLOG entries, or other documents.
 
 Status values:
 - **Open**: known issue, no decision yet about how to address.
-- **Worked-around**: UTF has chosen a workaround that bypasses
+- **Worked-around**: Awase has chosen a workaround that bypasses
   the issue; the underlying problem is unresolved.
 - **Upstreamed**: a patch has been sent to FreeBSD; tracking the
   upstream's response.
-- **Fixed**: resolved either upstream or by a UTF-side change
+- **Fixed**: resolved either upstream or by a Awase-side change
   that no longer encounters the issue.
 
 ---
@@ -200,14 +200,14 @@ writes at varying offsets do not trigger the bug.
 
 ### Disposition
 
-**Worked around (UTF side).** No upstream FreeBSD investigation
-has been performed yet, but UTF's affected consumer
+**Worked around (Awase side).** No upstream FreeBSD investigation
+has been performed yet, but Awase's affected consumer
 (semadrawd's cursor pump) is being migrated to a code path that
 avoids the broken access pattern. See **ADR 0008** for the
 decision and **AD-36 onward** for the implementation. The
 underlying kernel-side question remains open as **AD-34**.
 
-### UTF's response
+### Awase's response
 
 **ADR 0008 (Accepted, 2026-05-12)** selects Direction 2:
 switch semadrawd to consume the inputfs event ring instead

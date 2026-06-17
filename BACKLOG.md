@@ -93,7 +93,7 @@ changing.
 7. UTF depends only on code written with UTF's guarantees in mind.
    External dependencies are either replaced by UTF-owned code or
    explicitly accepted as named platform-transport dependencies.
-   See `docs/UTF_ARCHITECTURAL_DISCIPLINE.md` for the accepted list
+   See `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md` for the accepted list
    and the three postures (Replace / Accept / Remove).
 
 ---
@@ -831,7 +831,7 @@ matches the Fix paragraph above; no further work.
 
 The project's discipline (UTF depends only on code written with UTF's
 guarantees in mind) is stated in full at
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`. This section tracks the work
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`. This section tracks the work
 streams that apply the discipline to subsystems where external
 dependencies currently sit inside UTF's guarantee path. Items here
 represent multi-stage replacements, not individual features; each
@@ -901,7 +901,7 @@ of this entry. Stage E
 hardening was completed before that cutover.
 
 Stage A delivered the proposal, foundations,
-`UTF_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
+`AWASE_ARCHITECTURAL_DISCIPLINE.md`, ADRs 0001 through 0011, and
 four byte-level companion specs (`shared/INPUT_STATE.md`,
 `shared/INPUT_EVENTS.md`, `shared/INPUT_FOCUS.md`, and
 `shared/INPUT_IOCTL.md`). Stage B delivered HID attachment via

@@ -1,4 +1,4 @@
-# UTF / PGSD project scope
+# Awase / PGSD project scope
 
 Status: Project-defining document, 2026-05-17. This is a
 constitutional statement of what the project is. It is
@@ -66,7 +66,7 @@ tolerated:
   while blob obstruction is in fact occurring and the
   hardware stage has not been entered, that is tracked as
   architectural debt, not invisible equilibrium. The
-  governing principle is `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`
+  governing principle is `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`
   ("Governance independence: why ownership, not just
   correctness") and its `hms(4)` precedent: tolerated
   dependence left unguided is how a transitional state

@@ -89,10 +89,10 @@ to avoid intermediate overflow.
 
 One-Euro is normatively defined by the canonical implementation
 in `inputfs_smooth.c`. The algorithm is *inspired by* the
-Casiez/Roussel/Vogel One-Euro paper but is specified by UTF in
+Casiez/Roussel/Vogel One-Euro paper but is specified by Awase in
 fixed-point; bit-for-bit equivalence with floating-point One-Euro
-implementations is not a goal. UTF One-Euro replays identically
-against UTF.
+implementations is not a goal. Awase One-Euro replays identically
+against Awase.
 
 The state machinery (previous smoothed coordinate, previous
 derivative, previous tick) is per-axis and lives in the kernel

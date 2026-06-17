@@ -50,7 +50,7 @@ hardware sample position behind its own buffering model is
 incompatible with this commitment.
 
 **Specifiable behaviour.** UTF's discipline (in
-`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`) says external code stays
+`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`) says external code stays
 out of the guarantee path. If audio behaviour is determined by
 "whatever the loaded audio driver happens to do," UTF's audio
 behaviour is not specifiable; it depends on `snd(4)` driver
@@ -787,7 +787,7 @@ something landed) and then the Q2-as-substrate-vs-broker ADR
     Unaffected by this discovery.
   - `docs/Thoughts.md`: chronofs's discovery document. Voice
     and shape model for the present document.
-  - `docs/UTF_ARCHITECTURAL_DISCIPLINE.md`: the discipline
+  - `docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`: the discipline
     grounding. The "where the discipline argument is strong /
     weak" section above is a focused application of this
     document to audio.

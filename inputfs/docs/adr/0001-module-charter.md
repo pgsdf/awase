@@ -5,7 +5,7 @@ Status: Proposed
 ## Context
 
 UTF replaces evdev with a UTF-owned kernel input substrate. The
-discipline document (`docs/UTF_ARCHITECTURAL_DISCIPLINE.md`)
+discipline document (`docs/AWASE_ARCHITECTURAL_DISCIPLINE.md`)
 classifies evdev, bsdinput, and libinput as external dependencies
 inside UTF's guarantee path, to be addressed under the Replace
 posture. The inputfs proposal
