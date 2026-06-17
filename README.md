@@ -483,10 +483,13 @@ line to `/etc/fstab`:
 tmpfs /var/run tmpfs rw,mode=755 0 0
 ```
 
-After editing `fstab`, either reboot or run `sudo mount /var/run` to
-activate. Confirm with `mount | grep /var/run` (expect a `tmpfs on
-/var/run` line). The inputfs verification protocol assumes this
-configuration; running on a non-tmpfs `/var/run` is unsupported.
+After editing `fstab`, either reboot or run `mount /var/run` as
+root to activate. Confirm with `mount | grep /var/run` (expect a
+`tmpfs on /var/run` line). `install.sh` also ensures this itself
+(it loads the `tmpfs` module and mounts `/var/run` if needed), so
+on an installer-driven setup the manual mount is belt-and-braces.
+The inputfs verification protocol assumes this configuration;
+running on a non-tmpfs `/var/run` is unsupported.
 
 ### PGSD kernel configuration
 
@@ -509,9 +512,9 @@ Awase's substrate publication files default to mode `0600`, owned by
 `root:wheel`, per ADR 0013
 (`inputfs/docs/adr/0013-publication-permissions.md`). On a
 single-user dev or bench system, no further configuration is needed:
-all Awase daemons run as root by default, all consumers run through
-`sudo`, and the substrate is uniformly accessible within that root
-context.
+all Awase daemons run as root by default, all consumers reach the
+substrate by elevating (through `mdo`, or `sudo` if you prefer), and
+the substrate is uniformly accessible within that root context.
 
 On a multi-user system, operators relax the defaults through the
 operating system rather than through Awase-specific configuration. Two
@@ -563,7 +566,12 @@ drawfs's cdev follows the same convention with parallel sysctls
 Each subsystem builds on its own; the root `zig build` and `build.sh`
 aggregate the userland subprojects, and `install.sh` performs the
 full deployment (kernel modules, binaries, rc.d shims, and the s6
-supervision tree) per `INSTALL.md`.
+supervision tree) per `INSTALL.md`. `install.sh` runs as a regular
+user and elevates the steps that need root through `mdo`: the
+userland build is unprivileged, only the deploy phase is elevated,
+and nothing in the checkout is left root-owned. On a GENERIC kernel
+it also offers to build and install the PGSD kernel. See `INSTALL.md`
+Step 0 for the one-time `mac_do` provisioning the installer needs.
 
 The canonical source location on a deployed system is
 `/usr/local/src/Awase/`, aligned with `hier(7)`. See INSTALL.md Step 3
