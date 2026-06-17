@@ -627,18 +627,35 @@ migrate_from_utf() {
     _mig=0
     _devfs_rules="/etc/devfs.rules"
 
-    # 1. Stop the old UTF supervisor cleanly (ADR 0030 Decision 4: stop
-    #    supervision before removing what it owns). Bringing down the old
-    #    s6-svscan tears down its children; the Awase supervisor started at
-    #    the end of this install re-supervises them, so no service is left
-    #    running unsupervised.
-    if [ -f "$PREFIX/etc/rc.d/utf-supervisor" ] || [ -f "/etc/rc.d/utf-supervisor" ]; then
-        service utf-supervisor stop >/dev/null 2>&1 \
-            && echo "  migrate  stopped utf-supervisor (old tree torn down)" || true
-        _mig=1
-    elif pgrep -f "s6-svscan /var/service/utf" >/dev/null 2>&1; then
-        /usr/local/bin/s6-svscanctl -t /var/service/utf 2>/dev/null \
-            && echo "  migrate  stopped s6-svscan on /var/service/utf (direct)" || true
+    # 1. Stop the old UTF supervisor without blocking (ADR 0030 Decision 4:
+    #    stop supervision before removing what it owns). We deliberately do NOT
+    #    call `service utf-supervisor stop`: its rc.d stop drains the s6 tree
+    #    synchronously, and if a supervised daemon is slow to exit on SIGTERM
+    #    that drain blocks the upgrade indefinitely. Instead signal s6-svscan to
+    #    terminate (returns at once), then wait for the supervisor pid to clear
+    #    with a timeout and SIGKILL on expiry, the same shape as the Awase
+    #    restart block below. The Awase supervisor started at the end
+    #    re-supervises the daemons, so no service is left running unsupervised.
+    _utf_pid="$(cat /var/run/utf-supervisor.pid 2>/dev/null || true)"
+    if [ -d /var/service/utf ] || [ -n "$_utf_pid" ] \
+       || pgrep -f "s6-svscan /var/service/utf" >/dev/null 2>&1; then
+        if pgrep -f "s6-svscan /var/service/utf" >/dev/null 2>&1; then
+            echo "  migrate  stopping old utf-supervisor"
+            /usr/local/bin/s6-svscanctl -t /var/service/utf 2>/dev/null || true
+        fi
+        _waited=0
+        while [ -n "$_utf_pid" ] && kill -0 "$_utf_pid" 2>/dev/null; do
+            if [ "$_waited" -ge "${RESTART_TIMEOUT:-15}" ]; then
+                echo "  WARNING: utf-supervisor did not exit in ${RESTART_TIMEOUT:-15}s; sending SIGKILL" >&2
+                kill -9 "$_utf_pid" 2>/dev/null || true
+                pkill -f "s6-svscan /var/service/utf" 2>/dev/null || true
+                sleep 1
+                break
+            fi
+            sleep 1
+            _waited=$((_waited + 1))
+            _utf_pid="$(cat /var/run/utf-supervisor.pid 2>/dev/null || true)"
+        done
         _mig=1
     fi
 
