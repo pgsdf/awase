@@ -3,7 +3,7 @@
 # Builds all daemons and installs them to PREFIX (default: /usr/local).
 #
 # Usage:
-#   sh install.sh                  # install to /usr/local (requires root)
+#   sh install.sh                  # install to /usr/local (run as a regular user; elevates via mdo)
 #   sh install.sh --prefix ~/awase   # install to custom prefix
 #   sh install.sh --check          # verify dependencies only
 #   sh install.sh --uninstall      # remove installed files
@@ -63,300 +63,46 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# ============================================================================
-# AD-12.1 footgun guard: refuse when launched from inside semadraw-term
-# ============================================================================
-#
-# The install (and uninstall) stops semadrawd to replace daemon binaries.
-# semadraw-term draws through semadrawd, so when this script is launched from
-# a semadraw-term the display freezes the instant semadrawd is stopped and
-# only returns after the post-install restart. That looks exactly like a hang
-# at "Installing to PREFIX/bin", and a mistaken Ctrl-C mid-install (semadrawd
-# down, binaries half-swapped) is the real hazard. Detect the case and steer
-# the operator to a session that does not depend on semadrawd, e.g. SSH.
-#
-# Detection is by process ancestry, not an environment variable. This script
-# normally runs under sudo, which scrubs the environment by default, so a
-# SEMADRAW_TERM marker exported to the child shell does not survive into this
-# process. Walking the parent-pid chain from $$ does survive sudo, since
-# sudo's parent is the operator's shell whose ancestor is the semadraw-term
-# process. The SEMADRAW_TERM marker is honoured too as a cheap secondary
-# signal for sudo -E or env_keep setups.
-running_inside_semadraw_term() {
-    [ -n "${SEMADRAW_TERM:-}" ] && return 0
-    _pid=$$
-    _hops=0
-    while [ "${_pid:-0}" -gt 1 ] && [ "$_hops" -lt 24 ]; do
-        _comm=$(ps -o comm= -p "$_pid" 2>/dev/null) || break
-        case "$_comm" in
-            *semadraw-term*) return 0 ;;
-        esac
-        _pid=$(ps -o ppid= -p "$_pid" 2>/dev/null | tr -d ' ')
-        [ -n "$_pid" ] || break
-        _hops=$((_hops + 1))
-    done
-    return 1
-}
-
-if [ "$CHECK_ONLY" -eq 0 ] && [ "$ALLOW_SEMADRAW_TERM" -eq 0 ] \
-   && running_inside_semadraw_term && pgrep -x semadrawd >/dev/null 2>&1; then
-    echo "" >&2
-    echo "ERROR: install.sh appears to be running inside a semadraw-term session" >&2
-    echo "       while semadrawd is running." >&2
-    echo "" >&2
-    echo "       This install stops semadrawd to replace its binary. semadraw-term" >&2
-    echo "       draws through semadrawd, so the display would freeze at" >&2
-    echo "       \"Installing to $PREFIX/bin\" until semadrawd is restarted at the" >&2
-    echo "       end of the install. It is not hung, but it looks like one, and a" >&2
-    echo "       mistaken Ctrl-C mid-install is dangerous." >&2
-    echo "" >&2
-    echo "       Re-run from a session that does not depend on semadrawd, e.g. SSH:" >&2
-    echo "         ssh <user>@<host>" >&2
-    echo "         cd $SCRIPT_DIR && sudo sh install.sh" >&2
-    echo "" >&2
-    echo "       Or, if you understand the freeze and will wait it out:" >&2
-    echo "         sudo sh install.sh --allow-semadraw-term" >&2
-    echo "" >&2
-    exit 1
-fi
+# ADR shared 0005: when re-executed into the deploy phase, the parsed flags
+# arrive through the environment, since the re-exec carries no argv.
+PREFIX="${AWASE_PREFIX:-$PREFIX}"
+ASSUME_YES="${AWASE_ASSUME_YES:-$ASSUME_YES}"
+ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
 
 # ============================================================================
-# Dependency check
-# ============================================================================
-
-check_dep() {
-    if command -v "$1" >/dev/null 2>&1; then
-        echo "  ok  $1 ($(command -v "$1"))"
-        return 0
-    else
-        echo "  -- $1 not found"
-        return 1
-    fi
-}
-
-echo "=== Checking dependencies ==="
-
-# MISSING_PKGS is populated with the package names that need to be
-# installed before the build can proceed. Each binary check translates
-# to a package name on FreeBSD/GhostBSD via pkg(8). The consent step
-# offers to install everything in MISSING_PKGS; binaries already
-# present get no entry.
-MISSING_PKGS=""
-
-# The Zig compiler is vendored at sdk/zig/current and invoked only through
-# tools/zig (bootstrapped on first use); the build never uses a system Zig,
-# so it is not a pkg dependency. Report the pinned toolchain version.
-ZIG_VER=$("$SCRIPT_DIR/tools/zig" version 2>/dev/null | head -1)
-echo "  ok  vendored zig $ZIG_VER (sdk/zig/current)"
-
-# AD-20: s6 supervision suite. The s6 package provides all five
-# binaries (svscan, svc, svstat, svok, log); a single pkg install
-# brings them all in. Check one binary and treat its absence as
-# the whole-package absence signal.
-if ! check_dep s6-svscan; then
-    MISSING_PKGS="$MISSING_PKGS s6"
-fi
-
-# rsync is required by drawfs/build.sh and inputfs/build.sh during
-# kernel module deployment. Not in FreeBSD base; must come from pkg.
-if ! check_dep rsync; then
-    MISSING_PKGS="$MISSING_PKGS rsync"
-fi
-
-# Strip leading whitespace from MISSING_PKGS for cleaner display.
-MISSING_PKGS="${MISSING_PKGS# }"
-
-# --check is a read-only inspection: report and exit, without
-# attempting any installation.
-if [ "$CHECK_ONLY" -eq 1 ]; then
-    if [ -z "$MISSING_PKGS" ]; then
-        echo "All dependencies present."
-        exit 0
-    else
-        echo ""
-        echo "Missing packages: $MISSING_PKGS"
-        echo "Install with: sudo pkg install -y $MISSING_PKGS"
-        exit 1
-    fi
-fi
-
-# ============================================================================
-# Root check
+# Privilege model (ADR shared 0005: unprivileged-first installation)
 # ============================================================================
 #
-# Operations from this point on modify system state (write to /etc/fstab,
-# call pw useradd, install files under PREFIX, register rc.d scripts).
-# All require root. Bail early with a clear message rather than letting
-# individual operations fail downstream in confusing ways.
+# install.sh runs as a regular user. Privileged operations elevate through
+# $PRIV: mac_do (mdo) by default, sudo supported via PRIV=sudo. AWASE_PHASE
+# drives a two-phase re-execution: the build phase (default) runs the userland
+# Zig builds as the invoking user so they never leave root-owned files in the
+# checkout, then re-execs into the deploy phase as root for kernel components,
+# installation, configuration, and service activation.
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "ERROR: install.sh requires root for system-level installation." >&2
-    echo "       re-run as: sudo sh install.sh" >&2
-    echo "       or use --check to verify dependencies without installing." >&2
-    exit 1
-fi
-
-# ============================================================================
-# /var/run tmpfs prerequisite
-# ============================================================================
-#
-# Awase publishes shared-memory regions under /var/run/sema/. The defaults
-# on FreeBSD put /var/run on the same filesystem as /var, which makes
-# shared-memory writes slower and leaves stale state files across reboots.
-# Awase assumes tmpfs.
-#
-# Idempotent: only add the fstab entry if not already present, only mount
-# if not already mounted as tmpfs. INSTALL.md Step 1 documents the manual
-# version of these steps for operators who prefer to make the change
-# themselves.
-
-FSTAB_ENTRY="tmpfs   /var/run   tmpfs   rw,mode=755   0   0"
-
-if ! grep -qE "^[[:space:]]*tmpfs[[:space:]]+/var/run[[:space:]]+tmpfs" /etc/fstab; then
-    printf "%s\n" "$FSTAB_ENTRY" >> /etc/fstab
-    echo "  added /var/run tmpfs entry to /etc/fstab"
-else
-    echo "  ok  /etc/fstab already has /var/run tmpfs entry"
-fi
-
-if ! mount | grep -qE "^tmpfs on /var/run "; then
-    if mount /var/run 2>/dev/null; then
-        echo "  mounted /var/run as tmpfs"
-    else
-        echo "ERROR: failed to mount /var/run as tmpfs" >&2
-        echo "       check /etc/fstab and try: sudo mount /var/run" >&2
-        exit 1
-    fi
-else
-    echo "  ok  /var/run already mounted as tmpfs"
-fi
+PRIV="${PRIV:-mdo}"
+priv() { "$PRIV" "$@"; }
+AWASE_PHASE="${AWASE_PHASE:-build}"
 
 # ============================================================================
-# OS-specific source-tree packages
+# Uninstall (privileged terminal path)
 # ============================================================================
 #
-# Building the PGSD kernel and the drawfs/inputfs modules requires the
-# OS source tree at /usr/src. On FreeBSD this comes from FreeBSD-src
-# and FreeBSD-src-sys; on GhostBSD from GhostBSD-src and GhostBSD-src-sys.
-# These are pkgbase package names. Add them to MISSING_PKGS only if not
-# already installed.
-
-check_pkg_installed() {
-    pkg info -e "$1" >/dev/null 2>&1
-}
-
-case "$UTF_OS" in
-    freebsd)
-        for p in FreeBSD-src FreeBSD-src-sys; do
-            if ! check_pkg_installed "$p"; then
-                MISSING_PKGS="$MISSING_PKGS $p"
-                echo "  -- $p not installed"
-            else
-                echo "  ok  $p installed"
-            fi
-        done
-        ;;
-    ghostbsd)
-        for p in GhostBSD-src GhostBSD-src-sys; do
-            if ! check_pkg_installed "$p"; then
-                MISSING_PKGS="$MISSING_PKGS $p"
-                echo "  -- $p not installed"
-            else
-                echo "  ok  $p installed"
-            fi
-        done
-        ;;
-    *)
-        echo "  ?? unknown OS ($UTF_OS); skipping source-tree package check"
-        ;;
-esac
-
-MISSING_PKGS="${MISSING_PKGS# }"
-
-# ============================================================================
-# Consent and package install
-# ============================================================================
-#
-# If anything in MISSING_PKGS, offer to pkg-install. The consent step
-# uses bsddialog when running interactively (TTY on stdin and stdout,
-# --yes not passed). When non-interactive without --yes, bail with a
-# clear message rather than silently modifying the system.
-#
-# pkg install failures are warned about, not fatal: the operator can
-# install missing packages manually and re-run install.sh.
-
-if [ -n "$MISSING_PKGS" ]; then
-    INTERACTIVE=0
-    if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
-        INTERACTIVE=1
-    fi
-
-    if [ "$INTERACTIVE" -eq 1 ]; then
-        # bsddialog must be available for the consent dialog.
-        if ! command -v bsddialog >/dev/null 2>&1; then
-            echo "ERROR: bsddialog not found; required for interactive consent." >&2
-            echo "       install with: sudo pkg install -y bsddialog" >&2
-            echo "       or re-run install.sh with --yes to skip the dialog." >&2
-            exit 1
-        fi
-
-        # Build a human-readable summary for the dialog body.
-        dialog_body="The following packages are not installed:
-
-$(printf "    %s\n" $MISSING_PKGS)
-
-Install them now via pkg(8)?
-
-(Choose No to abort; install the packages manually and re-run.)"
-
-        if ! bsddialog --title "Awase installer: package installation" \
-                       --yesno "$dialog_body" 15 60; then
-            echo "ABORTED: user declined package install" >&2
-            exit 1
-        fi
-    elif [ "$ASSUME_YES" -eq 0 ]; then
-        # Non-interactive without --yes: refuse to act.
-        echo "ERROR: missing packages and not running interactively." >&2
-        echo "       missing: $MISSING_PKGS" >&2
-        echo "       re-run as: sudo sh install.sh --yes" >&2
-        echo "       or install the packages first and re-run:" >&2
-        echo "         sudo pkg install -y $MISSING_PKGS" >&2
-        exit 1
-    fi
-
-    # Apply installations. Each pkg install runs independently and any
-    # failure is warned, not fatal: the user may want to install a
-    # subset manually and re-run.
-    echo "=== Installing missing packages ==="
-    INSTALL_FAILED=""
-    for pkg_name in $MISSING_PKGS; do
-        echo "  installing $pkg_name..."
-        if pkg install -y "$pkg_name" 2>&1 | tail -3; then
-            if check_pkg_installed "$pkg_name"; then
-                echo "  ok  $pkg_name installed"
-            else
-                INSTALL_FAILED="$INSTALL_FAILED $pkg_name"
-                echo "  WARN: $pkg_name install completed but pkg info -e disagrees"
-            fi
-        else
-            INSTALL_FAILED="$INSTALL_FAILED $pkg_name"
-            echo "  WARN: pkg install $pkg_name returned non-zero"
-        fi
-    done
-
-    if [ -n "$INSTALL_FAILED" ]; then
-        echo "" >&2
-        echo "WARNING: the following packages did not install cleanly:" >&2
-        echo "  $INSTALL_FAILED" >&2
-        echo "  install them manually and re-run install.sh if the build fails." >&2
-    fi
-fi
-
-# ============================================================================
-# Uninstall
-# ============================================================================
+# Uninstall is entirely privileged and neither builds nor installs packages,
+# so it is handled before the build/deploy phases. When not already root it
+# elevates once through $PRIV and re-runs.
 
 if [ "$UNINSTALL" -eq 1 ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "=== Elevating for uninstall ($PRIV) ==="
+        exec env \
+            HOME=/root \
+            PATH=/usr/local/bin:/usr/bin:/bin \
+            AWASE_PREFIX="$PREFIX" \
+            "$PRIV" "$0"
+        echo "ERROR: could not elevate via $PRIV (use PRIV=sudo if no mac_do)." >&2
+        exit 1
+    fi
     # ADR 0030 Decision 4 (the takeover protocol, uninstall direction):
     # stop supervision BEFORE removing anything it owns. Removing the
     # scan tree or the daemon binaries while s6-svscan is running
@@ -505,8 +251,253 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 # ============================================================================
-# Build
+# Phase 1: unprivileged build (runs as the invoking user). ADR 0005 D1, D2.
 # ============================================================================
+
+if [ "$AWASE_PHASE" = build ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "ERROR: run install.sh as a regular user, not root (ADR 0005)." >&2
+        echo "       It builds the userland as you and elevates the rest through" >&2
+        echo "       \$PRIV ($PRIV); do not use sudo, the script elevates itself." >&2
+        exit 1
+    fi
+
+# ============================================================================
+# AD-12.1 footgun guard: refuse when launched from inside semadraw-term
+# ============================================================================
+#
+# The install (and uninstall) stops semadrawd to replace daemon binaries.
+# semadraw-term draws through semadrawd, so when this script is launched from
+# a semadraw-term the display freezes the instant semadrawd is stopped and
+# only returns after the post-install restart. That looks exactly like a hang
+# at "Installing to PREFIX/bin", and a mistaken Ctrl-C mid-install (semadrawd
+# down, binaries half-swapped) is the real hazard. Detect the case and steer
+# the operator to a session that does not depend on semadrawd, e.g. SSH.
+#
+# Detection is by process ancestry, not an environment variable. Under the
+# ADR 0005 model this runs in the unprivileged phase as the invoking user, so
+# an exported SEMADRAW_TERM marker would survive; but ancestry is the robust
+# signal regardless, since it also holds across the deploy-phase re-exec.
+# Walking the parent-pid chain from $$ reaches the operator's shell whose
+# ancestor is the semadraw-term process. The SEMADRAW_TERM marker is honoured
+# too as a cheap secondary signal.
+running_inside_semadraw_term() {
+    [ -n "${SEMADRAW_TERM:-}" ] && return 0
+    _pid=$$
+    _hops=0
+    while [ "${_pid:-0}" -gt 1 ] && [ "$_hops" -lt 24 ]; do
+        _comm=$(ps -o comm= -p "$_pid" 2>/dev/null) || break
+        case "$_comm" in
+            *semadraw-term*) return 0 ;;
+        esac
+        _pid=$(ps -o ppid= -p "$_pid" 2>/dev/null | tr -d ' ')
+        [ -n "$_pid" ] || break
+        _hops=$((_hops + 1))
+    done
+    return 1
+}
+
+if [ "$CHECK_ONLY" -eq 0 ] && [ "$ALLOW_SEMADRAW_TERM" -eq 0 ] \
+   && running_inside_semadraw_term && pgrep -x semadrawd >/dev/null 2>&1; then
+    echo "" >&2
+    echo "ERROR: install.sh appears to be running inside a semadraw-term session" >&2
+    echo "       while semadrawd is running." >&2
+    echo "" >&2
+    echo "       This install stops semadrawd to replace its binary. semadraw-term" >&2
+    echo "       draws through semadrawd, so the display would freeze at" >&2
+    echo "       \"Installing to $PREFIX/bin\" until semadrawd is restarted at the" >&2
+    echo "       end of the install. It is not hung, but it looks like one, and a" >&2
+    echo "       mistaken Ctrl-C mid-install is dangerous." >&2
+    echo "" >&2
+    echo "       Re-run from a session that does not depend on semadrawd, e.g. SSH:" >&2
+    echo "         ssh <user>@<host>" >&2
+    echo "         cd $SCRIPT_DIR && sh install.sh" >&2
+    echo "" >&2
+    echo "       Or, if you understand the freeze and will wait it out:" >&2
+    echo "         sh install.sh --allow-semadraw-term" >&2
+    echo "" >&2
+    exit 1
+fi
+# ============================================================================
+# Dependency check
+# ============================================================================
+
+check_dep() {
+    if command -v "$1" >/dev/null 2>&1; then
+        echo "  ok  $1 ($(command -v "$1"))"
+        return 0
+    else
+        echo "  -- $1 not found"
+        return 1
+    fi
+}
+
+echo "=== Checking dependencies ==="
+
+# MISSING_PKGS is populated with the package names that need to be
+# installed before the build can proceed. Each binary check translates
+# to a package name on FreeBSD/GhostBSD via pkg(8). The consent step
+# offers to install everything in MISSING_PKGS; binaries already
+# present get no entry.
+MISSING_PKGS=""
+
+# The Zig compiler is vendored at sdk/zig/current and invoked only through
+# tools/zig (bootstrapped on first use); the build never uses a system Zig,
+# so it is not a pkg dependency. Report the pinned toolchain version.
+ZIG_VER=$("$SCRIPT_DIR/tools/zig" version 2>/dev/null | head -1)
+echo "  ok  vendored zig $ZIG_VER (sdk/zig/current)"
+
+# AD-20: s6 supervision suite. The s6 package provides all five
+# binaries (svscan, svc, svstat, svok, log); a single pkg install
+# brings them all in. Check one binary and treat its absence as
+# the whole-package absence signal.
+if ! check_dep s6-svscan; then
+    MISSING_PKGS="$MISSING_PKGS s6"
+fi
+
+# rsync is required by drawfs/build.sh and inputfs/build.sh during
+# kernel module deployment. Not in FreeBSD base; must come from pkg.
+if ! check_dep rsync; then
+    MISSING_PKGS="$MISSING_PKGS rsync"
+fi
+
+# Strip leading whitespace from MISSING_PKGS for cleaner display.
+MISSING_PKGS="${MISSING_PKGS# }"
+
+# --check is a read-only inspection: report and exit, without
+# attempting any installation.
+if [ "$CHECK_ONLY" -eq 1 ]; then
+    if [ -z "$MISSING_PKGS" ]; then
+        echo "All dependencies present."
+        exit 0
+    else
+        echo ""
+        echo "Missing packages: $MISSING_PKGS"
+        echo "Install with: sudo pkg install -y $MISSING_PKGS"
+        exit 1
+    fi
+fi
+# ============================================================================
+# OS-specific source-tree packages
+# ============================================================================
+#
+# Building the PGSD kernel and the drawfs/inputfs modules requires the
+# OS source tree at /usr/src. On FreeBSD this comes from FreeBSD-src
+# and FreeBSD-src-sys; on GhostBSD from GhostBSD-src and GhostBSD-src-sys.
+# These are pkgbase package names. Add them to MISSING_PKGS only if not
+# already installed.
+
+check_pkg_installed() {
+    pkg info -e "$1" >/dev/null 2>&1
+}
+
+case "$UTF_OS" in
+    freebsd)
+        for p in FreeBSD-src FreeBSD-src-sys; do
+            if ! check_pkg_installed "$p"; then
+                MISSING_PKGS="$MISSING_PKGS $p"
+                echo "  -- $p not installed"
+            else
+                echo "  ok  $p installed"
+            fi
+        done
+        ;;
+    ghostbsd)
+        for p in GhostBSD-src GhostBSD-src-sys; do
+            if ! check_pkg_installed "$p"; then
+                MISSING_PKGS="$MISSING_PKGS $p"
+                echo "  -- $p not installed"
+            else
+                echo "  ok  $p installed"
+            fi
+        done
+        ;;
+    *)
+        echo "  ?? unknown OS ($UTF_OS); skipping source-tree package check"
+        ;;
+esac
+
+MISSING_PKGS="${MISSING_PKGS# }"
+
+# ============================================================================
+# Consent and package install
+# ============================================================================
+#
+# If anything in MISSING_PKGS, offer to pkg-install. The consent step
+# uses bsddialog when running interactively (TTY on stdin and stdout,
+# --yes not passed). When non-interactive without --yes, bail with a
+# clear message rather than silently modifying the system.
+#
+# pkg install failures are warned about, not fatal: the operator can
+# install missing packages manually and re-run install.sh.
+
+if [ -n "$MISSING_PKGS" ]; then
+    INTERACTIVE=0
+    if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
+        INTERACTIVE=1
+    fi
+
+    if [ "$INTERACTIVE" -eq 1 ]; then
+        # bsddialog must be available for the consent dialog.
+        if ! command -v bsddialog >/dev/null 2>&1; then
+            echo "ERROR: bsddialog not found; required for interactive consent." >&2
+            echo "       install with: sudo pkg install -y bsddialog" >&2
+            echo "       or re-run install.sh with --yes to skip the dialog." >&2
+            exit 1
+        fi
+
+        # Build a human-readable summary for the dialog body.
+        dialog_body="The following packages are not installed:
+
+$(printf "    %s\n" $MISSING_PKGS)
+
+Install them now via pkg(8)?
+
+(Choose No to abort; install the packages manually and re-run.)"
+
+        if ! bsddialog --title "Awase installer: package installation" \
+                       --yesno "$dialog_body" 15 60; then
+            echo "ABORTED: user declined package install" >&2
+            exit 1
+        fi
+    elif [ "$ASSUME_YES" -eq 0 ]; then
+        # Non-interactive without --yes: refuse to act.
+        echo "ERROR: missing packages and not running interactively." >&2
+        echo "       missing: $MISSING_PKGS" >&2
+        echo "       re-run as: sh install.sh --yes" >&2
+        echo "       or install the packages first and re-run:" >&2
+        echo "         sudo pkg install -y $MISSING_PKGS" >&2
+        exit 1
+    fi
+
+    # Apply installations. Each pkg install runs independently and any
+    # failure is warned, not fatal: the user may want to install a
+    # subset manually and re-run.
+    echo "=== Installing missing packages ==="
+    INSTALL_FAILED=""
+    for pkg_name in $MISSING_PKGS; do
+        echo "  installing $pkg_name..."
+        if priv pkg install -y "$pkg_name" 2>&1 | tail -3; then
+            if check_pkg_installed "$pkg_name"; then
+                echo "  ok  $pkg_name installed"
+            else
+                INSTALL_FAILED="$INSTALL_FAILED $pkg_name"
+                echo "  WARN: $pkg_name install completed but pkg info -e disagrees"
+            fi
+        else
+            INSTALL_FAILED="$INSTALL_FAILED $pkg_name"
+            echo "  WARN: pkg install $pkg_name returned non-zero"
+        fi
+    done
+
+    if [ -n "$INSTALL_FAILED" ]; then
+        echo "" >&2
+        echo "WARNING: the following packages did not install cleanly:" >&2
+        echo "  $INSTALL_FAILED" >&2
+        echo "  install them manually and re-run install.sh if the build fails." >&2
+    fi
+fi
+
 
 # AD-50 hardening: warn (not abort) if the s6 service sources in the
 # working tree have uncommitted modifications. install deploys these
@@ -521,9 +512,6 @@ if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/
         echo "$s6_dirty" | sed 's/^/    /' >&2
     fi
 fi
-
-echo "=== Building Awase (optimize=ReleaseSafe) ==="
-
 # Read .config early so drawfs/build.sh sees DRAWFS_DRM via environment.
 # Default is false: swap-only kernel build, zero drm-kmod dependency.
 CONFIG="$SCRIPT_DIR/.config"
@@ -536,6 +524,111 @@ fi
 export DRAWFS_DRM
 echo "drawfs DRM/KMS backend: ${DRAWFS_DRM}"
 
+echo "=== Building Awase userland (optimize=ReleaseSafe) ==="
+# Semadraw backend flags. DRAWFS_DRM was already consumed above for the kernel
+# build; here we pick up the semadraw userspace backend selections.
+SEMADRAW_FLAGS=""
+if [ -f "$CONFIG" ]; then
+    [ "${SEMADRAW_VULKAN:-false}"   = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=true"
+    [ "${SEMADRAW_VULKAN:-false}"   = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=false"
+    [ "${SEMADRAW_X11:-false}"      = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dx11=true"
+    [ "${SEMADRAW_WAYLAND:-false}"  = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dwayland=true"
+    [ "${SEMADRAW_BSDINPUT:-false}" = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dbsdinput=true"
+    [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dbsdinput=false"
+else
+    echo "No .config found; using defaults (run sh configure.sh to configure)"
+fi
+build_sub() {
+    name="$1"
+    dir="$SCRIPT_DIR/$2"
+    shift 2
+    echo ""
+    echo "--- Building $name ---"
+    cd "$dir"
+    "$SCRIPT_DIR/tools/zig" build -Doptimize=ReleaseSafe "$@"
+    cd "$SCRIPT_DIR"
+}
+build_sub "semadraw"  "semadraw"  $SEMADRAW_FLAGS
+build_sub "chronofs"  "chronofs"
+build_sub "inputfs (userland)" "inputfs"
+build_sub "pgsd-sessiond" "pgsd-sessiond"
+build_sub "semasound" "semasound"
+
+    echo ""
+    echo "=== Userland build complete; elevating to install ($PRIV) ==="
+    exec env \
+        HOME=/root \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        AWASE_PHASE=deploy \
+        AWASE_PREFIX="$PREFIX" \
+        AWASE_ASSUME_YES="$ASSUME_YES" \
+        AWASE_ALLOW_SEMADRAW_TERM="$ALLOW_SEMADRAW_TERM" \
+        "$PRIV" "$0"
+    echo "ERROR: could not elevate via $PRIV. Is mac_do loaded (or use PRIV=sudo)?" >&2
+    exit 1
+fi
+
+# ============================================================================
+# Phase 2: privileged deploy (runs as root via the $PRIV re-exec). ADR 0005.
+# ============================================================================
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: the deploy phase is not running as root." >&2
+    echo "       Elevation through $PRIV did not yield root. Ensure mac_do is" >&2
+    echo "       loaded and a wheel->root rule is set, for example:" >&2
+    echo "         security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'" >&2
+    echo "       Or re-run with PRIV=sudo if mac_do is unavailable." >&2
+    exit 1
+fi
+
+# ============================================================================
+# /var/run tmpfs prerequisite
+# ============================================================================
+#
+# Awase publishes shared-memory regions under /var/run/sema/. The defaults
+# on FreeBSD put /var/run on the same filesystem as /var, which makes
+# shared-memory writes slower and leaves stale state files across reboots.
+# Awase assumes tmpfs.
+#
+# Idempotent: only add the fstab entry if not already present, only mount
+# if not already mounted as tmpfs. INSTALL.md Step 1 documents the manual
+# version of these steps for operators who prefer to make the change
+# themselves.
+
+FSTAB_ENTRY="tmpfs   /var/run   tmpfs   rw,mode=755   0   0"
+
+if ! grep -qE "^[[:space:]]*tmpfs[[:space:]]+/var/run[[:space:]]+tmpfs" /etc/fstab; then
+    printf "%s\n" "$FSTAB_ENTRY" >> /etc/fstab
+    echo "  added /var/run tmpfs entry to /etc/fstab"
+else
+    echo "  ok  /etc/fstab already has /var/run tmpfs entry"
+fi
+
+if ! mount | grep -qE "^tmpfs on /var/run "; then
+    if mount /var/run 2>/dev/null; then
+        echo "  mounted /var/run as tmpfs"
+    else
+        echo "ERROR: failed to mount /var/run as tmpfs" >&2
+        echo "       check /etc/fstab and try: sudo mount /var/run" >&2
+        exit 1
+    fi
+else
+    echo "  ok  /var/run already mounted as tmpfs"
+fi
+
+
+echo "=== Building Awase kernel modules (optimize=ReleaseSafe) ==="
+# Read .config early so drawfs/build.sh sees DRAWFS_DRM via environment.
+# Default is false: swap-only kernel build, zero drm-kmod dependency.
+CONFIG="$SCRIPT_DIR/.config"
+DRAWFS_DRM="${DRAWFS_DRM:-false}"
+if [ -f "$CONFIG" ]; then
+    echo "Reading configuration from $CONFIG"
+    . "$CONFIG"
+    DRAWFS_DRM="${DRAWFS_DRM:-false}"
+fi
+export DRAWFS_DRM
+echo "drawfs DRM/KMS backend: ${DRAWFS_DRM}"
 # Build drawfs kernel module first
 echo ""
 echo "--- Building drawfs kernel module ---"
@@ -577,38 +670,6 @@ if [ -f "$SCRIPT_DIR/audiofs/build.sh" ]; then
 else
     echo "WARNING: audiofs/build.sh not found, skipping kernel module"
 fi
-
-# Semadraw backend flags. DRAWFS_DRM was already consumed above for the kernel
-# build; here we pick up the semadraw userspace backend selections.
-SEMADRAW_FLAGS=""
-if [ -f "$CONFIG" ]; then
-    [ "${SEMADRAW_VULKAN:-false}"   = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=true"
-    [ "${SEMADRAW_VULKAN:-false}"   = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dvulkan=false"
-    [ "${SEMADRAW_X11:-false}"      = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dx11=true"
-    [ "${SEMADRAW_WAYLAND:-false}"  = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dwayland=true"
-    [ "${SEMADRAW_BSDINPUT:-false}" = "true"  ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dbsdinput=true"
-    [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && SEMADRAW_FLAGS="$SEMADRAW_FLAGS -Dbsdinput=false"
-else
-    echo "No .config found; using defaults (run sh configure.sh to configure)"
-fi
-
-build_sub() {
-    name="$1"
-    dir="$SCRIPT_DIR/$2"
-    shift 2
-    echo ""
-    echo "--- Building $name ---"
-    cd "$dir"
-    "$SCRIPT_DIR/tools/zig" build -Doptimize=ReleaseSafe "$@"
-    cd "$SCRIPT_DIR"
-}
-
-build_sub "semadraw"  "semadraw"  $SEMADRAW_FLAGS
-build_sub "chronofs"  "chronofs"
-build_sub "inputfs (userland)" "inputfs"
-build_sub "pgsd-sessiond" "pgsd-sessiond"
-build_sub "semasound" "semasound"
-
 # ============================================================================
 # Install
 # ============================================================================
