@@ -91,43 +91,44 @@ AWASE_PHASE="${AWASE_PHASE:-build}"
 # Verify $PRIV can actually become root before any privileged step runs. The
 # installer never provisions mac_do itself: provisioning needs root, and mac_do
 # is the very path the unprivileged installer would use to get root, so it is a
-# chicken-and-egg the script cannot resolve from inside. Instead, when elevation
-# does not work, show the operator the exact commands and re-check after they
-# apply them in a root shell. The probe is functional (it actually tries to
-# elevate) rather than parsing sysctls, which is the ground truth for mac_do and
-# sudo alike.
+# chicken-and-egg the script cannot resolve from inside. When elevation does not
+# work, show the operator the exact commands and re-check after they apply them
+# in a root shell. The probe is functional (it actually tries to elevate),
+# which is the ground truth for mac_do and sudo alike.
 
 priv_works() {
     "$PRIV" true >/dev/null 2>&1
 }
 
+# Provisioning guidance, plain text with real newlines. Deliberately contains
+# no backslash-n: bsddialog collapses real newlines to spaces as soon as a
+# literal \n escape appears in the text, so the persist line uses echo (which
+# adds its own newline) rather than printf '...\n'. Commands are left-aligned
+# because bsddialog dropped --no-collapse and will not preserve indentation.
 priv_recipe() {
     if [ "$PRIV" = mdo ]; then
         cat <<EOF
-$PRIV cannot elevate to root yet.
+$PRIV cannot elevate to root yet. Provision mac_do once, as root.
 
-The installer builds as you and elevates the rest through mac_do, which must be
-provisioned once, as root. In a root shell (su -, or the system console), run:
+In a root shell (su -, or the system console), run:
 
-  kldload mac_do
-  sysrc -f /boot/loader.conf mac_do_load=YES
-  sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'
-  printf 'security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*\n' >> /etc/sysctl.conf
+kldload mac_do
+sysrc -f /boot/loader.conf mac_do_load=YES
+sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'
+echo 'security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*' >> /etc/sysctl.conf
 
-Your user must be in the wheel group (gid 0). If "id" does not list wheel:
+If "id" does not show the wheel group, also run (then re-login):
 
-  pw groupmod wheel -m $(id -un)
+pw groupmod wheel -m $(id -un)
 
-then log out and back in so the new membership takes effect.
-
-Alternatively, re-run with PRIV=sudo if you prefer sudo and it is configured.
+Or re-run the installer with PRIV=sudo to use sudo instead.
 EOF
     else
         cat <<EOF
 $PRIV cannot elevate to root.
 
-Check that $PRIV is installed and lets your user run commands as root (for sudo,
-an appropriate sudoers entry), or re-run with PRIV=mdo to use mac_do.
+Ensure $PRIV lets your user run commands as root (for sudo, a sudoers
+entry), or re-run the installer with PRIV=mdo to use mac_do.
 EOF
     fi
 }
@@ -148,18 +149,18 @@ ensure_elevation() {
     echo "NOTICE: $PRIV cannot elevate yet; opening provisioning guidance." >&2
     while ! priv_works; do
         if command -v bsddialog >/dev/null 2>&1; then
-            if ! bsddialog --title "Awase installer: privilege setup" \
+            # --cr-wrap so bsddialog honours the real newlines as line breaks.
+            if ! bsddialog --cr-wrap --title "Awase installer: privilege setup" \
                            --ok-label "Re-check" --cancel-label "Abort" \
                            --yesno "$(priv_recipe)
 
-Apply the commands above in a root shell, then choose Re-check.
-Choose Abort to stop the install." 0 0; then
+Apply the commands in a root shell, then choose Re-check. Abort exits." 0 0; then
                 echo "ABORTED: elevation not provisioned." >&2
                 exit 1
             fi
         else
             priv_recipe >&2
-            printf "Apply the changes as root, then press Enter to re-check (Ctrl-C aborts): " >&2
+            printf "\nApply the changes as root, then press Enter to re-check (Ctrl-C aborts): " >&2
             if [ -r /dev/tty ]; then read -r _ans < /dev/tty || true; else read -r _ans || true; fi
         fi
     done
