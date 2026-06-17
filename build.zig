@@ -19,7 +19,7 @@ comptime {
 }
 
 // ============================================================================
-// UTF root build - delegates to each subproject.
+// Awase root build - delegates to each subproject.
 //
 // Requires bare metal FreeBSD 15. Virtualisation is not supported.
 //

@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: MIT
  *
- * audiofs: UTF kernel audio substrate (Option A, PCI driver)
+ * audiofs: Awase kernel audio substrate (Option A, PCI driver)
  *
  * Copyright (c) 2026 Pacific Geoscience Systems Development Foundation
  *
@@ -562,7 +562,7 @@ struct audiofs_softc {
 	uint64_t	evseq;
 };
 
-MALLOC_DEFINE(M_AUDIOFS, "audiofs", "UTF audiofs PCI driver");
+MALLOC_DEFINE(M_AUDIOFS, "audiofs", "Awase audiofs PCI driver");
 
 /* ---------------------------------------------------------
  * F.1 state-file publication (module-global)
@@ -632,7 +632,7 @@ static int audiofs_test_tone;
 static int audiofs_sysctl_test_tone(SYSCTL_HANDLER_ARGS);
 
 SYSCTL_NODE(_hw, OID_AUTO, audiofs, CTLFLAG_RW, 0,
-    "UTF audiofs module-global controls");
+    "Awase audiofs module-global controls");
 SYSCTL_PROC(_hw_audiofs, OID_AUTO, test_tone,
     CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE,
     NULL, 0, audiofs_sysctl_test_tone, "I",
@@ -6092,7 +6092,7 @@ audiofs_probe(device_t dev)
 	if (class != PCIC_MULTIMEDIA || subclass != PCIS_MULTIMEDIA_HDA)
 		return (ENXIO);
 
-	device_set_desc(dev, "UTF audiofs (HDA Controller)");
+	device_set_desc(dev, "Awase audiofs (HDA Controller)");
 	return (BUS_PROBE_DEFAULT);
 }
 
@@ -6683,7 +6683,7 @@ audiofs_modevent(module_t mod __unused, int what, void *arg __unused)
 			 * reader still mmap'd sees the subsystem as gone,
 			 * then close the file. The file is left on disk
 			 * (not unlinked), matching inputfs's state-file
-			 * behavior: the established UTF substrate pattern
+			 * behavior: the established Awase substrate pattern
 			 * is invalidate-and-close, not remove. ADR 0012
 			 * closure criterion 4 permits either removal or
 			 * invalidation; audiofs takes the invalidation

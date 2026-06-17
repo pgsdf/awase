@@ -22,9 +22,9 @@
  * Casiez/Roussel/Vogel One-Euro paper (Casiez, Roussel, Vogel,
  * "1€ Filter: A Simple Speed-based Low-pass Filter for Noisy
  * Input in Interactive Systems", CHI 2012) but is specified by
- * UTF in fixed-point; bit-for-bit equivalence with floating-point
+ * Awase in fixed-point; bit-for-bit equivalence with floating-point
  * One-Euro implementations is not a goal. Recordings made under
- * UTF replay identically against UTF.
+ * Awase replay identically against Awase.
  */
 
 #ifdef _KERNEL
@@ -43,7 +43,7 @@
  *   round(6.28318530717958647 * 65536) = 411774.78... → 411775 = 0x6487F.
  * Stored as int32_t for type uniformity; well within i32 range.
  *
- * This is the only transcendental constant in the algorithm. UTF
+ * This is the only transcendental constant in the algorithm. Awase
  * One-Euro's normative behaviour is defined relative to this
  * specific Q16.16 approximation; any future change to TWO_PI_Q16
  * is a behaviour change and would invalidate captured replay

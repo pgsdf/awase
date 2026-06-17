@@ -29,7 +29,7 @@
  *
  * One-Euro is normatively defined by inputfs_smooth_apply_one_euro
  * in inputfs_smooth.c. The implementation is inspired by the
- * Casiez/Roussel/Vogel paper but is specified by UTF in fixed
+ * Casiez/Roussel/Vogel paper but is specified by Awase in fixed
  * point; bit-for-bit equivalence with floating-point One-Euro
  * implementations is not a goal.
  */
@@ -145,7 +145,7 @@ int32_t inputfs_smooth_apply_ema(int32_t alpha, int32_t in_px,
  *
  * Returns the smoothed coordinate in pixels (int32_t).
  *
- * Algorithm (UTF specification):
+ * Algorithm (Awase specification):
  *   1. dt = (t_us - prev_us) microseconds. If dt <= 0, treated
  *      as 1 microsecond (defensive against equal or out-of-order
  *      timestamps).

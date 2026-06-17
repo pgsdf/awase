@@ -4,7 +4,7 @@
 //! `std.posix.read` and `std.posix.write` carry a hand-maintained
 //! list of "known" errno values for the underlying syscall. Errnos
 //! outside that list flow through `unexpectedErrno`, which dumps a
-//! stack trace and propagates a panic-style error. UTF's kernel
+//! stack trace and propagates a panic-style error. Awase's kernel
 //! cdevs (drawfs, inputfs) and accepted cdevs (`/dev/dsp`) return
 //! errnos that fall outside the stdlib's known set: `ENXIO` from
 //! drawfs during session close, custom errnos from inputfs ring
@@ -27,7 +27,7 @@ const posix = std.posix;
 /// Read from `fd` into `buf`, returning the number of bytes read on
 /// success or `error.ReadFailed` on any error.
 ///
-/// Does not distinguish between errno values; UTF's call sites
+/// Does not distinguish between errno values; Awase's call sites
 /// uniformly want "stop reading and clean up" on any failure, so
 /// the additional information is not useful at this layer. Specific
 /// errno discrimination, if needed, can be done by the caller via
@@ -43,7 +43,7 @@ pub fn safeRead(fd: posix.fd_t, buf: []u8) error{ReadFailed}!usize {
 /// success or `error.WriteFailed` on any error.
 ///
 /// Same rationale as `safeRead`: the un-wrapped syscall does not
-/// panic on unknown errnos, and UTF's call sites uniformly want
+/// panic on unknown errnos, and Awase's call sites uniformly want
 /// "stop writing and clean up" on any failure.
 pub fn safeWrite(fd: posix.fd_t, buf: []const u8) error{WriteFailed}!usize {
     const rc = posix.system.write(fd, buf.ptr, buf.len);

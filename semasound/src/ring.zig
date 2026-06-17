@@ -7,7 +7,7 @@
 // non-blocking: the mixer takes what is there and zero-fills the rest, so
 // it never stalls on a slow client.
 //
-// No std.Thread.Condition: the UTF Zig in tree uses mutex + std.Thread.sleep
+// No std.Thread.Condition: the Awase Zig in tree uses mutex + std.Thread.sleep
 // for this shape, so we match it.
 
 const std = @import("std");

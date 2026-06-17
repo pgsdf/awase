@@ -19,7 +19,7 @@
 //! - USB HID Usage Tables 1.4, §10 Keyboard/Keypad Page (0x07)
 //! - Linux input-event-codes.h (KEY_* values; same values used as
 //!   the evdev wire contract on FreeBSD via the evdev compatibility
-//!   layer, which UTF is in the process of removing — see AD-2a)
+//!   layer, which Awase is in the process of removing — see AD-2a)
 //!
 //! Stage E note: this translation table is the userland half of the
 //! evdev-removal motion. inputfs publishes HID usages because that's

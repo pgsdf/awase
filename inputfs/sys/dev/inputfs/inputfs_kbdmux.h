@@ -58,7 +58,7 @@
  * inputfs's attach path treats the bridge as advisory: a failure
  * here does not abort the inputfs device's overall attach. The
  * device is still useful for the userland event-ring consumer
- * (UTF compositor input path); only the vt(4)-bridge path is
+ * (Awase compositor input path); only the vt(4)-bridge path is
  * unavailable for that one device.
  */
 void *inputfs_kbd_bridge_attach(int unit);

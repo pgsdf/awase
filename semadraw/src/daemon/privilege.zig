@@ -101,7 +101,7 @@ pub fn lastErrno() c_int {
 // Per ADR 0006 §3, the privileged client is recognised by uid match
 // only, not by group membership. PGSD configures this uid to be the
 // uid of `_pgsd_sessiond`, the login daemon. Other distributions
-// built on UTF may choose a different uid or none at all.
+// built on Awase may choose a different uid or none at all.
 //
 // NOBODY_UID is never privileged: a TCP connection (which uses
 // NOBODY_UID as a sentinel) cannot be the login daemon, and a

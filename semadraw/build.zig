@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     // -----------------------------------------------------------------------
     // Backend selection.
     //
-    // All optional backends default to false. UTF's target platform is
+    // All optional backends default to false. Awase's target platform is
     // PGSD on bare-metal FreeBSD 15, where graphics goes through drawfs
     // (not Vulkan) and input goes through inputfs (not libinput/libudev).
     // The PGSD distribution does not ship libvulkan, libX11, libinput,

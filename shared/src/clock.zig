@@ -27,13 +27,13 @@ const posix = std.posix;
 // amd64-scoped guarantee. See shared/CLOCK.md "Region layout" for the
 // non-x86/aarch64 caveat and the version-bump that would fix it.
 //
-// clock_source is observability metadata, not a fallback selector. UTF's
+// clock_source is observability metadata, not a fallback selector. Awase's
 // clock is audio-driven by construction (see docs/Thoughts.md and
 // docs/UTF_ARCHITECTURAL_DISCIPLINE.md). The field exists so readers and
 // diagnostic tools can identify which writer produced the region without
 // guessing. Values 2 (wall) and 3 (tsc) are reserved for future writers
 // that may exist in test scaffolding or alternative builds; they are not
-// used by the canonical UTF stack and do not enable runtime fallback.
+// used by the canonical Awase stack and do not enable runtime fallback.
 //
 // The field was promoted from the previously-reserved _pad byte at offset
 // 6 without bumping version. Old writers (which wrote 0 at this offset)
@@ -59,8 +59,8 @@ pub const CLOCK_SIZE: usize = 20;
 // clock_source values.
 pub const CLOCK_SOURCE_INVALID: u8 = 0;
 pub const CLOCK_SOURCE_AUDIO: u8 = 1;
-pub const CLOCK_SOURCE_WALL: u8 = 2; // reserved, not used by canonical UTF
-pub const CLOCK_SOURCE_TSC: u8 = 3; // reserved, not used by canonical UTF
+pub const CLOCK_SOURCE_WALL: u8 = 2; // reserved, not used by canonical Awase
+pub const CLOCK_SOURCE_TSC: u8 = 3; // reserved, not used by canonical Awase
 
 // Byte offsets within the region.
 const OFF_MAGIC: usize = 0;
@@ -296,9 +296,9 @@ pub const ClockReader = struct {
     /// Possible return values:
     ///   CLOCK_SOURCE_INVALID (0): file open but no stream has started yet,
     ///       or writer is a legacy version that did not set this field.
-    ///   CLOCK_SOURCE_AUDIO   (1): canonical UTF audio-driven clock.
-    ///   CLOCK_SOURCE_WALL    (2): reserved; not used by canonical UTF.
-    ///   CLOCK_SOURCE_TSC     (3): reserved; not used by canonical UTF.
+    ///   CLOCK_SOURCE_AUDIO   (1): canonical Awase audio-driven clock.
+    ///   CLOCK_SOURCE_WALL    (2): reserved; not used by canonical Awase.
+    ///   CLOCK_SOURCE_TSC     (3): reserved; not used by canonical Awase.
     pub fn source(self: ClockReader) u8 {
         const m = self.map orelse return CLOCK_SOURCE_INVALID;
         return m[OFF_SOURCE];

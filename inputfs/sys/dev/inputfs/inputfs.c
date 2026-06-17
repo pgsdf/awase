@@ -1,5 +1,5 @@
 /*
- * inputfs: UTF native input substrate kernel module
+ * inputfs: Awase native input substrate kernel module
  *
  * Stage C.3: event ring publication, layered on Stage C.2's
  * state region publication. The kernel publishes two shared-
@@ -82,7 +82,7 @@
  * tmpfs per the project README; non-tmpfs backing filesystems
  * are not supported for verification.
  *
- * This file is part of the UTF project. See:
+ * This file is part of the Awase project. See:
  *   docs/UTF_ARCHITECTURAL_DISCIPLINE.md
  *   inputfs/docs/inputfs-proposal.md
  *   inputfs/docs/foundations.md
@@ -175,7 +175,7 @@ SYSCTL_INT(_hw_inputfs, OID_AUTO, dev_mode, CTLFLAG_RWTUN,
  * path produces the expected report shapes; harmful in
  * production because it emits to /dev/console for every
  * keystroke and pointer report. With vt(4) active the spam
- * displaces the login prompt and any UTF surface; with
+ * displaces the login prompt and any Awase surface; with
  * vt(4) muted the spam is silent but the per-call CPU cost
  * (sprintf, console-lock, cnputs) still runs on the
  * interrupt path and adds latency.
@@ -4224,7 +4224,7 @@ inputfs_attach(device_t dev)
 			 *
 			 * Failure here is non-fatal: the bridge is an
 			 * advisory feature, and userland event-ring
-			 * consumption (the UTF compositor input path)
+			 * consumption (the Awase compositor input path)
 			 * works without it. The bridge function logs
 			 * its own failure reason if it returns NULL.
 			 *
