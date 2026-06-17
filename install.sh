@@ -187,7 +187,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
         echo "=== Elevating for uninstall ($PRIV) ==="
         exec env \
             HOME=/root \
-            PATH=/usr/local/bin:/usr/bin:/bin \
+            PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin \
             AWASE_PREFIX="$PREFIX" \
             "$PRIV" /bin/sh "$SCRIPT_DIR/$(basename "$0")"
         echo "ERROR: could not elevate via $PRIV (use PRIV=sudo if no mac_do)." >&2
@@ -671,7 +671,7 @@ build_sub "semasound" "semasound"
     echo "=== Userland build complete; elevating to install ($PRIV) ==="
     exec env \
         HOME=/root \
-        PATH=/usr/local/bin:/usr/bin:/bin \
+        PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin \
         AWASE_PHASE=deploy \
         AWASE_PREFIX="$PREFIX" \
         AWASE_ASSUME_YES="$ASSUME_YES" \
@@ -717,12 +717,17 @@ else
     echo "  ok  /etc/fstab already has /var/run tmpfs entry"
 fi
 
+# Ensure the tmpfs kernel module is available before mounting. -n is a no-op
+# when tmpfs is already loaded or built into the kernel; the mount below is the
+# real test, so a kldload failure here is non-fatal.
+kldload -n tmpfs 2>/dev/null || true
+
 if ! mount | grep -qE "^tmpfs on /var/run "; then
     if mount /var/run 2>/dev/null; then
         echo "  mounted /var/run as tmpfs"
     else
         echo "ERROR: failed to mount /var/run as tmpfs" >&2
-        echo "       check /etc/fstab and try: sudo mount /var/run" >&2
+        echo "       check /etc/fstab and try (as root): mount /var/run" >&2
         exit 1
     fi
 else
