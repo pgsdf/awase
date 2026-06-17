@@ -1,5 +1,11 @@
 # Rename plan: UTF to Awase
 
+> Superseded by ADR shared 0004 (UTF to Awase rename and installed-state
+> migration), accepted 2026-06-17. This plan is retained as the originating
+> record; ADR 0004 is the authoritative governance, and its Tranche B replaces
+> this plan's R3 (operational paths).
+> See `shared/docs/adr/0004-utf-to-awase-rename-and-migration.md`.
+
 Ratified 2026-06-12 (operator): the substrate is renamed Awase
 (from awaseru, to bring together, to align). PGSD is unchanged.
 The rename is prospective only: forward-only git, history files

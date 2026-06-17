@@ -8,10 +8,10 @@ the program is scheduled. Nothing here authorizes code.
 
 ## Ownership principle
 
-UTF follows a serious ownership model: it owns its substrate end to
+Awase follows a serious ownership model: it owns its substrate end to
 end. It already owns input (inputfs), audio (audiofs, semasound),
 timing (chronofs), and composition (drawfs, semadraw). Graphics
-output is the last major piece UTF does not own; today it is borrowed
+output is the last major piece Awase does not own; today it is borrowed
 from firmware (efifb) or from Linux (drm-kmod). AD-4 brings graphics
 output under the same ownership model.
 
@@ -29,18 +29,18 @@ The end state is not the removal of efifb and drm-kmod. It is a
 tiered output stack with native preferred and the external paths
 retained for backwards compatibility and graceful degradation:
 
-  - native (default, preferred): UTF programs the GPU directly. The
+  - native (default, preferred): Awase programs the GPU directly. The
     default build and the default runtime neither require nor load
     drm-kmod. This is what "DRM/KMS-less by default" means.
   - drm (compatibility tier): the existing drawfs_drm.c path, kept
     buildable and runtime-selectable for GPUs that have no native
-    UTF driver yet. Backwards compatible, not the default.
+    Awase driver yet. Backwards compatible, not the default.
   - firmware-framebuffer floor (universal): the UEFI GOP linear
     framebuffer, available on any UEFI machine, the always-reachable
     fallback and recovery path. Today this path leans on FreeBSD's
-    efifb facility; long term UTF consumes the GOP through its own
+    efifb facility; long term Awase consumes the GOP through its own
     framebuffer and FreeBSD's efifb is itself replaced (see "Long
-    term: UTF owns the floor").
+    term: Awase owns the floor").
 
 Selection stays on `hw.drawfs.backend`, which gains a `native`
 value beside swap/drm/efifb. The intended automatic order is native
@@ -53,7 +53,7 @@ This framing still matters, because it sets the order of attack.
 
   - efifb is a thin firmware dependency with two layers worth
     separating. The UEFI GOP linear framebuffer is the irreducible
-    handoff every OS receives from firmware at boot; UTF cannot avoid
+    handoff every OS receives from firmware at boot; Awase cannot avoid
     receiving it, only choose how it consumes it. FreeBSD's wrapper
     for the GOP is vt_efifb (there is no separate efifb driver
     distinct from it), and on a PGSD kernel that wrapper is already
@@ -64,11 +64,11 @@ This framing still matters, because it sets the order of attack.
     metadata, not a running driver. The floor still costs us mode
     setting, page flip, vblank pacing, resolution control, and a blit
     (copyin) per present instead of a scanout retarget. The floor is
-    kept; its consumption moves fully under UTF long term.
+    kept; its consumption moves fully under Awase long term.
 
   - drm-kmod is a large Linux-code dependency: the DRM subsystem and
     a vendor KMS driver (i915, amdgpu) ported from Linux, the single
-    biggest Linux-derived component in the UTF graphics stack.
+    biggest Linux-derived component in the Awase graphics stack.
     Making the default path not need it is the principled core of
     AD-4 and what aligns AD-4 with the project's BSD-native, anti-
     Linux-pattern discipline. It is retained as the compatibility
@@ -123,9 +123,9 @@ Phase 1: native display engine, read-only then scanout.
     firmware-set mode, read EDID. Verify the read mode against the
     known GOP mode. No register writes.
   - 1b: scanout retarget. Point the primary display plane at a
-    UTF-owned scanout buffer (the composited frame), keeping the
+    Awase-owned scanout buffer (the composited frame), keeping the
     firmware's mode. Replaces the per-present efifb blit with a
-    direct scanout address owned by UTF.
+    direct scanout address owned by Awase.
   - 1c: page flip and vblank. Double-buffered flips synchronized to
     vblank, one flip per SURFACE_PRESENT, mirroring the drm path's
     MODE_PAGE_FLIP. The tearing and latency win.
@@ -155,7 +155,7 @@ CPU-side composition (the swap backend's model) is the baseline
 through Phase 3 and stays valid as a fallback even after Phase 5;
 acceleration is an addition, not a precondition for output.
 
-## Long term: UTF owns the floor
+## Long term: Awase owns the floor
 
 The floor tier is kept forever, but the borrowed parts of it are not.
 The vt(4) and efifb bootstrap deprecation this depends on is already
@@ -163,24 +163,24 @@ substantially done: AD-39 compiled vt(4) and vt_efifb out of the PGSD
 kernel (2026-05-13/14), superseding AD-10 and its ADR 0001 loader.conf
 mechanism, and there is no separate efifb driver in FreeBSD distinct
 from vt_efifb. So on a PGSD kernel there is no FreeBSD console-on-
-framebuffer driver between UTF and the GOP today.
+framebuffer driver between Awase and the GOP today.
 
 What remains borrowed is the loader-provided GOP framebuffer handoff:
 drawfs consumes the EFI framebuffer the loader set up and passed in
-boot metadata. Long term UTF provides its own framebuffer that obtains
+boot metadata. Long term Awase provides its own framebuffer that obtains
 and manages the GOP directly rather than through the loader-provided
 metadata, completing the ownership model at the lowest output layer.
-The one piece that stays firmware's is the GOP handoff itself; UTF
-owning the floor means UTF consumes that handoff through its own
+The one piece that stays firmware's is the GOP handoff itself; Awase
+owning the floor means Awase consumes that handoff through its own
 framebuffer, and via native mode setting (Phase 2) can reprogram the
 display beyond the firmware's chosen mode.
 
 This also bears on the early-boot window, and must respect AD-11. On a
 PGSD kernel, kernel messages before drawfs.ko loads have no on-screen
-destination (they reach dmesg and any serial console); per AD-11, UTF
+destination (they reach dmesg and any serial console); per AD-11, Awase
 replaces the user-facing console, not the kernel's own diagnostic
-channel, and does not commit to kernel-side panic rendering. UTF owning
-the floor may bring UTF's framebuffer up earlier in boot, but it does
+channel, and does not commit to kernel-side panic rendering. Awase owning
+the floor may bring Awase's framebuffer up earlier in boot, but it does
 not displace the kernel's diagnostic output channel or AD-11's recovery
 posture.
 
@@ -206,7 +206,7 @@ and recovery design. It is not part of the first scheduled phases.
   - mode-setting approach for the chosen vendor (Phase 2).
   - GPU memory model (Phase 4) and command-submission model
     (Phase 5), each per vendor.
-  - long term: UTF's own framebuffer obtaining the GOP directly (the
+  - long term: Awase's own framebuffer obtaining the GOP directly (the
     loader-provided GOP metadata being the last borrowed piece; the
     vt(4) and efifb kernel deprecation already delivered by AD-39),
     coordinated with AD-11's console and recovery posture.
