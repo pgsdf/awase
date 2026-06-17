@@ -2,11 +2,16 @@
 
 ## Status
 
-Proposed. Operator ratification pending.
+Accepted 2026-06-17 (operator).
 
-The cosmetic tranche (see Decisions) may land on ratification of this ADR.
-The migration tranche additionally requires a green upgrade-from-UTF bench on
-bare metal before it is considered closed (see Record-keeping and closure).
+Amended 2026-06-17 (operator) to reconcile with the prior ratified
+`docs/RENAME-PLAN.md` (see Context): the leave-alone set is extended (D5), the
+path-pointer decision is added (D7), and external coordination including NLnet is
+recorded (Open questions).
+
+Tranche A (cosmetic) may land now. Tranche B (migration) additionally requires a
+green upgrade-from-UTF bench on bare metal before it is considered closed (see
+Record-keeping and closure).
 
 ## Context
 
@@ -14,6 +19,16 @@ The project is being renamed from UTF to Awase. A tree-wide census was run
 first, and it changed the shape of the task: this is not primarily a
 source-tree rename, it is an installed-state migration with a much smaller
 cosmetic surface attached.
+
+This rename was first scoped in `docs/RENAME-PLAN.md`, ratified 2026-06-12
+(operator), which classified the work R1 (living prose) through R4 (external
+coordination) over a permanent leave-alone set. This ADR supersedes that plan as
+the authoritative governance for the rename: in particular the plan's R3
+(operational paths) is replaced by Tranche B and its migration contract (D4, D6),
+which the plan only sketched. The plan is retained as the subordinate operational
+checklist: its R1 doc-by-doc list is the worklist for the Tranche A docs pass,
+and its R4 is folded into the Open questions below. Where the two ever disagree,
+this ADR governs.
 
 Two findings drive this ADR.
 
@@ -59,10 +74,11 @@ compatibility window in D3.
 ### D2. Compatibility migration, not flag-day cutover
 
 Existing UTF-named installed state is migrated forward in place by the
-installer/upgrader, and the code recognizes UTF forms as fallbacks during the
-compatibility window. A flag-day cutover that required operators to hand-migrate
-deployed systems is rejected: the cost of the migration logic is bounded and
-one-time, whereas a flag day puts every existing deployment at risk on upgrade.
+installer/upgrader, and compatibility aliases are provided where required during
+the compatibility window. A flag-day cutover that required operators to
+hand-migrate deployed systems is rejected: the cost of the migration logic is
+bounded and one-time, whereas a flag day puts every existing deployment at risk
+on upgrade.
 
 ### D3. Canonical mapping and compatibility window
 
@@ -85,9 +101,9 @@ Applied to the installed-state surface:
 | rc.conf `utf_supervisor_enable` (and the rest of the `utf_*` knob set) | `awase_*` equivalents |
 | `UTF_*_INSTRUMENT` env / macros | `AWASE_*_INSTRUMENT` |
 
-Compatibility window: the UTF aliases (code-side path fallbacks, installer
-migration detection, and dual-read of rc.conf knobs) are retained through the
-next tagged release and removed in a dedicated follow-up ADR once a bench
+Compatibility window: the UTF aliases (path compatibility aliases, installer
+migration detection, and compatibility handling of existing rc.conf knobs) are
+retained through the next tagged release and removed in a dedicated follow-up ADR once a bench
 confirms no surviving install still references the UTF forms. The exact removal
 horizon is an operator decision recorded at ratification (see Open questions).
 
@@ -115,8 +131,7 @@ surface in the Tranche B survey (D6), whichever is cleanest for that surface.
   no interval in which nothing supervises the daemons. The existing install.sh
   AD-12.1 stop/restart discipline governs the daemon bounce.
 - Logs: new logs are written under `/var/log/awase/`. Existing `/var/log/utf/`
-  contents are left in place (logs are disposable; moving them is optional and
-  recorded as an Open question).
+  contents are left in place; they are disposable and are not migrated.
 - Debug instruments: a developer invocation that sets the UTF `*_INSTRUMENT` env
   name must keep working for the window; `AWASE_*_INSTRUMENT` is the canonical
   form going forward.
@@ -130,13 +145,14 @@ implies, this is a binding requirement, not a convention.
 
 ### D5. Historical records are not rewritten
 
-Ratified ADRs, dated session memos (`docs/sessions/`, `*/docs/sessions/`), and
-backlog history (`BACKLOG-history.md`) are left exactly as written. They are a
-forward-only record of decisions made under the UTF name, and rewriting them
-would rewrite that record. Forward-facing documents (top-level READMEs,
-INSTALL.md, current architecture docs) may add a one-line note that the project
-was formerly named UTF. This ADR, authored under the rename, refers to the UTF
-forms as the prior names by design.
+Ratified ADRs, dated session memos (`docs/sessions/`, `*/docs/sessions/`),
+backlog history (`BACKLOG-history.md`), verification records (`*_VERIFICATION*.md`),
+and fuzz findings are left exactly as written. They are a forward-only record of
+decisions made under the UTF name, and rewriting them would rewrite that record.
+Forward-facing documents (top-level READMEs, INSTALL.md, current architecture
+docs) may add a one-line note that the project was formerly named UTF. This ADR,
+authored under the rename, refers to the UTF forms as the prior names by design.
+The sole exception to this section is path pointers, handled in D7.
 
 ### D6. Implementation staging
 
@@ -161,6 +177,19 @@ The work separates into two tranches with different risk and bench profiles:
   started is a defect in the survey, not an acceptable late find.
 
 Tranche A may land on ratification of this ADR. Tranche B lands per its own bench.
+
+### D7. Path pointers in historical files are updated when their targets move
+
+Tranche A renames the `docs/UTF_*.md` boundary documents (and
+`does-utf-have-a-framebuffer.md`) to their Awase names. Roughly twenty historical
+and ratified files reference those documents by path. A path is a pointer, not
+prose: a reference that no longer resolves is a defect, not a preserved decision.
+So when a target file is renamed, its references update even inside otherwise
+frozen historical files (ratified ADRs, backlog history). This is the sole
+exception to D5, and it changes only the pointer, never the surrounding recorded
+language. The alternative available to the operator is to leave redirect stubs at
+the old `docs/UTF_*.md` paths and update no historical file; the default is to
+update pointers.
 
 ## Consequences
 
@@ -198,12 +227,18 @@ This ADR closes when all of the following hold:
    tagged release, removed in the follow-up ADR once a bench confirms no
    surviving install references the UTF forms. Confirm the concrete release or
    milestone.
-2. Disposition of existing `/var/log/utf/` contents on upgrade: leave in place
-   (proposed) or move to `/var/log/awase/`.
-3. Repository / remote rename (`github.com/pgsdf/UTF`). Out of the source tree,
-   so out of scope for the implementation patches, but it should be sequenced
-   alongside this ADR so clone URLs and forward-facing docs agree.
+2. NLnet coordination (time-sensitive). The submitted NLnet proposal names the
+   project UTF. If the application is still under review, the public rename and
+   the proposal must not silently disagree: either hold the public-facing rename
+   (repo slug, site) until the funding decision, or send NLnet a one-line
+   renaming notice. This gates the timing of item 3, not the source-tree work.
+3. External coordination (RENAME-PLAN.md R4), operator-executed: the GitHub slug
+   `pgsdf/UTF` to `pgsdf/awase` (GitHub redirects old URLs; local remotes update
+   at leisure), `pgsdf.org` references, and the NDE repository's references.
+   Sequence the slug rename with the forward-facing docs so they agree from the
+   first public moment.
 
 The full `utf_*` knob set is no longer an open question: D6 makes its complete
 enumeration a required prerequisite artifact attached to the Tranche B survey
-before that tranche begins.
+before that tranche begins. The disposition of existing `/var/log/utf/` logs is
+also settled in D4: they are left in place and not migrated.
