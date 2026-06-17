@@ -524,6 +524,29 @@ fi
 export DRAWFS_DRM
 echo "drawfs DRM/KMS backend: ${DRAWFS_DRM}"
 
+echo ""
+echo "=== Cleaning stale build artifacts (clean.sh --force) ==="
+# Prior installs that ran the whole script under sudo left root-owned
+# .zig-cache/ and zig-out/ directories in the checkout. The unprivileged
+# userland build below cannot write into a root-owned cache (zig fails with
+# AccessDenied), so wipe the artifacts first. clean.sh is elevated because
+# those leftovers are root-owned; it only removes build outputs inside the
+# checkout (never /usr/src, /boot, .git, .config, or sources). On an
+# already-clean tree it is a no-op. This is what breaks the ownership ratchet
+# on the first unprivileged run after an old sudo-built tree.
+priv sh "$SCRIPT_DIR/clean.sh" --force
+
+# Repair a toolchain dir left root-owned by a pre-ADR-0005 sudo bootstrap.
+# tools/zig bootstraps sdk/zig/current; if that ran under the old all-root
+# installer, sdk/ is root-owned and a later toolchain swap (which writes into
+# sdk/zig/) would fail for the unprivileged build. clean.sh deliberately does
+# not touch sdk/, so repair it here. No-op once owned correctly.
+if [ -d "$SCRIPT_DIR/sdk" ] && \
+   [ -n "$(find "$SCRIPT_DIR/sdk" -user root -print -quit 2>/dev/null)" ]; then
+    echo "  repairing root-owned sdk/ toolchain ownership"
+    priv chown -R "$(id -u):$(id -g)" "$SCRIPT_DIR/sdk"
+fi
+
 echo "=== Building Awase userland (optimize=ReleaseSafe) ==="
 # Semadraw backend flags. DRAWFS_DRM was already consumed above for the kernel
 # build; here we pick up the semadraw userspace backend selections.
