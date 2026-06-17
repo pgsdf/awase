@@ -5,19 +5,61 @@ machine. Each step has a verification check; do not proceed until
 the check passes. The hazards section at the end names the things
 that have actually broken installs in the past.
 
-The high-level shape is: install FreeBSD, mount `/var/run` as
-tmpfs, install build dependencies, optionally build the PGSD
-kernel, build awase userland, install awase, load kernel modules
-manually (not from loader.conf), start daemons.
+The high-level shape is: install FreeBSD, provision `mac_do` so the
+installer can elevate, mount `/var/run` as tmpfs, install build
+dependencies, build awase userland, install awase, load kernel
+modules manually (not from loader.conf), start daemons. `install.sh`
+runs as a regular user and elevates privileged steps through `mdo`
+itself; it is not run under `sudo`. On a GENERIC kernel it also offers
+to build and install the PGSD kernel (Step 5.5).
 
 ## Prerequisites
 
 - FreeBSD 15.1-RELEASE installed and bootable. ZFS or UFS root.
 - Network access for `pkg install` and `git clone`.
-- Root access via `sudo` or direct login.
+- A `mac_do` rule that lets your user elevate to root (Step 0).
+  `install.sh` runs as a regular user and elevates privileged
+  steps through `mdo`; it is not run under `sudo`. If the rule
+  is missing the installer detects it and prints the provisioning
+  commands before doing any work.
 - The `/usr/src` tree if you intend to build the PGSD kernel
   (see `pgsd-kernel/README.md`). Optional for first install;
-  GENERIC works for most Awase testing.
+  GENERIC works for most Awase testing, and `install.sh` offers
+  to build the PGSD kernel for you (Step 5.5).
+
+## Step 0: Provision `mac_do` elevation
+
+`install.sh` and the Awase tooling elevate through `mac_do` (the
+`mdo` command), not `sudo`. `mac_do` is a FreeBSD MAC policy that
+lets a named group act as another user; Awase uses it so the
+installer can run as your regular user and elevate only the steps
+that need root, never leaving root-owned files in the checkout.
+
+Provision once, as root:
+
+```
+kldload mac_do
+sysrc -f /boot/loader.conf mac_do_load=YES
+sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'
+echo 'security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*' >> /etc/sysctl.conf
+pw groupmod wheel -m <your-user>
+```
+
+Then log out and back in so the new `wheel` membership takes
+effect. The `loader.conf` and `sysctl.conf` lines make the policy
+and rule survive a reboot.
+
+**Verify:**
+
+```
+mdo true && echo "mdo works"
+```
+
+If `install.sh` is started before this is in place, its elevation
+preflight stops and walks you through the same commands; you do not
+have to memorise them. Operators who prefer `sudo` can run the
+installer with `PRIV=sudo sh install.sh`, but `mdo` is the default
+and recommended path.
 
 ## Step 1 — Mount `/var/run` as tmpfs
 
@@ -32,11 +74,16 @@ Add to `/etc/fstab`:
 tmpfs /var/run tmpfs rw,mode=755 0 0
 ```
 
-Activate without rebooting:
+Activate without rebooting (as root, or `mdo mount /var/run`):
 
 ```
-sudo mount /var/run
+mount /var/run
 ```
+
+`install.sh` also sets this up for you: it loads the `tmpfs`
+module and mounts `/var/run` if it is not already tmpfs. Doing it
+here first is still recommended so the verification below passes
+before you start, but it is no longer strictly required.
 
 **Verify:**
 
@@ -110,10 +157,12 @@ git clone https://github.com/pgsdf/awase.git
 cd awase
 ```
 
-The clone is done as the regular operator user; `install.sh` later
-runs under `sudo` to deploy the build artifacts to system
-locations. There is no requirement that the source tree itself
-be owned by root.
+The clone is done as the regular operator user; `install.sh` runs
+as that same user and elevates the steps that touch system
+locations through `mdo`. It does not run under `sudo`, and it never
+creates root-owned files inside the checkout, so the source tree
+stays owned by you. There is no requirement that the source tree be
+owned by root.
 
 A developer working on awase rather than deploying it may prefer
 to clone elsewhere (a home directory, a workspace folder). All
@@ -193,9 +242,13 @@ no longer produces an executable (the daemon was retired
 at build time.
 
 ```
-sudo sh build.sh
+sh build.sh
 ```
 
+Run this as your regular user, not under `sudo`: the userland
+build is unprivileged by design, which keeps `zig-out/` and
+`.zig-cache/` owned by you and avoids the root-owned-artifact
+problem that a later unprivileged rebuild would trip over.
 This takes a few minutes and produces binaries under each
 subproject's `zig-out/bin/`. Kernel modules are built separately
 in step 5 — `build.sh` does not build kernel modules.
@@ -270,13 +323,33 @@ install (for example, you are bringing up Awase on a remote bench
 that you will only access over SSH for kernel-module testing),
 you can skip this step and stay on GENERIC.
 
-**Quickstart:**
+**Offered by `install.sh`.** When you run `install.sh` on a GENERIC
+kernel (Step 6), it detects this with `uname -i` and offers to build
+and install the PGSD kernel for you. If you accept, it runs the
+existing `pgsd-kernel/pgsd-kernel-build.sh` phases with an operator
+confirmation between each one (`check`, then `build --clean`, then
+`install`), so a check warning or a failed world/kernel build stops
+for inspection rather than scrolling past inside the larger install.
+After the kernel is installed the installer stops and asks you to
+reboot into the new kernel and rerun `install.sh` to finish. The
+offer appears only in interactive runs; under `--yes` or a
+non-terminal run it prints that GENERIC is in use and the kernel
+build is skipped, then continues, so an unattended run never starts
+a 30-60 minute compile. The default config is `PGSD`; set
+`AWASE_KERNCONF=PGSD-DEBUG` to build the debug variant instead.
+
+If you decline the offer, or choose to stay on GENERIC, the install
+continues on GENERIC (supported, just not preferred) and does not
+prompt again.
+
+**Quickstart (manual).** To build the kernel yourself, outside the
+installer:
 
 ```
 sh pgsd-kernel/pgsd-kernel-build.sh check
-sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
-sudo sh pgsd-kernel/pgsd-kernel-build.sh install
-sudo shutdown -r now
+mdo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
+mdo sh pgsd-kernel/pgsd-kernel-build.sh install
+mdo shutdown -r now
 ```
 
 Plan 30-60 minutes for the build. See `pgsd-kernel/README.md`
@@ -286,42 +359,60 @@ development, and recovery procedures if a build or boot goes
 wrong. Read it before running the commands if this is your
 first PGSD build.
 
-The kernel build is deferred from `install.sh` because it
-requires the FreeBSD source tree at `/usr/src` and is a
-30-60-minute commitment that should be a conscious choice.
-`install.sh` does not invoke it.
+Whether you let `install.sh` drive it or run the commands by hand,
+`pgsd-kernel-build.sh` remains the single source of truth for
+source-tree validation, AD-8 closure, recovery checks, and build
+flags; `install.sh` only sequences the phases and preserves their
+checkpoints.
 
 ## Step 6 — Install (system-wide)
 
 ```
-sudo sh install.sh
+sh install.sh
 ```
+
+Run this as your regular user, not under `sudo`. `install.sh`
+elevates the steps that need root through `mdo` itself, in two
+phases: an unprivileged first phase (dependency check, the userland
+build, stale-artifact cleanup) and an elevated deploy phase
+(kernel modules, system files, services). Before doing any work it
+runs an elevation preflight; if `mdo` is not yet provisioned it
+stops and walks you through Step 0. Pass `PRIV=sudo sh install.sh`
+to elevate through `sudo` instead.
 
 This is the canonical install path. It:
 
-1. Verifies the s6 binaries are present (Step 2 dependency).
-2. Builds and deploys both kernel modules (calling `drawfs/build.sh`
+1. Runs an elevation preflight, then installs missing dependencies
+   (each elevated independently).
+2. On a GENERIC kernel, offers to build and install the PGSD kernel
+   (Step 5.5), stopping for a reboot if you accept.
+3. Clears stale build artifacts (`clean.sh --force`) and repairs any
+   root-owned `sdk/` toolchain left by an older `sudo`-based install,
+   then builds the userland unprivileged.
+4. Ensures `/var/run` is tmpfs (loads `tmpfs`, mounts if needed).
+5. Verifies the s6 binaries are present (Step 2 dependency).
+6. Builds and deploys both kernel modules (calling `drawfs/build.sh`
    and `inputfs/build.sh` for step 5's work, so step 5 is
    redundant if you run `install.sh`).
-3. Copies userland binaries to `/usr/local/bin/`.
-4. Generates rc.d service scripts: module loaders for `inputfs`
+7. Copies userland binaries to `/usr/local/bin/`.
+8. Generates rc.d service scripts: module loaders for `inputfs`
    and `audiofs` (the latter PROVIDEs `utf_clock`, since loading
    audiofs starts the kernel clock writer; ADR 0018/0029), the
    `utf-supervisor` (s6-svscan launcher), and thin shims for
    `semasound`, `semadraw`, and `pgsd-sessiond` that translate
    `service <name> {start,stop,status,restart}` into the matching
    `s6-svc` calls.
-5. Copies the s6 service-directory layout from `s6/utf/` to
+9. Copies the s6 service-directory layout from `s6/utf/` to
    `/var/service/utf/` (one directory per supervised daemon).
-6. Creates `/var/log/utf/` and per-daemon log subdirectories
-   for `s6-log` to write into.
-7. Sets `drawfs_load="YES"` in `/boot/loader.conf`.
-8. Sets enable flags in `/etc/rc.conf`: `inputfs_enable`,
-   `utf_supervisor_enable`, plus the two daemon shims.
-9. On systems upgraded from a pre-2026-05-08 install, reaps any
-   stale `semainputd` artifacts left from before the daemon was
-   retired (the binary, its rc.d shim, its service directory,
-   its `rc.conf` enable flag).
+10. Creates `/var/log/utf/` and per-daemon log subdirectories
+    for `s6-log` to write into.
+11. Sets `drawfs_load="YES"` in `/boot/loader.conf`.
+12. Sets enable flags in `/etc/rc.conf`: `inputfs_enable`,
+    `utf_supervisor_enable`, plus the two daemon shims.
+13. On systems upgraded from a pre-2026-05-08 install, reaps any
+    stale `semainputd` artifacts left from before the daemon was
+    retired (the binary, its rc.d shim, its service directory,
+    its `rc.conf` enable flag).
 
 The supervision tree (s6-svscan + s6-supervise per daemon +
 s6-log per daemon) replaces the previous direct rc.d management
@@ -538,11 +629,19 @@ is the operational mode for the terminal client.
 ## Rebuilding
 
 To rebuild from a clean tree (after pulling changes, editing
-sources, or changing the Zig toolchain), clear the build
-artifacts and reinstall in one step:
+sources, or changing the Zig toolchain), just rerun the installer:
 
 ```
-sudo sh clean.sh --force && sudo sh install.sh
+sh install.sh
+```
+
+`install.sh` clears the build artifacts itself before building:
+it runs `clean.sh --force` as an early step, so a separate manual
+clean is no longer required. To inspect or clean by hand:
+
+```
+sh clean.sh --dry-run   # list candidates without removing
+sh clean.sh --force     # remove them
 ```
 
 `clean.sh` removes every `.zig-cache/` and `zig-out/` directory
@@ -550,13 +649,13 @@ under the checkout plus the root-level `build-*.log` files. It
 does not touch `.git/`, `.config`, source files, or anything
 under `/usr/src`, `/boot`, or `/usr/obj`. The drawfs and inputfs
 kernel modules under `/usr/src` are cleaned by their own
-`build.sh` scripts, not by `clean.sh`. Run `sh clean.sh --dry-run`
-first to see the candidate list without removing anything.
+`build.sh` scripts, not by `clean.sh`.
 
-`install.sh` then rebuilds every userland subproject, rebuilds
-and redeploys the kernel modules, and reinstalls, exactly as in
-Step 6. Because `install.sh` performs the userland build itself,
-a clean rebuild does not need a separate `build.sh` run.
+`install.sh` then rebuilds every userland subproject (unprivileged),
+rebuilds and redeploys the kernel modules, and reinstalls, exactly
+as in Step 6. Because `install.sh` performs both the clean and the
+userland build itself, a clean rebuild needs no separate `clean.sh`
+or `build.sh` run.
 
 A clean rebuild is the reliable way to pick up a Zig toolchain
 change: stale `.zig-cache/` entries from a previous compiler
@@ -697,7 +796,7 @@ explicitly per Step 2.
 
 If you hit either failure mode mid-install, the fix is in the
 build inputs (write `.config`, install `rsync`); no system
-state needs to be unwound. Re-run `sudo sh install.sh`.
+state needs to be unwound. Re-run `sh install.sh`.
 
 ### Hazard 7 — Kernel console writes to the same framebuffer
 
@@ -801,10 +900,12 @@ the recovery steps in order:
 ## Uninstall
 
 ```
-sudo sh install.sh --uninstall
+sh install.sh --uninstall
 ```
 
-This removes the installed binaries, rc.d service files, the
+Run as your regular user; the uninstall re-execs its privileged
+removals through `mdo` just as the install does. This removes the
+installed binaries, rc.d service files, the
 `drawfs_load` entry from `/boot/loader.conf`, and the daemon
 enable flags from `/etc/rc.conf`. It does not remove the
 source tree at `~/awase` or anything under `/var/run/sema/`
