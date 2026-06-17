@@ -613,6 +613,103 @@ build_sub "semasound" "semasound"
 # Install
 # ============================================================================
 
+# ----------------------------------------------------------------------------
+# ADR 0004 B3b: migrate an existing UTF-named install forward to Awase.
+#
+# Idempotent and safe to re-run: every step checks current state and is a
+# no-op on a fresh system or one already migrated. Runs after the build and
+# before the Awase state is laid down, so the old supervisor is stopped and
+# the old entry points removed before the new ones are written. UTF names
+# appear ONLY here, as the old state to detect and retire; the rest of
+# install.sh is Awase-only. The UTF aliases are removed by a follow-up ADR.
+# ----------------------------------------------------------------------------
+migrate_from_utf() {
+    _mig=0
+    _devfs_rules="/etc/devfs.rules"
+
+    # 1. Stop the old UTF supervisor cleanly (ADR 0030 Decision 4: stop
+    #    supervision before removing what it owns). Bringing down the old
+    #    s6-svscan tears down its children; the Awase supervisor started at
+    #    the end of this install re-supervises them, so no service is left
+    #    running unsupervised.
+    if [ -f "$PREFIX/etc/rc.d/utf-supervisor" ] || [ -f "/etc/rc.d/utf-supervisor" ]; then
+        service utf-supervisor stop >/dev/null 2>&1 \
+            && echo "  migrate  stopped utf-supervisor (old tree torn down)" || true
+        _mig=1
+    elif pgrep -f "s6-svscan /var/service/utf" >/dev/null 2>&1; then
+        /usr/local/bin/s6-svscanctl -t /var/service/utf 2>/dev/null \
+            && echo "  migrate  stopped s6-svscan on /var/service/utf (direct)" || true
+        _mig=1
+    fi
+
+    # 2. rc.conf enable knob: carry the operator's value to the Awase key,
+    #    then drop the old key. If the Awase key is already set, leave it.
+    _old_enable="$(sysrc -n utf_supervisor_enable 2>/dev/null || true)"
+    if [ -n "$_old_enable" ]; then
+        if [ -z "$(sysrc -n awase_supervisor_enable 2>/dev/null || true)" ]; then
+            sysrc "awase_supervisor_enable=$_old_enable" >/dev/null \
+                && echo "  migrate  awase_supervisor_enable=$_old_enable (from utf_supervisor_enable)"
+        fi
+        sysrc -x utf_supervisor_enable >/dev/null 2>&1 \
+            && echo "  migrate  removed utf_supervisor_enable" || true
+        _mig=1
+    fi
+
+    # 3. devfs_system_ruleset: migrate only if it still points at the old
+    #    ruleset (an operator who repointed it is left alone). Then strip the
+    #    old managed block; the Awase devfs stage rewrites the block fresh.
+    if [ "$(sysrc -n devfs_system_ruleset 2>/dev/null)" = "utf_devices" ]; then
+        sysrc "devfs_system_ruleset=awase_devices" >/dev/null \
+            && echo "  migrate  devfs_system_ruleset=awase_devices (from utf_devices)"
+        _mig=1
+    fi
+    if [ -f "$_devfs_rules" ] && grep -qF "# BEGIN utf_devices managed by install.sh" "$_devfs_rules"; then
+        sed -i '' '/^# BEGIN utf_devices managed by install.sh$/,/^# END utf_devices managed by install.sh$/d' "$_devfs_rules" \
+            && echo "  migrate  removed old utf_devices devfs block"
+        _mig=1
+    fi
+
+    # 4. Per-user attribute directory: move it to the Awase path if the old
+    #    exists and the new does not. The daemon already reads either via the
+    #    B1 alias; this makes the canonical path authoritative.
+    if [ -d /etc/utf/users ] && [ ! -d /etc/awase/users ]; then
+        mkdir -p /etc/awase \
+            && mv /etc/utf/users /etc/awase/users \
+            && echo "  migrate  /etc/utf/users -> /etc/awase/users"
+        rmdir /etc/utf 2>/dev/null || true
+        _mig=1
+    fi
+
+    # 5. Remove the old supervision tree and the old entry points. The Awase
+    #    tree, rc.d files, and tools are installed fresh below.
+    if [ -d /var/service/utf ]; then
+        rm -rf /var/service/utf && echo "  migrate  removed /var/service/utf"
+        _mig=1
+    fi
+    for _p in \
+        "$PREFIX/etc/rc.d/utf-supervisor" "/etc/rc.d/utf-supervisor" \
+        "$PREFIX/etc/rc.d/utf-log-cleanup" "/etc/rc.d/utf-log-cleanup" \
+        "$PREFIX/bin/utf-log-cleanup" \
+        "$PREFIX/etc/periodic/daily/500.utf-log-cleanup" \
+        "/var/run/utf-supervisor.pid"; do
+        if [ -e "$_p" ]; then rm -f "$_p" && echo "  migrate  removed $_p"; _mig=1; fi
+    done
+
+    # 6. Logs are intentionally NOT migrated (ADR 0004 D4): existing logs stay
+    #    at /var/log/utf for postmortem; new logs go to /var/log/awase.
+    if [ "$_mig" = 1 ] && [ -d /var/log/utf ]; then
+        echo "  migrate  note: old logs left in /var/log/utf (not moved); new logs use /var/log/awase"
+    fi
+
+    if [ "$_mig" = 1 ]; then
+        echo "--- Migrated existing UTF install to Awase (ADR 0004) ---"
+    fi
+}
+
+echo ""
+echo "=== Migrating any existing UTF install (ADR 0004 D4) ==="
+migrate_from_utf
+
 echo ""
 echo "=== Installing to $PREFIX/bin/ ==="
 mkdir -p "$PREFIX/bin"

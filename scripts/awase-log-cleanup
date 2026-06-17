@@ -1,5 +1,5 @@
 #!/bin/sh
-# utf-log-cleanup: operator helper for compacting s6-log-managed
+# awase-log-cleanup: operator helper for compacting s6-log-managed
 # log directories.
 #
 # Surfaced 2026-05-12 alongside AD-32 (semadrawd busy-wait) and
@@ -23,25 +23,25 @@
 #
 # Modes:
 #
-#   utf-log-cleanup
+#   awase-log-cleanup
 #       Read-only status. Lists every /var/log/*/ directory,
 #       shows whether it is s6-log-shaped, and reports total
 #       size and archived-file count.
 #
-#   utf-log-cleanup --trim
+#   awase-log-cleanup --trim
 #       Delete every @*.s archive in every s6-log-shaped
 #       directory. The current file is left untouched. Safe to
 #       run from cron / periodic; this is the recommended
 #       scheduled operation.
 #
-#   utf-log-cleanup --purge --force
+#   awase-log-cleanup --purge --force
 #       Trim plus truncate current to zero. Before truncating,
 #       sends s6-svc -t to the log supervisor so s6-log
 #       close-and-reopens the file cleanly; then truncates from
 #       outside. Loses recent log data; require --force as a
 #       guard rail because this is destructive.
 #
-#   utf-log-cleanup --dry-run [--trim | --purge --force]
+#   awase-log-cleanup --dry-run [--trim | --purge --force]
 #       Show what would happen without doing it. Pairs with
 #       --trim or --purge.
 #
@@ -82,7 +82,7 @@ while [ $# -gt 0 ]; do
             ;;
         *)
             echo "error: unknown argument: $1" >&2
-            echo "usage: utf-log-cleanup [--trim | --purge --force] [--dry-run]" >&2
+            echo "usage: awase-log-cleanup [--trim | --purge --force] [--dry-run]" >&2
             exit 2
             ;;
     esac
@@ -121,12 +121,12 @@ list_s6_log_dirs() {
     # path per line.
     #
     # maxdepth 3 covers both flat layouts (/var/log/<svc>/) and
-    # the project's namespaced layout (/var/log/utf/<svc>/),
+    # the project's namespaced layout (/var/log/awase/<svc>/),
     # without descending arbitrarily into unrelated log trees.
     # The original implementation walked only direct children
-    # of LOG_ROOT, which missed /var/log/utf/<svc>/ entirely;
+    # of LOG_ROOT, which missed /var/log/awase/<svc>/ entirely;
     # corrected 2026-05-12 after bench testing showed an empty
-    # status table on the production /var/log/utf/ layout.
+    # status table on the production /var/log/awase/ layout.
     if [ ! -d "$LOG_ROOT" ]; then
         return 0
     fi
@@ -211,19 +211,19 @@ do_trim() {
 # ----------------------------------------------------------------------
 
 log_supervisor_for() {
-    # Given /var/log/<svc>/, return /var/service/utf/<svc>/log if
+    # Given /var/log/<svc>/, return /var/service/awase/<svc>/log if
     # it exists, else empty string. The mapping assumes the
-    # convention that /var/log/utf/<svc>/ pairs with
-    # /var/service/utf/<svc>/log/. Other s6-log dirs may not have
+    # convention that /var/log/awase/<svc>/ pairs with
+    # /var/service/awase/<svc>/log/. Other s6-log dirs may not have
     # supervisors (or may live under different paths); the purge
     # path handles "no supervisor found" by skipping the
     # close-and-reopen step and falling back to a straight
     # truncate.
     dir="$1"
     case "$dir" in
-        "$LOG_ROOT"/utf/*)
+        "$LOG_ROOT"/awase/*)
             svc=$(basename "$dir")
-            sup="$SERVICE_ROOT/utf/$svc/log"
+            sup="$SERVICE_ROOT/awase/$svc/log"
             if [ -d "$sup" ]; then
                 printf '%s\n' "$sup"
             fi

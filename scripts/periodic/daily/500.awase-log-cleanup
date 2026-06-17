@@ -1,5 +1,5 @@
 #!/bin/sh
-# Periodic daily wrapper for utf-log-cleanup.
+# Periodic daily wrapper for awase-log-cleanup.
 #
 # Installed by install.sh to /usr/local/etc/periodic/daily/.
 # FreeBSD's periodic(8) runs every script in
@@ -14,9 +14,9 @@
 # Mode: --trim only. Deletes archived s6-log files
 # (current is preserved, so recent activity stays
 # accessible). For more aggressive reclamation, operators
-# run utf-log-cleanup --purge --force by hand.
+# run awase-log-cleanup --purge --force by hand.
 #
 # Exit code is propagated to periodic(8) which logs
 # accordingly.
 
-exec /usr/local/bin/utf-log-cleanup --trim
+exec /usr/local/bin/awase-log-cleanup --trim
