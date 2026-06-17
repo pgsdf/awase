@@ -1,6 +1,7 @@
 // pgsd-sessiond/src/attribute_file.zig
 //
-// Parses /etc/utf/users/<username>.conf per ADR 0003.
+// Parses /etc/awase/users/<username>.conf per ADR 0003. The legacy
+// /etc/utf/users path is honored as a fallback during the ADR 0004 window.
 //
 // Format reminder (see docs/adr/0003-attribute-file-format.md for the
 // canonical grammar):
@@ -117,11 +118,53 @@ pub fn isValidUsername(name: []const u8) bool {
 // Attributes with no warnings. Other I/O errors return a default
 // Attributes with a single warning describing the failure.
 
+// Canonical per-user attribute directory (ADR 0003), renamed under ADR 0004.
+pub const ATTR_DIR = "/etc/awase/users";
+// Legacy directory honored during the ADR 0004 compatibility window. Removed by
+// the follow-up ADR once no install references the UTF path.
+pub const ATTR_DIR_LEGACY = "/etc/utf/users";
+
 pub fn loadForUser(
     allocator: std.mem.Allocator,
     username: []const u8,
 ) !Attributes {
-    return loadFromDir(allocator, "/etc/utf/users", username);
+    // ADR 0004 D4 compatibility alias: resolve under either name during the
+    // window. Prefer the canonical Awase directory; fall back to the legacy UTF
+    // directory only when the Awase file is absent. Once the installer migrates
+    // /etc/utf/users -> /etc/awase/users the fallback is never taken; before it
+    // does, login still resolves the operator's existing files.
+    const dir = resolveAttrDir(allocator, ATTR_DIR, ATTR_DIR_LEGACY, username);
+    return loadFromDir(allocator, dir, username);
+}
+
+// Selects the attribute directory to read: the primary if its <username>.conf
+// exists, else the legacy if its does, else the primary (so the silent-defaults
+// path and any warning reference the current name). Pure selection; the chosen
+// directory is then handed to loadFromDir, which performs the actual read.
+fn resolveAttrDir(
+    allocator: std.mem.Allocator,
+    primary: []const u8,
+    legacy: []const u8,
+    username: []const u8,
+) []const u8 {
+    if (userFileExists(allocator, primary, username)) return primary;
+    if (userFileExists(allocator, legacy, username)) return legacy;
+    return primary;
+}
+
+// Probe for <dir>/<username>.conf without reading it. Returns false on any
+// condition (invalid name, path too long, not found, I/O failure); loadFromDir
+// re-derives the same condition and produces the appropriate silent default or
+// warning, so a false here never loses information.
+fn userFileExists(allocator: std.mem.Allocator, dir: []const u8, username: []const u8) bool {
+    if (!isValidUsername(username)) return false;
+    var path_buf: [PATH_MAX]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.conf", .{ dir, username }) catch return false;
+    var io_ctx = compat.io.open(allocator) catch return false;
+    defer io_ctx.deinit();
+    var file = compat.fs.cwd(io_ctx.io()).openFile(path) catch return false;
+    file.close();
+    return true;
 }
 
 // Variant that takes the directory path explicitly. Useful for tests
@@ -192,7 +235,7 @@ pub fn loadFromDir(
     return attrs;
 }
 
-const PATH_MAX = 1024; // sufficient for /etc/utf/users/<32-char>.conf
+const PATH_MAX = 1024; // sufficient for /etc/awase/users/<32-char>.conf
 const MAX_FILE_SIZE = 64 * 1024;
 
 // =============================================================================
@@ -628,4 +671,40 @@ test "loadFromDir refuses invalid username" {
 
     try testing.expect(attrs.display_name == null);
     try testing.expectEqual(@as(usize, 1), attrs.warnings.items.len);
+}
+
+test "resolveAttrDir prefers primary, falls back to legacy, else primary" {
+    const a = testing.allocator;
+    var io_ctx = try compat.io.open(a);
+    defer io_ctx.deinit();
+    const d = compat.fs.cwd(io_ctx.io());
+
+    const base = "/tmp/awase_attrtest_resolve";
+    const primary = base ++ "/awase";
+    const legacy = base ++ "/utf";
+    d.deleteTree(base) catch {};
+    defer d.deleteTree(base) catch {};
+    try d.makeDir(base);
+    try d.makeDir(primary);
+    try d.makeDir(legacy);
+
+    // Neither file present: resolves to the canonical primary.
+    try testing.expectEqualStrings(primary, resolveAttrDir(a, primary, legacy, "alice"));
+
+    // Only the legacy file present: falls back to legacy (the compat window).
+    {
+        var f = try d.createFile(legacy ++ "/alice.conf", .{});
+        f.close();
+    }
+    try testing.expectEqualStrings(legacy, resolveAttrDir(a, primary, legacy, "alice"));
+
+    // Both present: the canonical primary wins.
+    {
+        var f = try d.createFile(primary ++ "/alice.conf", .{});
+        f.close();
+    }
+    try testing.expectEqualStrings(primary, resolveAttrDir(a, primary, legacy, "alice"));
+
+    // Invalid username never probes the filesystem; resolves to primary.
+    try testing.expectEqualStrings(primary, resolveAttrDir(a, primary, legacy, "../passwd"));
 }

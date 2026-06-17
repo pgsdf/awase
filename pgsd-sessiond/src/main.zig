@@ -150,7 +150,7 @@ const USAGE_TEXT =
     \\  --list-users
     \\      Enumerate login-capable users (stage 2). Lists users
     \\      with UID > 1000 and a valid login shell, applying the
-    \\      per-user attribute file at /etc/utf/users/<name>.conf
+    \\      per-user attribute file at /etc/awase/users/<name>.conf
     \\      for display names, default sessions, and capabilities.
     \\
     \\  --list-sessions

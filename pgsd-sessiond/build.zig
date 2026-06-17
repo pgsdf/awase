@@ -66,7 +66,7 @@ pub fn build(b: *std.Build) void {
 
     // Test step. Nine test surfaces:
     //   - pam.zig: libpam binding wrapper with mock conversation.
-    //   - attribute_file.zig: /etc/utf/users/<name>.conf parser (ADR 0003).
+    //   - attribute_file.zig: /etc/awase/users/<name>.conf parser (ADR 0003).
     //   - user_enum.zig: pure-function helpers for /etc/master.passwd.
     //   - session_file.zig: ADR 0004 .session parser + enumerator.
     //   - launch.zig: env construction + filter-name helper.

@@ -7,7 +7,7 @@
 //   - pw_shell present in /etc/shells (consulted via getusershell(3))
 //
 // For each surviving user, the attribute file at
-// /etc/utf/users/<name>.conf is read per ADR 0003.
+// /etc/awase/users/<name>.conf is read per ADR 0003.
 //
 // The result is an owned list of EnumeratedUser entries. The caller
 // is responsible for calling deinit on the list.
