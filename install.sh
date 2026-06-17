@@ -189,7 +189,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
             HOME=/root \
             PATH=/usr/local/bin:/usr/bin:/bin \
             AWASE_PREFIX="$PREFIX" \
-            "$PRIV" "$0"
+            "$PRIV" /bin/sh "$SCRIPT_DIR/$(basename "$0")"
         echo "ERROR: could not elevate via $PRIV (use PRIV=sudo if no mac_do)." >&2
         exit 1
     fi
@@ -676,7 +676,7 @@ build_sub "semasound" "semasound"
         AWASE_PREFIX="$PREFIX" \
         AWASE_ASSUME_YES="$ASSUME_YES" \
         AWASE_ALLOW_SEMADRAW_TERM="$ALLOW_SEMADRAW_TERM" \
-        "$PRIV" "$0"
+        "$PRIV" /bin/sh "$SCRIPT_DIR/$(basename "$0")"
     echo "ERROR: could not elevate via $PRIV. Is mac_do loaded (or use PRIV=sudo)?" >&2
     exit 1
 fi
