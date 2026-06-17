@@ -85,6 +85,95 @@ priv() { "$PRIV" "$@"; }
 AWASE_PHASE="${AWASE_PHASE:-build}"
 
 # ============================================================================
+# Elevation preflight (ADR shared 0005, resolves Open Question 2)
+# ============================================================================
+#
+# Verify $PRIV can actually become root before any privileged step runs. The
+# installer never provisions mac_do itself: provisioning needs root, and mac_do
+# is the very path the unprivileged installer would use to get root, so it is a
+# chicken-and-egg the script cannot resolve from inside. Instead, when elevation
+# does not work, show the operator the exact commands and re-check after they
+# apply them in a root shell. The probe is functional (it actually tries to
+# elevate) rather than parsing sysctls, which is the ground truth for mac_do and
+# sudo alike.
+
+priv_works() {
+    "$PRIV" true >/dev/null 2>&1
+}
+
+priv_recipe() {
+    if [ "$PRIV" = mdo ]; then
+        cat <<EOF
+$PRIV cannot elevate to root yet.
+
+The installer builds as you and elevates the rest through mac_do, which must be
+provisioned once, as root. In a root shell (su -, or the system console), run:
+
+  kldload mac_do
+  sysrc -f /boot/loader.conf mac_do_load=YES
+  sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'
+  printf 'security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*\n' >> /etc/sysctl.conf
+
+Your user must be in the wheel group (gid 0). If "id" does not list wheel:
+
+  pw groupmod wheel -m $(id -un)
+
+then log out and back in so the new membership takes effect.
+
+Alternatively, re-run with PRIV=sudo if you prefer sudo and it is configured.
+EOF
+    else
+        cat <<EOF
+$PRIV cannot elevate to root.
+
+Check that $PRIV is installed and lets your user run commands as root (for sudo,
+an appropriate sudoers entry), or re-run with PRIV=mdo to use mac_do.
+EOF
+    fi
+}
+
+ensure_elevation() {
+    if priv_works; then
+        return 0
+    fi
+
+    # Non-interactive (--yes, or no controlling terminal): cannot guide a fix,
+    # so fail fast with the recipe rather than hang waiting for input.
+    if [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
+        echo "ERROR: cannot elevate via \$PRIV ($PRIV)." >&2
+        priv_recipe >&2
+        exit 1
+    fi
+
+    echo "NOTICE: $PRIV cannot elevate yet; opening provisioning guidance." >&2
+    while ! priv_works; do
+        if command -v bsddialog >/dev/null 2>&1; then
+            if ! bsddialog --title "Awase installer: privilege setup" \
+                           --ok-label "Re-check" --cancel-label "Abort" \
+                           --yesno "$(priv_recipe)
+
+Apply the commands above in a root shell, then choose Re-check.
+Choose Abort to stop the install." 0 0; then
+                echo "ABORTED: elevation not provisioned." >&2
+                exit 1
+            fi
+        else
+            priv_recipe >&2
+            printf "Apply the changes as root, then press Enter to re-check (Ctrl-C aborts): " >&2
+            if [ -r /dev/tty ]; then read -r _ans < /dev/tty || true; else read -r _ans || true; fi
+        fi
+    done
+    echo "  ok  elevation via $PRIV verified"
+}
+
+# Run the preflight whenever a privileged step will follow: not for --check
+# (read-only) and not when already root (the deploy re-exec and a root-invoked
+# uninstall both re-enter as root and have nothing to provision).
+if [ "$CHECK_ONLY" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
+    ensure_elevation
+fi
+
+# ============================================================================
 # Uninstall (privileged terminal path)
 # ============================================================================
 #

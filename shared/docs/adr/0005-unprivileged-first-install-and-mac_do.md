@@ -110,8 +110,21 @@ structure, chosen for the smallest diff and the lowest migration risk:
 - Phase 1 runs primarily as the invoking user: the dependency check and the
   five userland Zig builds. Any required dependency installation is elevated
   independently, before the userland builds begin; it is the one privileged step
-  that cannot sit in Phase 2, since the build depends on its result. Phase 1 then
-  re-executes the script with a sanitized, root-owned environment:
+  that cannot sit in Phase 2, since the build depends on its result. One more
+  independently elevated step precedes the builds, discovered on the
+  2026-06-17 bench: a `clean.sh --force` run under `$PRIV` that removes any
+  `.zig-cache/` and `zig-out/` left in the checkout. A tree previously built by
+  the old sudo-everything installer carries root-owned caches, and an
+  unprivileged Zig build cannot write into them (it fails with `AccessDenied`).
+  The elevated clean removes those leftovers so the first unprivileged build
+  succeeds; on an already-clean tree it is a no-op. A companion guard repairs
+  `sdk/` ownership: `tools/zig` bootstraps the vendored toolchain into
+  `sdk/zig/current`, and a pre-ADR bootstrap that ran under sudo left `sdk/`
+  root-owned, which a later toolchain swap (writing into `sdk/zig/`) could not
+  override unprivileged. The guard `chown`s `sdk/` back to the invoking user when
+  it finds any root-owned entry there, and is likewise a no-op once ownership is
+  correct. Phase 1 then re-executes the script with a sanitized, root-owned
+  environment:
 
   ```sh
   exec env \
@@ -210,24 +223,27 @@ This ADR closes when all of the following hold:
 
 ## Open questions
 
-1. **Kernel-module compilation privilege (unresolved observation, do not
-   speculate).** Whether `build.sh build` itself requires privilege, or only
-   `install` and `deploy` do, remains under investigation. Three cases are
-   possible: build to user with install and deploy to root (best); all three to
-   root (the present assumption, which the build.sh usage banners suggest with
-   their `sudo $0` examples); or build to user with objects written into the
-   module tree under permissive ownership. The Phase 1 implementation preserves
-   existing behavior, keeping kernel `install/build/deploy` in the privileged
-   phase, pending verification on the bench: `ls -ld /usr/src /usr/obj` and a
-   trial `./inputfs/build.sh build` as the invoking user. If the compile proves
-   unprivileged, it MAY move to the unprivileged phase under D7 without a new
-   ADR.
+1. **Kernel-module compilation privilege (resolved on the bench
+   2026-06-17).** The trial settled it: `./inputfs/build.sh build` refuses to
+   run unprivileged ("This script must run as root"), and `/usr/src` and
+   `/usr/obj` are root-owned (`drwxr-xr-x root wheel` and `drwxrwxr-x root
+   wheel`). This is the "all three to root" case: `install`, `build`, and
+   `deploy` all require privilege. The kernel compile therefore stays in Phase 2
+   as implemented; it does not move to the unprivileged phase under D7. The
+   build.sh `sudo $0` usage banners were correct.
 
-2. **Rule-presence detection.** Should the installer check that
-   `security.mac.do.enabled=1` and that a `wheel`-to-root rule is present, and
-   fail early with the exact sysctl and loader lines when it is not, rather than
-   failing obscurely at the first `mdo`? Proposed: detect and refuse to proceed
-   with actionable guidance, but never auto-write security policy.
+2. **Rule-presence detection (resolved on the bench 2026-06-17).** A fresh
+   FreeBSD 15.1 host without a provisioned rule failed obscurely at the first
+   `mdo` (`mdo: setcred(): Operation not permitted`) after the dependency check
+   had already run. Resolved by an elevation preflight near the top of the
+   script: a functional probe (`"$PRIV" true`, ground truth rather than sysctl
+   parsing) gated on not-`--check` and not-already-root. On failure, an
+   interactive run shows the exact provisioning commands in a `bsddialog` box
+   (plain stderr plus an Enter prompt when `bsddialog` is absent) and re-checks
+   after the operator applies them in a root shell, looping until elevation
+   works or the operator aborts; a non-interactive run (`--yes` or no tty) fails
+   fast with the same recipe. The installer never writes security policy itself,
+   preserving D3.
 
 3. **sudo fallback (resolved in D3).** Support for `PRIV=sudo ./install.sh` on
    hosts without `mac_do` is decided in D3 rather than left open: the
