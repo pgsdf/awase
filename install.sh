@@ -1,10 +1,10 @@
 #!/bin/sh
-# UTF install script
+# Awase install script
 # Builds all daemons and installs them to PREFIX (default: /usr/local).
 #
 # Usage:
 #   sh install.sh                  # install to /usr/local (requires root)
-#   sh install.sh --prefix ~/utf   # install to custom prefix
+#   sh install.sh --prefix ~/awase   # install to custom prefix
 #   sh install.sh --check          # verify dependencies only
 #   sh install.sh --uninstall      # remove installed files
 #   sh install.sh --yes            # non-interactive; assume yes for prompts
@@ -35,7 +35,7 @@ ALLOW_SEMADRAW_TERM=0
 . "$SCRIPT_DIR/scripts/detect-os.sh"
 echo "Host OS: $UTF_OS $UTF_OS_VERSION"
 
-BINARIES="semadrawd chrono_dump semadraw-term inputdump utf-log-cleanup pgsd-sessiond semasound semasound-tone semasound-dump"
+BINARIES="semadrawd chrono_dump semadraw-term inputdump awase-log-cleanup pgsd-sessiond semasound semasound-tone semasound-dump"
 
 # ============================================================================
 # Argument parsing
@@ -200,10 +200,10 @@ fi
 # /var/run tmpfs prerequisite
 # ============================================================================
 #
-# UTF publishes shared-memory regions under /var/run/sema/. The defaults
+# Awase publishes shared-memory regions under /var/run/sema/. The defaults
 # on FreeBSD put /var/run on the same filesystem as /var, which makes
 # shared-memory writes slower and leaves stale state files across reboots.
-# UTF assumes tmpfs.
+# Awase assumes tmpfs.
 #
 # Idempotent: only add the fstab entry if not already present, only mount
 # if not already mounted as tmpfs. INSTALL.md Step 1 documents the manual
@@ -309,7 +309,7 @@ Install them now via pkg(8)?
 
 (Choose No to abort; install the packages manually and re-run.)"
 
-        if ! bsddialog --title "UTF installer: package installation" \
+        if ! bsddialog --title "Awase installer: package installation" \
                        --yesno "$dialog_body" 15 60; then
             echo "ABORTED: user declined package install" >&2
             exit 1
@@ -363,12 +363,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
     # orphans the supervise processes and the daemons; the next
     # install then has to SIGKILL the survivors.
     echo "=== Stopping supervision (ADR 0030 Decision 4) ==="
-    if [ -f "$PREFIX/etc/rc.d/utf-supervisor" ] && service utf-supervisor status >/dev/null 2>&1; then
-        service utf-supervisor stop >/dev/null 2>&1 \
-            && echo "  stopped  utf-supervisor (supervision tree torn down)" \
-            || echo "  WARNING: utf-supervisor stop reported failure; continuing"
-    elif pgrep -f "s6-svscan /var/service/utf" >/dev/null 2>&1; then
-        /usr/local/bin/s6-svscanctl -t /var/service/utf 2>/dev/null \
+    if [ -f "$PREFIX/etc/rc.d/awase-supervisor" ] && service awase-supervisor status >/dev/null 2>&1; then
+        service awase-supervisor stop >/dev/null 2>&1 \
+            && echo "  stopped  awase-supervisor (supervision tree torn down)" \
+            || echo "  WARNING: awase-supervisor stop reported failure; continuing"
+    elif pgrep -f "s6-svscan /var/service/awase" >/dev/null 2>&1; then
+        /usr/local/bin/s6-svscanctl -t /var/service/awase 2>/dev/null \
             && echo "  stopped  s6-svscan (direct)" \
             || echo "  WARNING: s6-svscanctl signal failed; continuing"
     else
@@ -388,7 +388,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     done
 
     RCDDIR="$PREFIX/etc/rc.d"
-    for svc in inputfs audiofs utf-supervisor semaaud semadraw pgsd-sessiond semasound; do
+    for svc in inputfs audiofs awase-supervisor semaaud semadraw pgsd-sessiond semasound; do
         target="$RCDDIR/$svc"
         if [ -f "$target" ]; then
             rm -f "$target"
@@ -401,7 +401,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     # AD-32 / AD-25 Round 1 follow-up: remove the periodic daily
     # script. The directory itself ($PREFIX/etc/periodic/daily/) is
     # not removed since other ports may use it.
-    PERIODIC_TARGET="$PREFIX/etc/periodic/daily/500.utf-log-cleanup"
+    PERIODIC_TARGET="$PREFIX/etc/periodic/daily/500.awase-log-cleanup"
     if [ -f "$PERIODIC_TARGET" ]; then
         rm -f "$PERIODIC_TARGET"
         echo "  removed  $PERIODIC_TARGET"
@@ -425,12 +425,12 @@ if [ "$UNINSTALL" -eq 1 ]; then
         rmdir "$PREFIX/share/pgsd" 2>/dev/null || true
     fi
 
-    # AD-20: remove the s6 supervision tree at /var/service/utf/.
-    # We do not remove /var/log/utf/; those logs may be useful for
+    # AD-20: remove the s6 supervision tree at /var/service/awase/.
+    # We do not remove /var/log/awase/; those logs may be useful for
     # postmortem inspection. Operators who want a clean slate should
-    # rm -rf /var/log/utf/ themselves (documented in INSTALL.md
+    # rm -rf /var/log/awase/ themselves (documented in INSTALL.md
     # Uninstall section).
-    SVC_ROOT="/var/service/utf"
+    SVC_ROOT="/var/service/awase"
     if [ -d "$SVC_ROOT" ]; then
         rm -rf "$SVC_ROOT"
         echo "  removed  $SVC_ROOT"
@@ -441,7 +441,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     echo ""
     echo "=== Disabling daemons in /etc/rc.conf ==="
     sysrc -x inputfs_enable 2>/dev/null        && echo "  removed  inputfs_enable"        || echo "  skip     inputfs_enable (not set)"
-    sysrc -x utf_supervisor_enable 2>/dev/null && echo "  removed  utf_supervisor_enable" || echo "  skip     utf_supervisor_enable (not set)"
+    sysrc -x awase_supervisor_enable 2>/dev/null && echo "  removed  awase_supervisor_enable" || echo "  skip     awase_supervisor_enable (not set)"
     sysrc -x semaaud_enable 2>/dev/null        && echo "  removed  semaaud_enable"        || echo "  skip     semaaud_enable (not set)"
     # F.6 (ADR 0029): semaaud is retired; remove a stale binary from any
     # pre-retirement install (its rc script and rc.conf key are handled by
@@ -472,25 +472,25 @@ if [ "$UNINSTALL" -eq 1 ]; then
         echo "  removed  inputfs_load from /boot/loader.conf (defensive cleanup)"
     fi
 
-    # AD-31.4 part A: remove utf_devices devfs ruleset.
+    # AD-31.4 part A: remove awase_devices devfs ruleset.
     echo ""
     echo "=== Removing devfs rule for /dev/draw ==="
     DEVFS_RULES="/etc/devfs.rules"
-    DEVFS_BEGIN="# BEGIN utf_devices managed by install.sh"
-    DEVFS_END="# END utf_devices managed by install.sh"
+    DEVFS_BEGIN="# BEGIN awase_devices managed by install.sh"
+    DEVFS_END="# END awase_devices managed by install.sh"
     if [ -f "$DEVFS_RULES" ] && grep -qF "$DEVFS_BEGIN" "$DEVFS_RULES"; then
         sed -i '' "/^${DEVFS_BEGIN}$/,/^${DEVFS_END}$/d" "$DEVFS_RULES"
-        echo "  removed  utf_devices block from $DEVFS_RULES"
+        echo "  removed  awase_devices block from $DEVFS_RULES"
     else
-        echo "  skip     utf_devices block (not present)"
+        echo "  skip     awase_devices block (not present)"
     fi
     # Only unset devfs_system_ruleset if it currently points at
-    # utf_devices; leave alone if the operator pointed it elsewhere.
-    if [ "$(sysrc -n devfs_system_ruleset 2>/dev/null)" = "utf_devices" ]; then
+    # awase_devices; leave alone if the operator pointed it elsewhere.
+    if [ "$(sysrc -n devfs_system_ruleset 2>/dev/null)" = "awase_devices" ]; then
         sysrc -x devfs_system_ruleset >/dev/null 2>&1 \
             && echo "  removed  devfs_system_ruleset from /etc/rc.conf"
     else
-        echo "  skip     devfs_system_ruleset (not set to utf_devices)"
+        echo "  skip     devfs_system_ruleset (not set to awase_devices)"
     fi
     # Apply the change live so the running session reverts to
     # default devfs permissions.
@@ -522,7 +522,7 @@ if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/
     fi
 fi
 
-echo "=== Building UTF (optimize=ReleaseSafe) ==="
+echo "=== Building Awase (optimize=ReleaseSafe) ==="
 
 # Read .config early so drawfs/build.sh sees DRAWFS_DRM via environment.
 # Default is false: swap-only kernel build, zero drm-kmod dependency.
@@ -670,11 +670,11 @@ if kldstat -q -m drawfs 2>/dev/null; then
     DRAWFS_WAS_LOADED=1
 fi
 
-# AD-20: same for utf-supervisor (the s6-svscan launcher). Track its
+# AD-20: same for awase-supervisor (the s6-svscan launcher). Track its
 # state so the post-install restart block knows to bring it up before
 # the daemon shims (which require it).
-if [ -f /var/run/utf-supervisor.pid ] && \
-   kill -0 "$(cat /var/run/utf-supervisor.pid 2>/dev/null)" 2>/dev/null; then
+if [ -f /var/run/awase-supervisor.pid ] && \
+   kill -0 "$(cat /var/run/awase-supervisor.pid 2>/dev/null)" 2>/dev/null; then
     UTF_SUPERVISOR_WAS_RUNNING=1
 fi
 
@@ -707,32 +707,32 @@ stop_service_if_running() {
 stop_service_if_running semadraw  semadrawd
 
 # SM-1.9: also stop pgsd-sessiond if it was running. Same pattern
-# as semadraw above; the run script in /var/service/utf/pgsd-sessiond/
+# as semadraw above; the run script in /var/service/awase/pgsd-sessiond/
 # is what s6-supervise execs, and we need to replace it.
 stop_service_if_running pgsd-sessiond pgsd-sessiond
 
 # F.5.f: same pattern for semasound; its run script under
-# /var/service/utf/semasound/ is replaced by this install.
+# /var/service/awase/semasound/ is replaced by this install.
 stop_service_if_running semasound semasound
 
-# AD-20: also stop utf-supervisor itself if it was running. The
+# AD-20: also stop awase-supervisor itself if it was running. The
 # stop_service_if_running calls above only stopped the *daemons*; the
 # s6-svscan supervisor process is still alive. Stopping it now lets us
-# replace the scan-directory tree at /var/service/utf/ without
+# replace the scan-directory tree at /var/service/awase/ without
 # s6-supervise processes contending. The post-install restart block
 # brings everything back up in the correct order.
 if [ "$UTF_SUPERVISOR_WAS_RUNNING" -eq 1 ]; then
-    echo "  stopping  utf-supervisor (was running)"
-    if [ -f "$PREFIX/etc/rc.d/utf-supervisor" ] || [ -f "/etc/rc.d/utf-supervisor" ]; then
-        service utf-supervisor stop >/dev/null 2>&1 || true
+    echo "  stopping  awase-supervisor (was running)"
+    if [ -f "$PREFIX/etc/rc.d/awase-supervisor" ] || [ -f "/etc/rc.d/awase-supervisor" ]; then
+        service awase-supervisor stop >/dev/null 2>&1 || true
     fi
     # Wait for the supervisor pid to exit, with timeout.
     waited=0
-    while [ -f /var/run/utf-supervisor.pid ] && \
-          kill -0 "$(cat /var/run/utf-supervisor.pid 2>/dev/null)" 2>/dev/null; do
+    while [ -f /var/run/awase-supervisor.pid ] && \
+          kill -0 "$(cat /var/run/awase-supervisor.pid 2>/dev/null)" 2>/dev/null; do
         if [ "$waited" -ge "$RESTART_TIMEOUT" ]; then
-            echo "  WARNING: utf-supervisor did not exit within ${RESTART_TIMEOUT}s, sending SIGKILL" >&2
-            pid=$(cat /var/run/utf-supervisor.pid 2>/dev/null)
+            echo "  WARNING: awase-supervisor did not exit within ${RESTART_TIMEOUT}s, sending SIGKILL" >&2
+            pid=$(cat /var/run/awase-supervisor.pid 2>/dev/null)
             [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
             sleep 1
             break
@@ -740,7 +740,7 @@ if [ "$UTF_SUPERVISOR_WAS_RUNNING" -eq 1 ]; then
         sleep 1
         waited=$((waited + 1))
     done
-    rm -f /var/run/utf-supervisor.pid
+    rm -f /var/run/awase-supervisor.pid
 fi
 
 # install_bin: copy a built binary into PREFIX/bin atomically.
@@ -776,7 +776,7 @@ install_bin() {
 # AD-26.1 follow-up (2026-05-11): hard-fail variant of install_bin for
 # binaries we know must be built. install_bin's WARNING-and-skip
 # behaviour is acceptable for genuinely optional artifacts, but for
-# the core UTF binaries a missing source means the build silently
+# the core Awase binaries a missing source means the build silently
 # failed to produce the expected artifact and we should refuse to
 # proceed rather than ship a stale /usr/local/bin/.
 #
@@ -796,7 +796,7 @@ install_bin_required() {
         echo "ERROR: required artifact $src not found." >&2
         echo "       The build for the corresponding subproject did not" >&2
         echo "       produce the expected binary. Refusing to install" >&2
-        echo "       a partial set of UTF binaries; the running daemons" >&2
+        echo "       a partial set of Awase binaries; the running daemons" >&2
         echo "       would be a mix of old and new." >&2
         echo "" >&2
         echo "       Investigate the build output above for failures." >&2
@@ -812,7 +812,7 @@ install_bin_required "$SCRIPT_DIR/semadraw/zig-out/bin/semadraw-term"
 install_bin_required "$SCRIPT_DIR/inputfs/zig-out/bin/inputdump"
 
 # SM-1.9: pgsd-sessiond graphical login daemon. Installed
-# alongside the other UTF binaries. Stage 9a wires it under s6
+# alongside the other Awase binaries. Stage 9a wires it under s6
 # supervision via the per-service files in s6/awase/pgsd-sessiond/
 # and the rc.d wrapper generated below.
 install_bin_required "$SCRIPT_DIR/pgsd-sessiond/zig-out/bin/pgsd-sessiond"
@@ -822,13 +822,13 @@ install_bin_required "$SCRIPT_DIR/semasound/zig-out/bin/semasound-dump"
 
 # AD-32 / AD-25 Round 1 follow-up: operator helper for compacting
 # s6-log-managed log directories. Not a built binary; it is the
-# shell script at scripts/utf-log-cleanup directly. install_bin
-# copies it to /usr/local/bin/utf-log-cleanup (the basename in
+# shell script at scripts/awase-log-cleanup directly. install_bin
+# copies it to /usr/local/bin/awase-log-cleanup (the basename in
 # the repo has no .sh extension to match the deployed-tool
 # convention, like semadraw-term and chrono_dump). See
-# scripts/utf-log-cleanup for the script itself and the periodic
+# scripts/awase-log-cleanup for the script itself and the periodic
 # section below for the daily wrapper.
-install_bin_required "$SCRIPT_DIR/scripts/utf-log-cleanup"
+install_bin_required "$SCRIPT_DIR/scripts/awase-log-cleanup"
 
 # AD-2a Phase 3 step 2: semainputd was retired 2026-05-08. On systems
 # upgraded from a pre-retirement install, /usr/local/bin/semainputd
@@ -971,15 +971,15 @@ RCEOF
 
     cat > "$RCDDIR/audiofs" << RCEOF
 #!/bin/sh
-# PROVIDE: audiofs audiofs_loaded utf_clock
+# PROVIDE: audiofs audiofs_loaded awase_clock
 # REQUIRE: FILESYSTEMS
 # KEYWORD: shutdown
 
-# F.6 (ADR 0029 Decision 2): this service PROVIDEs utf_clock. Loading
+# F.6 (ADR 0029 Decision 2): this service PROVIDEs awase_clock. Loading
 # the audiofs module starts the kernel writer of /var/run/sema/clock
 # (F.4, ADR 0018), so the module-load service is the capability's
 # provider. The AD-12.2 convention works as designed: semadraw's
-# REQUIRE: utf_clock is unchanged and now orders against audiofs.
+# REQUIRE: awase_clock is unchanged and now orders against audiofs.
 
 # F.5.f (ADR 0028): rc.d service for the audiofs kernel module.
 # Same shape and rationale as inputfs above: the module publishes
@@ -1032,9 +1032,9 @@ RCEOF
     echo "  installed  $RCDDIR/audiofs"
 
     # ========================================================================
-    # AD-20: utf-supervisor rc.d entry, launches s6-svscan against the
-    # UTF scan directory at /var/service/utf/. This is the single
-    # supervision-tree entry point for UTF; the three daemon rc.d files
+    # AD-20: awase-supervisor rc.d entry, launches s6-svscan against the
+    # Awase scan directory at /var/service/awase/. This is the single
+    # supervision-tree entry point for Awase; the three daemon rc.d files
     # below are thin shims that translate to s6-svc commands against
     # the running tree.
     #
@@ -1049,28 +1049,28 @@ RCEOF
     # silent restart is the right response.
     # ========================================================================
 
-    cat > "$RCDDIR/utf-supervisor" << RCEOF
+    cat > "$RCDDIR/awase-supervisor" << RCEOF
 #!/bin/sh
-# PROVIDE: utf_supervisor
+# PROVIDE: awase_supervisor
 # REQUIRE: FILESYSTEMS
 # KEYWORD: shutdown
 
-# AD-20: starts s6-svscan against /var/service/utf. The two UTF
+# AD-20: starts s6-svscan against /var/service/awase. The two Awase
 # daemon rc.d files (semasound, semadraw) REQUIRE: this so
 # rcorder(8) brings it up first. Without it, s6-supervise processes
 # don't exist for the daemon shims to talk to.
 
 . /etc/rc.subr
 
-name="utf_supervisor"
-rcvar="utf_supervisor_enable"
-: \${utf_supervisor_enable:="NO"}
+name="awase_supervisor"
+rcvar="awase_supervisor_enable"
+: \${awase_supervisor_enable:="NO"}
 
 # AD-20.3: ensure /usr/local/bin is in PATH for s6-svscan's children.
 #
 # Empirically diagnosed on bare metal 2026-05-06: when launched via
 # rc.d, s6-svscan starts but cannot spawn s6-supervise children. Its
-# stderr (captured at /var/log/utf/svscan.log) prints repeated:
+# stderr (captured at /var/log/awase/svscan.log) prints repeated:
 #
 #   s6-svscan: warning: unable to spawn s6-supervise for <name>:
 #     No such file or directory
@@ -1093,24 +1093,24 @@ rcvar="utf_supervisor_enable"
 PATH="/usr/local/bin:\${PATH}"
 export PATH
 
-scan_dir="/var/service/utf"
-pidfile="/var/run/utf-supervisor.pid"
+scan_dir="/var/service/awase"
+pidfile="/var/run/awase-supervisor.pid"
 
-# AD-20.3: -o /var/log/utf/svscan.log captures s6-svscan's own
+# AD-20.3: -o /var/log/awase/svscan.log captures s6-svscan's own
 # stderr (informational messages and warnings about failed spawns).
 # Per-service logs still flow through s6-log into
-# /var/log/utf/<name>/current as designed. We do not pass -f to
+# /var/log/awase/<name>/current as designed. We do not pass -f to
 # daemon(8): operationally either choice would work, but -o needs
 # valid stdio fds at exec time and we want s6-svscan's diagnostic
 # output to survive (precisely how this AD-20.3 PATH bug got
 # diagnosed).
 command="/usr/sbin/daemon"
-command_args="-P \${pidfile} -o /var/log/utf/svscan.log /usr/local/bin/s6-svscan \${scan_dir}"
+command_args="-P \${pidfile} -o /var/log/awase/svscan.log /usr/local/bin/s6-svscan \${scan_dir}"
 
-start_precmd="utf_supervisor_precmd"
-status_cmd="utf_supervisor_status"
+start_precmd="awase_supervisor_precmd"
+status_cmd="awase_supervisor_status"
 
-utf_supervisor_precmd() {
+awase_supervisor_precmd() {
     if [ ! -d "\${scan_dir}" ]; then
         echo "ERROR: scan directory \${scan_dir} does not exist." >&2
         echo "Re-run install.sh to create it." >&2
@@ -1119,10 +1119,10 @@ utf_supervisor_precmd() {
     return 0
 }
 
-utf_supervisor_status() {
+awase_supervisor_status() {
     if [ -r "\${pidfile}" ] && \\
        kill -0 "\$(cat "\${pidfile}" 2>/dev/null)" 2>/dev/null; then
-        echo "utf-supervisor is running as pid \$(cat \${pidfile})."
+        echo "awase-supervisor is running as pid \$(cat \${pidfile})."
         echo "scan dir: \${scan_dir}"
         if [ -d "\${scan_dir}" ]; then
             echo "supervised services:"
@@ -1135,7 +1135,7 @@ utf_supervisor_status() {
             done
         fi
     else
-        echo "utf-supervisor is not running."
+        echo "awase-supervisor is not running."
         return 1
     fi
 }
@@ -1143,13 +1143,13 @@ utf_supervisor_status() {
 load_rc_config \$name
 run_rc_command "\$1"
 RCEOF
-    chmod 555 "$RCDDIR/utf-supervisor"
-    echo "  installed  $RCDDIR/utf-supervisor"
+    chmod 555 "$RCDDIR/awase-supervisor"
+    echo "  installed  $RCDDIR/awase-supervisor"
 
     # ========================================================================
-    # AD-20: thin shim rc.d wrappers for the three UTF daemons.
+    # AD-20: thin shim rc.d wrappers for the three Awase daemons.
     # Each translates `service <name> {start|stop|restart|status}` to
-    # the corresponding s6-svc command against /var/service/utf/<name>.
+    # the corresponding s6-svc command against /var/service/awase/<name>.
     # The shims preserve the existing operator interface; the actual
     # supervision is done by s6.
     # ========================================================================
@@ -1158,11 +1158,11 @@ RCEOF
     cat > "$RCDDIR/semasound" << RCEOF
 #!/bin/sh
 # PROVIDE: semasound
-# REQUIRE: utf_supervisor audiofs_loaded
+# REQUIRE: awase_supervisor audiofs_loaded
 
 # F.5.f (ADR 0028): thin shim for semasound, the AD-3 audio mixing
 # broker. Predecessor retired under F.6 (ADR 0029). It does not
-# provide utf_clock: that capability belongs to the audiofs rc
+# provide awase_clock: that capability belongs to the audiofs rc
 # service (the module load starts the kernel clock writer, ADR
 # 0018/0029); semasound is a clock consumer like every other daemon.
 
@@ -1175,7 +1175,7 @@ rcvar="semasound_enable"
 PATH="/usr/local/bin:\${PATH}"
 export PATH
 
-svc_dir="/var/service/utf/semasound"
+svc_dir="/var/service/awase/semasound"
 
 start_cmd="semasound_start"
 stop_cmd="semasound_stop"
@@ -1185,7 +1185,7 @@ restart_cmd="semasound_restart"
 semasound_start() {
     if ! /usr/local/bin/s6-svok "\${svc_dir}" 2>/dev/null; then
         echo "ERROR: s6-supervise not running on \${svc_dir}." >&2
-        echo "Run 'service utf-supervisor start' first." >&2
+        echo "Run 'service awase-supervisor start' first." >&2
         return 1
     fi
     echo "Starting \${name} via s6-svc -uwu (timeout 5s)..."
@@ -1234,12 +1234,12 @@ RCEOF
     cat > "$RCDDIR/semadraw" << RCEOF
 #!/bin/sh
 # PROVIDE: semadraw
-# REQUIRE: utf_supervisor utf_clock inputfs_loaded
+# REQUIRE: awase_supervisor awase_clock inputfs_loaded
 
 # AD-20: thin shim for semadrawd. Same shape as the shims above.
 # Note that the framebuffer-resolution detection that previously
 # lived in this rc.d script (semadraw_detect_resolution under
-# AD-15.1 / AD-17) now lives in /var/service/utf/semadrawd/run.
+# AD-15.1 / AD-17) now lives in /var/service/awase/semadrawd/run.
 # The detection substrate is unchanged (sysctl
 # hw.drawfs.efifb.{width,height}); only the location moved.
 
@@ -1253,7 +1253,7 @@ rcvar="semadraw_enable"
 PATH="/usr/local/bin:\${PATH}"
 export PATH
 
-svc_dir="/var/service/utf/semadrawd"
+svc_dir="/var/service/awase/semadrawd"
 
 start_cmd="semadraw_start"
 stop_cmd="semadraw_stop"
@@ -1263,7 +1263,7 @@ restart_cmd="semadraw_restart"
 semadraw_start() {
     if ! /usr/local/bin/s6-svok "\${svc_dir}" 2>/dev/null; then
         echo "ERROR: s6-supervise not running on \${svc_dir}." >&2
-        echo "Run 'service utf-supervisor start' first." >&2
+        echo "Run 'service awase-supervisor start' first." >&2
         return 1
     fi
     echo "Starting \${name} via s6-svc -uwu (timeout 5s)..."
@@ -1325,7 +1325,7 @@ RCEOF
 
 # SM-1.9: thin shim for pgsd-sessiond under s6 supervision. Same
 # shape as the semadraw wrapper above; the run script at
-# /var/service/utf/pgsd-sessiond/run execs the daemon directly.
+# /var/service/awase/pgsd-sessiond/run execs the daemon directly.
 
 . /etc/rc.subr
 
@@ -1337,7 +1337,7 @@ rcvar="pgsd_sessiond_enable"
 PATH="/usr/local/bin:\${PATH}"
 export PATH
 
-svc_dir="/var/service/utf/pgsd-sessiond"
+svc_dir="/var/service/awase/pgsd-sessiond"
 
 start_cmd="pgsd_sessiond_start"
 stop_cmd="pgsd_sessiond_stop"
@@ -1347,7 +1347,7 @@ restart_cmd="pgsd_sessiond_restart"
 pgsd_sessiond_start() {
     if ! /usr/local/bin/s6-svok "\${svc_dir}" 2>/dev/null; then
         echo "ERROR: s6-supervise not running on \${svc_dir}." >&2
-        echo "Run 'service utf-supervisor start' first." >&2
+        echo "Run 'service awase-supervisor start' first." >&2
         return 1
     fi
     echo "Starting \${name} via s6-svc -uwu (timeout 5s)..."
@@ -1395,20 +1395,20 @@ RCEOF
 
     # ========================================================================
     # AD-32 / AD-25 Round 1 follow-up: install the periodic(8) daily
-    # wrapper for utf-log-cleanup. FreeBSD's periodic(8) runs every
+    # wrapper for awase-log-cleanup. FreeBSD's periodic(8) runs every
     # script in /usr/local/etc/periodic/daily/ once per day at the
     # time configured by /etc/periodic.conf (default: 03:00 via cron).
     # The 500. prefix orders this within the daily batch (100-499 is
     # FreeBSD baseline; 500+ is the conventional ports/local range).
     #
-    # The wrapper itself just calls /usr/local/bin/utf-log-cleanup
+    # The wrapper itself just calls /usr/local/bin/awase-log-cleanup
     # --trim, which deletes archived @*.s files in every s6-log-
     # shaped directory under /var/log/. current files are preserved.
     # ========================================================================
 
-    PERIODIC_SRC="$SCRIPT_DIR/scripts/periodic/daily/500.utf-log-cleanup"
+    PERIODIC_SRC="$SCRIPT_DIR/scripts/periodic/daily/500.awase-log-cleanup"
     PERIODIC_DST_DIR="$PREFIX/etc/periodic/daily"
-    PERIODIC_DST="$PERIODIC_DST_DIR/500.utf-log-cleanup"
+    PERIODIC_DST="$PERIODIC_DST_DIR/500.awase-log-cleanup"
 
     if [ -f "$PERIODIC_SRC" ]; then
         echo ""
@@ -1422,12 +1422,12 @@ RCEOF
     fi
 
     # ========================================================================
-    # AD-20: install the s6 scan directory tree to /var/service/utf/
-    # and create per-daemon log directories under /var/log/utf/.
+    # AD-20: install the s6 scan directory tree to /var/service/awase/
+    # and create per-daemon log directories under /var/log/awase/.
     # ========================================================================
 
-    SVC_ROOT="/var/service/utf"
-    LOG_ROOT="/var/log/utf"
+    SVC_ROOT="/var/service/awase"
+    LOG_ROOT="/var/log/awase"
     S6_SRC="$SCRIPT_DIR/s6/awase"
 
     if [ ! -d "$S6_SRC" ]; then
@@ -1450,7 +1450,7 @@ RCEOF
 
     # AD-2a Phase 3 step 2: semainputd was retired 2026-05-08. On
     # systems upgraded from a pre-retirement install, the
-    # /var/service/utf/semainputd directory still exists with its
+    # /var/service/awase/semainputd directory still exists with its
     # supervise/ runtime state. Reap it explicitly: ask s6-supervise
     # to exit cleanly first (s6-svc -dx with a short timeout, falling
     # through if s6-supervise isn't actually running on it), then
@@ -1493,7 +1493,7 @@ RCEOF
     echo "  verified   each slot execs its own binary (AD-50 guard)"
 
     # F.6 (ADR 0029 Decision 3): semaaud is retired. On systems upgraded
-    # from a pre-retirement install, the /var/service/utf/semaaud
+    # from a pre-retirement install, the /var/service/awase/semaaud
     # directory still exists with its supervise/ runtime state (and on
     # most, the AD-42.1 down marker). Reap it with the semainputd
     # pattern: ask s6-supervise to exit cleanly first, then remove the
@@ -1527,8 +1527,8 @@ RCEOF
     echo "=== Creating log directories under $LOG_ROOT ==="
     # AD-20.3: create $LOG_ROOT explicitly. Per-daemon subdirs come
     # next via the for loop. We need $LOG_ROOT itself because
-    # /usr/local/etc/rc.d/utf-supervisor passes
-    # -o /var/log/utf/svscan.log to daemon(8), and daemon(8) creates
+    # /usr/local/etc/rc.d/awase-supervisor passes
+    # -o /var/log/awase/svscan.log to daemon(8), and daemon(8) creates
     # the file (with mode 0600) on first start but won't create the
     # parent directory.
     mkdir -p "$LOG_ROOT"
@@ -1546,7 +1546,7 @@ RCEOF
     echo "=== Enabling daemons in /etc/rc.conf ==="
     sysrc inputfs_enable="YES"
     sysrc audiofs_enable="YES"
-    sysrc utf_supervisor_enable="YES"
+    sysrc awase_supervisor_enable="YES"
     # F.5.f: semasound is the AD-3 successor broker; enabled by default.
     sysrc semasound_enable="YES"
     # AD-2a Phase 3 step 2: semainputd retired; no semainput_enable.
@@ -1756,7 +1756,7 @@ if [ "$DRAWFS_WAS_LOADED" -eq 1 ] || [ "$INPUTFS_WAS_LOADED" -eq 1 ] || [ "$UTF_
     # drawfs (e.g., on a refresh install or a reboot), and there
     # is no devfs-level guarantee that the gid is _semadraw.
     #
-    # We install a UTF-owned ruleset (ruleset 10, name utf_devices)
+    # We install an Awase-owned ruleset (ruleset 10, name awase_devices)
     # that asserts:
     #
     #   add path 'draw' mode 0660 group _semadraw
@@ -1781,8 +1781,8 @@ if [ "$DRAWFS_WAS_LOADED" -eq 1 ] || [ "$INPUTFS_WAS_LOADED" -eq 1 ] || [ "$UTF_
         echo "  WARNING: cannot resolve _semadraw gid; skipping devfs rule" >&2
     else
         DEVFS_RULES="/etc/devfs.rules"
-        DEVFS_BEGIN="# BEGIN utf_devices managed by install.sh"
-        DEVFS_END="# END utf_devices managed by install.sh"
+        DEVFS_BEGIN="# BEGIN awase_devices managed by install.sh"
+        DEVFS_END="# END awase_devices managed by install.sh"
 
         # Make sure the file exists; FreeBSD ships an empty default.
         [ -f "$DEVFS_RULES" ] || touch "$DEVFS_RULES"
@@ -1793,23 +1793,23 @@ if [ "$DRAWFS_WAS_LOADED" -eq 1 ] || [ "$INPUTFS_WAS_LOADED" -eq 1 ] || [ "$UTF_
         # previously there.
         if grep -qF "$DEVFS_BEGIN" "$DEVFS_RULES"; then
             sed -i '' "/^${DEVFS_BEGIN}$/,/^${DEVFS_END}$/d" "$DEVFS_RULES"
-            echo "  removed  previous utf_devices block from $DEVFS_RULES"
+            echo "  removed  previous awase_devices block from $DEVFS_RULES"
         fi
 
         cat >> "$DEVFS_RULES" <<EOF
 $DEVFS_BEGIN
-[utf_devices=10]
+[awase_devices=10]
 add path 'draw' mode 0660 group _semadraw
 $DEVFS_END
 EOF
-        echo "  installed  utf_devices ruleset in $DEVFS_RULES"
+        echo "  installed  awase_devices ruleset in $DEVFS_RULES"
 
         # Register the ruleset as the system default in rc.conf,
         # gracefully:
         #
         #   - If devfs_system_ruleset is unset, set it to
-        #     utf_devices and live-apply.
-        #   - If devfs_system_ruleset is already utf_devices,
+        #     awase_devices and live-apply.
+        #   - If devfs_system_ruleset is already awase_devices,
         #     no-op (idempotent re-install).
         #   - If devfs_system_ruleset points to something else
         #     (an operator's existing ruleset, common on
@@ -1819,7 +1819,7 @@ EOF
         #     live-apply. Warn loudly with instructions for
         #     manual integration.
         #
-        # The markered utf_devices block has been written to
+        # The markered awase_devices block has been written to
         # /etc/devfs.rules regardless, so an operator who
         # later decides to merge the rule into their existing
         # ruleset has the canonical text on hand.
@@ -1827,19 +1827,19 @@ EOF
         APPLY_LIVE=0
         case "$CURRENT_RULESET" in
             "")
-                sysrc "devfs_system_ruleset=utf_devices" >/dev/null
-                echo "  set      devfs_system_ruleset=utf_devices in /etc/rc.conf"
+                sysrc "devfs_system_ruleset=awase_devices" >/dev/null
+                echo "  set      devfs_system_ruleset=awase_devices in /etc/rc.conf"
                 APPLY_LIVE=1
                 ;;
-            utf_devices)
-                echo "  already set  devfs_system_ruleset=utf_devices in /etc/rc.conf"
+            awase_devices)
+                echo "  already set  devfs_system_ruleset=awase_devices in /etc/rc.conf"
                 APPLY_LIVE=1
                 ;;
             *)
                 echo ""
                 echo "  NOTICE: devfs_system_ruleset is set to '$CURRENT_RULESET'."
-                echo "          UTF does not override an existing ruleset choice."
-                echo "          The utf_devices block has still been written to"
+                echo "          Awase does not override an existing ruleset choice."
+                echo "          The awase_devices block has still been written to"
                 echo "          /etc/devfs.rules for reference, but it is NOT"
                 echo "          the active ruleset. /dev/draw will keep its"
                 echo "          default permissions (root:wheel:0600) unless you"
@@ -1851,14 +1851,14 @@ EOF
                 echo "             in /etc/devfs.rules, then run:"
                 echo "                service devfs restart"
                 echo ""
-                echo "          2. Or switch to utf_devices as the system ruleset:"
-                echo "                sysrc devfs_system_ruleset=utf_devices"
+                echo "          2. Or switch to awase_devices as the system ruleset:"
+                echo "                sysrc devfs_system_ruleset=awase_devices"
                 echo "                service devfs restart"
                 echo "             (note: this replaces your current ruleset's"
                 echo "             effect on /dev permissions; review the"
-                echo "             utf_devices block before switching.)"
+                echo "             awase_devices block before switching.)"
                 echo ""
-                echo "          UTF will still function without this rule. The"
+                echo "          Awase will still function without this rule. The"
                 echo "          /dev/draw default permissions (root:wheel:0600)"
                 echo "          already restrict open to root, and semadrawd"
                 echo "          opens /dev/draw before dropping privileges."
@@ -1871,10 +1871,10 @@ EOF
         # Live-apply: only when we actually changed the active
         # ruleset choice. Skipping live-apply in the
         # operator-has-existing-ruleset case avoids a confusing
-        # "applied" message that didn't apply UTF's ruleset.
+        # "applied" message that didn't apply Awase's ruleset.
         if [ "$APPLY_LIVE" -eq 1 ]; then
             if service devfs restart >/dev/null 2>&1; then
-                echo "  applied  utf_devices ruleset to /dev"
+                echo "  applied  awase_devices ruleset to /dev"
             else
                 echo "  WARNING: service devfs restart failed; reboot required to pick up new ruleset" >&2
             fi
@@ -1891,27 +1891,27 @@ EOF
     fi
 
     # AD-20: bring the s6 supervision tree up before the daemon shims.
-    # The shims fail with "s6-supervise not running" if utf-supervisor
-    # isn't up. We start utf-supervisor whenever it was running before
+    # The shims fail with "s6-supervise not running" if awase-supervisor
+    # isn't up. We start awase-supervisor whenever it was running before
     # OR there are daemons to restart (since they need the supervisor
-    # regardless of whether utf-supervisor was running pre-install; a
-    # first-time install doesn't have utf-supervisor running yet, but
+    # regardless of whether awase-supervisor was running pre-install; a
+    # first-time install doesn't have awase-supervisor running yet, but
     # if the operator just had daemons running directly via start.sh
     # we still want them resumed under supervision after the install).
     if [ "$UTF_SUPERVISOR_WAS_RUNNING" -eq 1 ] || [ -n "$SERVICES_TO_RESTART" ]; then
-        if service utf-supervisor start >/dev/null 2>&1; then
-            echo "  started   utf-supervisor"
+        if service awase-supervisor start >/dev/null 2>&1; then
+            echo "  started   awase-supervisor"
             # Give s6-svscan a moment to spawn the per-service
             # s6-supervise processes. Without this, the immediate
             # service <name> start below races and gets
-            # "s6-supervise not running on /var/service/utf/<name>".
+            # "s6-supervise not running on /var/service/awase/<name>".
             sleep 2
         else
-            echo "  WARNING: service utf-supervisor start failed" >&2
+            echo "  WARNING: service awase-supervisor start failed" >&2
         fi
     fi
 
-    # AD-12.1: dependency order for userland daemons. utf_clock is
+    # AD-12.1: dependency order for userland daemons. awase_clock is
     # provided by the audiofs rc service (module load starts the kernel
     # clock writer, ADR 0018/0029); audiofs was handled in the module
     # refresh above, so the daemon order here is semasound, then
@@ -1934,7 +1934,7 @@ fi
 # ============================================================================
 
 echo ""
-echo "=== UTF installation complete ==="
+echo "=== Awase installation complete ==="
 echo ""
 echo "Installed binaries:"
 for bin in $BINARIES; do
