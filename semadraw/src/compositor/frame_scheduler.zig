@@ -553,7 +553,8 @@ test "nextFrameTarget with MockClock via shared_clock.ClockWriter" {
         var writer = try shared_clock.ClockWriter.init(tmp_path);
         defer writer.deinit();
         // Simulate: 48kHz, 1200 samples written (1.5 frames into 60Hz session).
-        writer.write(48_000, 1200);
+        writer.streamBegin(48_000);
+        writer.update(1200);
     }
     var reader = shared_clock.ClockReader.init(tmp_path);
     defer reader.deinit();
@@ -570,12 +571,95 @@ test "nextFrameTarget with MockClock via shared_clock.ClockWriter" {
     writer: {
         var w = shared_clock.ClockWriter.init(tmp_path) catch break :writer;
         defer w.deinit();
-        w.write(48_000, 800);
+        w.streamBegin(48_000);
+        w.update(800);
     }
     var reader2 = shared_clock.ClockReader.init(tmp_path);
     defer reader2.deinit();
     const target2 = nextFrameTarget(reader2, 60);
     try std.testing.expectEqual(@as(u64, 1600), target2);
+}
+
+test "FrameScheduler stalls when the pacing clock stops advancing" {
+    // Regression for the audio-clock-freeze stall. The compositor adopts the
+    // audio hardware clock (ChronofsClockSource) for pacing, and shouldComposite
+    // is `clock.now() >= next_deadline_ns`. When audiofs stops the output stream
+    // the published sample counter freezes (clock_valid stays 1; only the count
+    // stops), so the pacing clock stops advancing and the deadline is never
+    // reached again: the compositor stops compositing for good while input keeps
+    // arriving. This pins the contract with a mock clock so the scheduler's
+    // dependence on a live clock is explicit and any pacing fix has a witness.
+    var mock = MockClockSource.init();
+    var sched = FrameScheduler.init(60, mock.source());
+    sched.start();
+
+    // Normal pacing: cross one deadline, composite one frame, deadline moves on.
+    mock.advance(sched.frame_interval_ns);
+    try std.testing.expect(sched.shouldComposite());
+    var handle = sched.beginFrame();
+    handle.end();
+    try std.testing.expect(!sched.shouldComposite());
+
+    // Freeze the clock. The frozen value sits below next_deadline_ns, so
+    // shouldComposite must report false no matter how many times the main loop
+    // polls it at its independent wall-time cadence while the clock is dead.
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try std.testing.expect(!sched.shouldComposite());
+    }
+
+    // The stall is purely the frozen clock: any advance past the deadline (a
+    // resumed audio stream, or a watchdog rewire to the wall clock) re-enables
+    // compositing on the very next poll.
+    mock.advance(sched.frame_interval_ns);
+    try std.testing.expect(sched.shouldComposite());
+}
+
+test "FrameScheduler stalls when the audio sample clock freezes (ChronofsClockSource)" {
+    // End-to-end form of the same freeze over the real audio-clock path:
+    // audiofs publishes samples_written to /var/run/sema/clock, ChronofsClockSource
+    // converts it to nanoseconds, and the scheduler paces on it. Stopping the
+    // sample updates (the production "output stream went idle" case) must pin the
+    // scheduler below its deadline indefinitely; resuming updates must clear it.
+    const tmp_path = "/tmp/sema_clock_freeze_test";
+    const rate: u32 = 48_000;
+    const frame_samples: u64 = 800; // one 60 Hz frame at 48 kHz
+
+    var writer = try shared_clock.ClockWriter.init(tmp_path);
+    defer writer.deinit();
+    writer.streamBegin(rate);
+    var samples: u64 = rate; // arbitrary nonzero base (one second in)
+    writer.update(samples);
+
+    var cc = ChronofsClockSource.init(tmp_path);
+    defer cc.deinit();
+    try std.testing.expect(cc.isValid());
+
+    var sched = FrameScheduler.init(60, cc.source());
+    sched.start();
+
+    // Drive two frames by advancing the sample clock, proving it paces the loop.
+    var f: usize = 0;
+    while (f < 2) : (f += 1) {
+        samples += frame_samples;
+        writer.update(samples);
+        try std.testing.expect(sched.shouldComposite());
+        var handle = sched.beginFrame();
+        handle.end();
+    }
+    try std.testing.expect(!sched.shouldComposite());
+
+    // Freeze: stop calling update(). The counter is constant, so
+    // ChronofsClockSource.now() is pinned below next_deadline_ns forever.
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        try std.testing.expect(!sched.shouldComposite());
+    }
+
+    // Resuming the stream clears the stall on the next poll.
+    samples += frame_samples;
+    writer.update(samples);
+    try std.testing.expect(sched.shouldComposite());
 }
 
 // ============================================================================
