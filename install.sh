@@ -752,6 +752,22 @@ else
     echo "  ok  /var/run already mounted as tmpfs"
 fi
 
+# Rebuild the runtime linker hints after the tmpfs mount. The hints file lives
+# at /var/run/ld-elf.so.hints, so mounting tmpfs over /var/run shadows it and
+# the dynamic linker loses the /usr/local/lib search entries. Newly pkg-
+# installed libraries there then resolve as "not found": drawfs/build.sh runs
+# rsync below, which needs libiconv.so.2, and would die with
+# 'Shared object "libiconv.so.2" not found, required by "rsync"'. ldconfig is a
+# base binary that needs no hints to run, so rebuilding here is safe, and it is
+# idempotent. This runs after the dependency pkg install and after the tmpfs
+# mount, so the hints reflect the current /usr/local/lib on the live tmpfs.
+if service ldconfig restart >/dev/null 2>&1; then
+    echo "  ok  rebuilt runtime linker hints (ld-elf.so.hints on tmpfs)"
+else
+    echo "  WARNING: could not rebuild linker hints. If the build below fails" >&2
+    echo "           with 'libiconv.so.2 not found', run: service ldconfig restart" >&2
+fi
+
 
 echo "=== Building Awase kernel modules (optimize=ReleaseSafe) ==="
 # Read .config early so drawfs/build.sh sees DRAWFS_DRM via environment.
