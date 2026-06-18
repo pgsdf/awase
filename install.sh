@@ -431,6 +431,23 @@ echo "=== Checking dependencies ==="
 # present get no entry.
 MISSING_PKGS=""
 
+# The unprivileged userland build writes into the checkout: the bootstrapped
+# toolchain at sdk/ and each subproject's zig-out/ and .zig-cache/. ADR 0005
+# assumes the checkout is operator-owned. If it is not (for example it was
+# cloned under sudo, so the tree is root-owned), the zig bootstrap below fails
+# with a confusing "mkdir: .../sdk: Permission denied" deep in the build, after
+# a misleading "ok vendored zig". Fail here instead, with the exact repair.
+if [ ! -w "$SCRIPT_DIR" ]; then
+    echo "ERROR: the checkout at $SCRIPT_DIR is not writable by $(id -un)." >&2
+    echo "       The unprivileged userland build (ADR 0005) needs the source" >&2
+    echo "       tree owned by you; it looks root-owned, most likely cloned" >&2
+    echo "       under sudo or as root. install.sh does not change the tree's" >&2
+    echo "       ownership. Repair it and re-run:" >&2
+    echo "         $PRIV chown -R $(id -un):$(id -gn) $SCRIPT_DIR" >&2
+    echo "         sh install.sh" >&2
+    exit 1
+fi
+
 # The Zig compiler is vendored at sdk/zig/current and invoked only through
 # tools/zig (bootstrapped on first use); the build never uses a system Zig,
 # so it is not a pkg dependency. Report the pinned toolchain version.
