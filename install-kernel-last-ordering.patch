@@ -1,0 +1,268 @@
+diff --git a/install.sh b/install.sh
+index fdd5d0a..967ac79 100644
+--- a/install.sh
++++ b/install.sh
+@@ -588,119 +588,6 @@ Install them now via pkg(8)?
+     fi
+ fi
+ 
+-# ============================================================================
+-# PGSD kernel: detect, and offer a checkpointed build when running GENERIC
+-# ============================================================================
+-#
+-# The PGSD kernel (KERNCONF ident PGSD/PGSD-DEBUG) removes the HID and sound
+-# drivers that contend with inputfs and audiofs; GENERIC works but input may be
+-# limited (INSTALL.md Step 5.5). Building it is a 30-60 minute, reboot-gated,
+-# operator-supervised operation, so install.sh only detects and guides. It
+-# delegates entirely to pgsd-kernel-build.sh, the single source of truth for
+-# source-tree validation, AD-8 closure, recovery checks, and build flags, and
+-# preserves that script's check/build/install checkpoints: the operator confirms
+-# between phases so a failed world/kernel build or a check warning does not
+-# scroll past inside the larger install. It never compiles a kernel in
+-# non-interactive mode, and after a successful install it stops and requires a
+-# reboot before the rest of the install proceeds.
+-
+-# yes/no prompt: bsddialog when available (real newlines, --cr-wrap), else a
+-# plain read. Returns 0 for yes.
+-kernel_prompt_yesno() {
+-    if command -v bsddialog >/dev/null 2>&1; then
+-        if bsddialog --cr-wrap --title "$1" --yes-label "Yes" --no-label "No" \
+-                     --yesno "$2" 0 0; then
+-            return 0
+-        fi
+-        return 1
+-    fi
+-    printf '%s\n\n' "$2" >&2
+-    printf "Proceed? [y/N]: " >&2
+-    if [ -r /dev/tty ]; then read -r _kp < /dev/tty || _kp=""; else read -r _kp || _kp=""; fi
+-    case "$_kp" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
+-}
+-
+-# Inline confirmation that preserves the terminal output above it for the
+-# operator to inspect (the whole point of the per-phase checkpoints). Default
+-# No; requires an explicit yes. Returns 0 for yes.
+-kernel_confirm() {
+-    printf '%s [y/N]: ' "$1" >&2
+-    if [ -r /dev/tty ]; then read -r _kc < /dev/tty || _kc=""; else read -r _kc || _kc=""; fi
+-    case "$_kc" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
+-}
+-
+-case "$(uname -i 2>/dev/null)" in
+-    PGSD|PGSD-DEBUG) have_pgsd_kernel=1 ;;
+-    *)               have_pgsd_kernel=0 ;;
+-esac
+-
+-if [ "$have_pgsd_kernel" -eq 0 ]; then
+-    KERNCONF="${AWASE_KERNCONF:-PGSD}"
+-    KBUILD="$SCRIPT_DIR/pgsd-kernel/pgsd-kernel-build.sh"
+-
+-    if [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
+-        # Non-interactive: never start a kernel build; note it and continue.
+-        echo "Running GENERIC kernel."
+-        echo "PGSD kernel build skipped in non-interactive mode."
+-    elif [ ! -f "$KBUILD" ]; then
+-        echo "Running GENERIC kernel; $KBUILD not found, skipping kernel build."
+-    elif kernel_prompt_yesno "Awase installer: PGSD kernel" "Running the GENERIC kernel; the PGSD kernel is not active.
+-
+-The PGSD kernel is recommended for full Awase input support: it removes the
+-HID and sound drivers that otherwise claim the devices inputfs and audiofs
+-need. Building it:
+-
+-  - takes roughly 30 to 60 minutes
+-  - requires a reboot afterwards
+-  - the installer will STOP after kernel installation; you then reboot and
+-    re-run install.sh to finish the rest of the install
+-
+-Build and install the PGSD kernel now? Choosing No continues on GENERIC."; then
+-        # Phase 1: environment check (read-only, runs as the operator).
+-        echo ""
+-        echo "=== PGSD kernel: environment check ($KERNCONF) ==="
+-        sh "$KBUILD" check "$KERNCONF" || true
+-        echo ""
+-        if kernel_confirm "Check complete; review the output above. Proceed to BUILD ($KERNCONF)?"; then
+-            # Phase 2: build (elevated; 30-60 min; output streams live).
+-            echo ""
+-            echo "=== PGSD kernel: build ($KERNCONF) - this takes 30-60 minutes ==="
+-            if ! priv sh "$KBUILD" build --clean "$KERNCONF"; then
+-                echo "ERROR: PGSD kernel build failed (see output above)." >&2
+-                echo "       Resolve the failure and re-run install.sh." >&2
+-                exit 1
+-            fi
+-            echo ""
+-            if kernel_confirm "Build complete; review the output above. Proceed to INSTALL ($KERNCONF)?"; then
+-                # Phase 3: install (elevated; runs AD-8 closure verification).
+-                echo ""
+-                echo "=== PGSD kernel: install ($KERNCONF) ==="
+-                if ! priv sh "$KBUILD" install "$KERNCONF"; then
+-                    echo "ERROR: PGSD kernel install failed (see output above)." >&2
+-                    echo "       Do NOT reboot until resolved; see pgsd-kernel/README.md." >&2
+-                    exit 1
+-                fi
+-                # Hard stop: the new kernel is inactive until reboot, and the
+-                # rest of the install should run on it.
+-                echo ""
+-                echo "============================================================"
+-                echo "PGSD kernel installed."
+-                echo ""
+-                echo "Reboot into the new kernel and rerun install.sh."
+-                echo "============================================================"
+-                exit 0
+-            else
+-                echo "Install phase skipped; the built kernel is staged but not active."
+-                echo "Continuing on GENERIC. Run the install phase and reboot later for PGSD."
+-            fi
+-        else
+-            echo "Kernel build not started. Continuing on GENERIC."
+-        fi
+-    else
+-        echo "Continuing on GENERIC kernel (PGSD recommended; see pgsd-kernel/README.md)."
+-    fi
+-fi
+-
+ 
+ # AD-50 hardening: warn (not abort) if the s6 service sources in the
+ # working tree have uncommitted modifications. install deploys these
+@@ -788,6 +675,7 @@ build_sub "semasound" "semasound"
+         AWASE_PHASE=deploy \
+         AWASE_PREFIX="$PREFIX" \
+         AWASE_ASSUME_YES="$ASSUME_YES" \
++        AWASE_KERNCONF="${AWASE_KERNCONF:-PGSD}" \
+         AWASE_ALLOW_SEMADRAW_TERM="$ALLOW_SEMADRAW_TERM" \
+         "$PRIV" /bin/sh "$SCRIPT_DIR/$(basename "$0")"
+     echo "ERROR: could not elevate via $PRIV. Is mac_do loaded (or use PRIV=sudo)?" >&2
+@@ -2335,6 +2223,135 @@ EOF
+     done
+ fi
+ 
++# ============================================================================
++# PGSD kernel: offer a checkpointed build as the final install activity
++# ============================================================================
++#
++# Runs last, after the full deploy above (drawfs.ko, drawfs_load, inputfs,
++# binaries, services). The PGSD kernel (KERNCONF ident PGSD/PGSD-DEBUG) removes
++# the HID and console drivers that contend with inputfs and drawfs; GENERIC
++# works but input may be limited and the framebuffer contended (INSTALL.md
++# Step 5.5).
++#
++# The offer is placed here, at the end, for a hard reason: the PGSD kernel drops
++# the in-tree framebuffer console, so a machine that boots it with no drawfs.ko
++# present comes up dark. pgsd-kernel-build.sh's AD-8 closure check enforces that
++# invariant and refuses to install the kernel until drawfs.ko is deployed.
++# Deploying everything first, then building the kernel, satisfies the invariant
++# and lets the operator reboot straight into a ready system with no second
++# install pass (ADR 0005 kernel-offer amendment, 2026-06-18).
++#
++# install.sh delegates entirely to pgsd-kernel-build.sh, the single source of
++# truth for source-tree validation, AD-8 closure, recovery checks, and build
++# flags, and preserves its check/build/install checkpoints, so a check warning
++# or a failed world/kernel build stops for inspection. It never compiles a
++# kernel in non-interactive mode. This phase already runs as root (the $PRIV
++# re-exec), so the build delegates directly without a further priv hop.
++
++# yes/no prompt: bsddialog when available (real newlines, --cr-wrap), else a
++# plain read. Returns 0 for yes.
++kernel_prompt_yesno() {
++    if command -v bsddialog >/dev/null 2>&1; then
++        if bsddialog --cr-wrap --title "$1" --yes-label "Yes" --no-label "No" \
++                     --yesno "$2" 0 0; then
++            return 0
++        fi
++        return 1
++    fi
++    printf '%s\n\n' "$2" >&2
++    printf "Proceed? [y/N]: " >&2
++    if [ -r /dev/tty ]; then read -r _kp < /dev/tty || _kp=""; else read -r _kp || _kp=""; fi
++    case "$_kp" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
++}
++
++# Inline confirmation that preserves the terminal output above it for the
++# operator to inspect (the whole point of the per-phase checkpoints). Default
++# No; requires an explicit yes. Returns 0 for yes.
++kernel_confirm() {
++    printf '%s [y/N]: ' "$1" >&2
++    if [ -r /dev/tty ]; then read -r _kc < /dev/tty || _kc=""; else read -r _kc || _kc=""; fi
++    case "$_kc" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
++}
++
++case "$(uname -i 2>/dev/null)" in
++    PGSD|PGSD-DEBUG) have_pgsd_kernel=1 ;;
++    *)               have_pgsd_kernel=0 ;;
++esac
++
++if [ "$have_pgsd_kernel" -eq 0 ]; then
++    KERNCONF="${AWASE_KERNCONF:-PGSD}"
++    KBUILD="$SCRIPT_DIR/pgsd-kernel/pgsd-kernel-build.sh"
++
++    if [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
++        # Non-interactive: never start a kernel build; note it and continue.
++        echo ""
++        echo "Running GENERIC kernel."
++        echo "PGSD kernel build skipped in non-interactive mode."
++    elif [ ! -f "$KBUILD" ]; then
++        echo ""
++        echo "Running GENERIC kernel; $KBUILD not found, skipping kernel build."
++    elif kernel_prompt_yesno "Awase installer: PGSD kernel" "Awase is installed. You are running the GENERIC kernel.
++
++The PGSD kernel is recommended for full Awase support: it removes the HID and
++console drivers that otherwise claim the devices inputfs and drawfs need.
++Building it now:
++
++  - takes roughly 30 to 60 minutes
++  - happens after this completed install, so drawfs.ko is already in place and
++    the kernel's AD-8 closure check will pass
++  - requires a reboot afterwards, straight into a ready system; no second
++    install pass is needed
++
++Build and install the PGSD kernel now? Choosing No leaves you on GENERIC."; then
++        echo ""
++        echo "=== PGSD kernel: environment check ($KERNCONF) ==="
++        sh "$KBUILD" check "$KERNCONF" || true
++        echo ""
++        if kernel_confirm "Check complete; review the output above. Proceed to BUILD ($KERNCONF)?"; then
++            echo ""
++            echo "=== PGSD kernel: build ($KERNCONF) - this takes 30-60 minutes ==="
++            if ! sh "$KBUILD" build --clean "$KERNCONF"; then
++                echo "ERROR: PGSD kernel build failed (see output above)." >&2
++                echo "       Awase itself is installed and runs on GENERIC; resolve" >&2
++                echo "       the build and rebuild the kernel later." >&2
++                exit 1
++            fi
++            echo ""
++            if kernel_confirm "Build complete; review the output above. Proceed to INSTALL ($KERNCONF)?"; then
++                echo ""
++                echo "=== PGSD kernel: install ($KERNCONF) ==="
++                if ! sh "$KBUILD" install "$KERNCONF"; then
++                    echo "ERROR: PGSD kernel install failed (see output above)." >&2
++                    echo "       Do NOT reboot into PGSD until resolved; GENERIC still" >&2
++                    echo "       boots. See pgsd-kernel/README.md." >&2
++                    exit 1
++                fi
++                echo ""
++                echo "============================================================"
++                echo "Awase installation complete, and the PGSD kernel is installed."
++                echo ""
++                echo "Reboot into the new kernel:"
++                echo "  shutdown -r now"
++                echo ""
++                echo "drawfs loads at boot (loader.conf); inputfs and the daemons"
++                echo "start at boot (rc.conf); the system comes up at the"
++                echo "pgsd-sessiond graphical login."
++                echo "============================================================"
++                exit 0
++            else
++                echo "Install phase skipped; the built kernel is staged but not active."
++                echo "Leaving you on GENERIC; install the kernel and reboot later for PGSD."
++            fi
++        else
++            echo "Kernel build not started. Leaving you on GENERIC."
++        fi
++    else
++        echo ""
++        echo "Continuing on GENERIC kernel (PGSD recommended; see pgsd-kernel/README.md)."
++    fi
++fi
++
++
+ # ============================================================================
+ # Summary
+ # ============================================================================

@@ -1,0 +1,79 @@
+diff --git a/shared/docs/adr/0005-unprivileged-first-install-and-mac_do.md b/shared/docs/adr/0005-unprivileged-first-install-and-mac_do.md
+index 357e1fd..f947f44 100644
+--- a/shared/docs/adr/0005-unprivileged-first-install-and-mac_do.md
++++ b/shared/docs/adr/0005-unprivileged-first-install-and-mac_do.md
+@@ -254,3 +254,74 @@ This ADR closes when all of the following hold:
+ 4. **Elevated-step audit.** `mac_do` does not write `auth.log`. If auditing of
+    privileged installer steps is later required, that is script-level logging of
+    the privileged operations and is out of scope for this ADR.
++
++## Amendment 1: PGSD kernel offer runs last (kernel-last ordering)
++
++Proposed 2026-06-18 (pending operator ratification).
++
++### Context
++
++After this ADR was accepted, `install.sh` gained an interactive offer to build
++and install the PGSD kernel when the host is running GENERIC. The first
++implementation placed that offer early in Phase 1, before the kernel-module
++deploy, and stopped after the kernel install to require a reboot and a re-run
++for the rest of the install.
++
++A bench on 2026-06-18 showed that ordering is unsafe. The PGSD kernel drops the
++in-tree framebuffer console drivers, so a host that boots PGSD with no
++`drawfs.ko` present comes up dark. `pgsd-kernel-build.sh`'s AD-8 closure
++verification encodes exactly that invariant and fails with `/boot/modules/
++drawfs.ko missing`, refusing to bless the kernel until `drawfs.ko` is deployed.
++`install.sh` deploys `drawfs.ko` in Phase 2, after the early kernel block, so
++the invariant could never hold under the original ordering: the closure check
++failed on the bench and the install aborted with the kernel already swapped into
++`/boot/kernel` but no `drawfs.ko` staged.
++
++### Decision
++
++The PGSD kernel offer runs as the final install activity, at the end of Phase 2,
++after the full deploy (the `drawfs.ko` and `inputfs.ko` builds, `drawfs_load`,
++the binary installs, and the service setup). By that point `drawfs.ko` is in
++`/boot/modules/` and `drawfs_load="YES"` is set, so the AD-8 closure check
++passes. After a successful kernel install the operator reboots straight into a
++ready system; there is no second install pass.
++
++The earlier "kernel first, reboot, then re-run the rest" model is withdrawn.
++There is no technical need to build the rest of the install on the PGSD kernel:
++the modules build against `/usr/src`, not the running kernel, so modules built
++under GENERIC load under PGSD of the same FreeBSD version. And the
++reboot-then-rerun model cannot satisfy the closure invariant, because it would
++have to deploy `drawfs.ko` only after the reboot that already needs it.
++
++### Consequences
++
++1. The offer is interactive only. A `--yes` or non-tty run notes that GENERIC is
++   in use and that the kernel build is skipped, then completes normally; the
++   installer never compiles a kernel unattended.
++2. Because this phase already runs as root via the `$PRIV` re-exec, the kernel
++   build and install delegate to `pgsd-kernel-build.sh` directly, without a
++   further `priv` hop. `AWASE_KERNCONF` (default `PGSD`) is passed through the
++   re-exec so `PGSD-DEBUG` selection survives into Phase 2.
++3. `pgsd-kernel-build.sh` remains the single source of truth for source-tree
++   validation, AD-8 closure, recovery checks, and build flags. `install.sh` only
++   sequences the `check`, `build`, and `install` phases and preserves their
++   operator checkpoints, so a check warning or a failed world or kernel build
++   stops for inspection rather than scrolling past inside the install.
++4. A build or install failure at this stage is not fatal to the Awase install,
++   which is already complete and runs on GENERIC; the installer reports the
++   failure, leaves GENERIC bootable, and exits non-zero.
++
++### Closure
++
++Bench on a fresh install (operator, pgsd-bare-metal):
++
++1. GENERIC host, full `sh install.sh`, accept the offer: the AD-8 closure check
++   passes (drawfs.ko present) and the run stops with the reboot-into-a-ready-
++   system message.
++2. Re-run with `--yes`: the kernel build is skipped with the GENERIC note and
++   the install completes.
++3. After rebooting into PGSD, re-run `sh install.sh`: no kernel offer appears
++   (`uname -i` reports PGSD).
++
++Flip this amendment to Accepted once item 1 passes; items 2 and 3 confirm the
++non-interactive and already-PGSD paths.

@@ -687,7 +687,7 @@ Remove them now? (default: Remove)" 15 70; then
     else
         fail "/boot/modules/drawfs.ko missing"
         note "without drawfs.ko, the screen will stay dark after reboot"
-        note "rerun: cd $REPO_ROOT && sudo sh install.sh"
+        note "rerun: cd $REPO_ROOT && sh install.sh"
         fails=$((fails + 1))
     fi
 
