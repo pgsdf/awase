@@ -8,4 +8,4 @@
 # (no per-frame instrumentation), but using the same 10 MB
 # retention keeps log policy uniform across UTF daemons.
 
-exec s6-log -b n3 s10000000 /var/log/utf/pgsd-sessiond
+exec s6-log -b n3 s10000000 /var/log/awase/pgsd-sessiond

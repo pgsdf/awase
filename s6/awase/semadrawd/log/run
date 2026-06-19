@@ -20,4 +20,4 @@
 # Revisit this value if/when AD-25 closes and the instrumentation
 # is removed; 10 MB is sized for diagnostic-mode use and is larger
 # than the steady-state log needs.
-exec s6-log -b n3 s10000000 /var/log/utf/semadrawd
+exec s6-log -b n3 s10000000 /var/log/awase/semadrawd
