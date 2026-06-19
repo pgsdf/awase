@@ -77,21 +77,36 @@ pub const Compositor = struct {
     /// instrument above. Independent of `instrument` so each can
     /// be enabled separately.
     gate_instrument: bool,
-    /// AD-43.3a fix (c), watchdog state: wall timestamp when damage
-    /// first went unserved by the scheduler gate; null when not
-    /// stalling.
-    gate_stall_since_wall: ?i128,
-    /// AD-43.3a fix (c): set once the watchdog has rewired pacing to
-    /// the wall clock. The wall clock cannot stall, so tracking ends
-    /// permanently; re-adoption of a revived audio clock is future
-    /// AV-sync work.
-    clock_rewired_to_wall: bool,
+    /// ADR 0020: frame pacing mode. .audio means the scheduler is wired to
+    /// the adopted audio hardware clock; .wall means it has been rewired to
+    /// the wall clock because the audio clock stalled, went invalid, or was
+    /// absent. The mode toggles at runtime: a frozen adopted clock rewires to
+    /// wall, and a wall fallback re-adopts audio once the sample counter
+    /// resumes advancing, so AV-sync returns instead of degrading permanently
+    /// after the first idle period.
+    pacing_mode: PacingMode,
+    /// ADR 0020: liveness mark for the audio clock. audio_samples_mark is the
+    /// chronofs sample counter at the last observed advance (audio mode) or
+    /// the last probe (wall mode); audio_wall_mark is the wall time at that
+    /// observation. A counter frozen for GATE_STALL_REWIRE_NS of wall time is
+    /// the stall; a counter that advances across a full
+    /// READOPT_PROBE_INTERVAL_NS in wall mode is the resume.
+    audio_samples_mark: u64,
+    audio_wall_mark: i128,
 
-    /// AD-43.3a fix (c): wall time damage may sit unserved before the
-    /// watchdog rewires pacing to the wall clock. Thirty 60 Hz frame
-    /// intervals: far above scheduler jitter, far below human-visible
-    /// stall.
+    pub const PacingMode = enum { audio, wall };
+
+    /// ADR 0020 (was AD-43.3a fix (c)): wall time the adopted clock may sit
+    /// frozen before the watchdog rewires pacing to the wall clock. Thirty
+    /// 60 Hz frame intervals: far above scheduler jitter, far below
+    /// human-visible stall.
     const GATE_STALL_REWIRE_NS: i128 = 500 * std.time.ns_per_ms;
+    /// ADR 0020: wall-mode re-adoption probe window. The audio sample counter
+    /// must advance across a full interval before re-adopting, so the
+    /// interval doubles as the dwell that rejects a single jitter tick. The
+    /// read is non-blocking (samplePosition, not the isAdvancing 50 ms
+    /// sleep), so this only bounds how often a resume is checked.
+    const READOPT_PROBE_INTERVAL_NS: i128 = 250 * std.time.ns_per_ms;
 
     const Self = @This();
 
@@ -132,8 +147,9 @@ pub const Compositor = struct {
                 const v = compat.args.getenv("UTF_COMPOSITE_GATE_INSTRUMENT") orelse break :blk false;
                 break :blk v.len > 0;
             },
-            .gate_stall_since_wall = null,
-            .clock_rewired_to_wall = false,
+            .pacing_mode = .wall,
+            .audio_samples_mark = 0,
+            .audio_wall_mark = 0,
         };
     }
 
@@ -223,6 +239,9 @@ pub const Compositor = struct {
                 log.info("frame pacing: adopted audio hardware clock", .{});
                 self.scheduler.clock = cc.source();
                 self.scheduler.start();
+                self.pacing_mode = .audio;
+                self.audio_samples_mark = cc.samplePosition() orelse 0;
+                self.audio_wall_mark = monotonicNowNs();
                 self.composing = true;
                 return;
             }
@@ -233,6 +252,9 @@ pub const Compositor = struct {
         // the Compositor is in its final memory location.
         self.scheduler.clock = self.wall_clock.source();
         self.scheduler.start();
+        self.pacing_mode = .wall;
+        self.audio_samples_mark = if (self.chronofs_clock) |*cc| (cc.samplePosition() orelse 0) else 0;
+        self.audio_wall_mark = monotonicNowNs();
         self.composing = true;
     }
 
@@ -266,40 +288,16 @@ pub const Compositor = struct {
         const has_damage = self.damage_tracker.hasDamage();
         const should_composite = self.scheduler.shouldComposite();
 
-        // AD-43.3a fix (c), runtime watchdog: damage pending while
-        // the scheduler keeps refusing means the pacing clock has
-        // stalled (audio clock paused mid-life, e.g. kldunload
-        // audiofs with the desktop up). After GATE_STALL_REWIRE_NS
-        // of wall time, rewire pacing to the wall clock once and
-        // warn; scheduler.start() re-seeds the deadline in the new
-        // clock's epoch, so the first composite lands within one
-        // frame interval. The stall measurement uses wall time
-        // directly: the suspect clock cannot judge itself.
-        if (has_damage and !should_composite and !self.clock_rewired_to_wall) {
-            const now_wall = monotonicNowNs();
-            if (self.gate_stall_since_wall) |since| {
-                if (now_wall - since > GATE_STALL_REWIRE_NS) {
-                    log.warn("frame pacing clock stalled {d} ms with damage pending; rewiring scheduler to wall clock", .{@divTrunc(now_wall - since, std.time.ns_per_ms)});
-                    self.scheduler.clock = self.wall_clock.source();
-                    self.scheduler.start();
-                    self.clock_rewired_to_wall = true;
-                    self.gate_stall_since_wall = null;
-                }
-            } else {
-                self.gate_stall_since_wall = now_wall;
-            }
-        } else {
-            // AD-43.3a watchdog correction (2026-06-06): tracking
-            // resets whenever the stall condition is NOT currently
-            // present, including the no-damage case. The first
-            // version reset only on should_composite, so a stale
-            // timestamp survived damage clearing and the next
-            // damage-plus-false coincidence fired the watchdog
-            // instantly with an arbitrary delta (observed as a
-            // spurious 522 ms warn on a wall-paced boot, where the
-            // resulting rewire was a harmless wall-to-wall no-op).
-            self.gate_stall_since_wall = null;
-        }
+        // ADR 0020: keep the pacing clock live. Runs independent of pending
+        // damage; the AD-43.3a predecessor only ran with damage pending,
+        // which is exactly what blinded it to the idle freeze (no damage
+        // while idle, so the watchdog never armed). Extracted so the
+        // transition state machine is unit-testable with synthetic wall time;
+        // see updatePacingLiveness.
+        self.updatePacingLiveness(
+            if (self.chronofs_clock) |*cc| cc.samplePosition() else null,
+            monotonicNowNs(),
+        );
 
         if (has_damage and should_composite) {
             log.debug("needsComposite: damage={} scheduler={}", .{ has_damage, should_composite });
@@ -308,6 +306,69 @@ pub const Compositor = struct {
             events.emitCompositeGateDiagnostic(has_damage, should_composite, true);
         }
         return has_damage and should_composite;
+    }
+
+    /// ADR 0020: pacing-clock liveness state machine. Given the current
+    /// chronofs sample counter (null when the region is invalid) and the
+    /// current wall time, keep the scheduler paced on a live clock: rewire a
+    /// frozen or invalidated adopted audio clock to the wall clock, and
+    /// re-adopt the audio clock once its counter resumes advancing across a
+    /// full probe interval. scheduler.start() re-seeds next_deadline_ns in
+    /// the new clock's epoch on every transition, so the first composite
+    /// after a switch lands within one frame interval. Wall time is passed in
+    /// rather than read here so the transitions are deterministically
+    /// testable.
+    fn updatePacingLiveness(self: *Self, cur_samples: ?u64, now_wall: i128) void {
+        switch (self.pacing_mode) {
+            .audio => {
+                if (cur_samples) |s| {
+                    if (s > self.audio_samples_mark) {
+                        // Healthy: the adopted clock advanced. Refresh the mark.
+                        self.audio_samples_mark = s;
+                        self.audio_wall_mark = now_wall;
+                    } else if (now_wall - self.audio_wall_mark > GATE_STALL_REWIRE_NS) {
+                        // Frozen for the stall window: rewire to the wall clock.
+                        log.warn("frame pacing clock stalled {d} ms (audio clock not advancing); rewiring to wall clock", .{@divTrunc(now_wall - self.audio_wall_mark, std.time.ns_per_ms)});
+                        self.scheduler.clock = self.wall_clock.source();
+                        self.scheduler.start();
+                        self.pacing_mode = .wall;
+                        self.audio_samples_mark = s;
+                        self.audio_wall_mark = now_wall;
+                    }
+                } else {
+                    // Region went invalid (writer gone): nothing to pace on,
+                    // rewire immediately and reset the mark so any later
+                    // resume reads as an advance.
+                    log.warn("frame pacing clock invalidated; rewiring to wall clock", .{});
+                    self.scheduler.clock = self.wall_clock.source();
+                    self.scheduler.start();
+                    self.pacing_mode = .wall;
+                    self.audio_samples_mark = 0;
+                    self.audio_wall_mark = now_wall;
+                }
+            },
+            .wall => {
+                // Re-adopt only after the sample counter advances across a
+                // full probe interval, so the interval doubles as the dwell
+                // that rejects a single jitter tick.
+                if (now_wall - self.audio_wall_mark >= READOPT_PROBE_INTERVAL_NS) {
+                    if (cur_samples) |s| {
+                        if (s > self.audio_samples_mark) {
+                            if (self.chronofs_clock) |*cc| {
+                                log.info("frame pacing: re-adopted audio hardware clock (resumed advancing)", .{});
+                                self.scheduler.clock = cc.source();
+                                self.scheduler.start();
+                                self.pacing_mode = .audio;
+                            }
+                        }
+                        self.audio_samples_mark = s;
+                    } else {
+                        self.audio_samples_mark = 0;
+                    }
+                    self.audio_wall_mark = now_wall;
+                }
+            },
+        }
     }
 
     /// Perform composition
@@ -815,6 +876,64 @@ test "Compositor init" {
 
     try std.testing.expect(!comp.composing);
     try std.testing.expect(comp.output == null);
+}
+
+test "Compositor rewires off a frozen audio clock and re-adopts on resume (ADR 0020)" {
+    var surfaces = surface_registry.SurfaceRegistry.init(std.testing.allocator);
+    defer surfaces.deinit();
+
+    // A valid clock region so chronofs_clock is installed and the re-adoption
+    // path has a real clock for scheduler.start() to read. The sample values
+    // that drive the state machine are passed to updatePacingLiveness directly,
+    // so the region contents do not affect the assertions.
+    const tmp_path = "/tmp/sema_adr0020_pacing_test";
+    {
+        var writer = try shared_clock.ClockWriter.init(tmp_path);
+        defer writer.deinit();
+        writer.streamBegin(48_000);
+        writer.update(48_000);
+    }
+
+    var comp = Compositor.init(std.testing.allocator, &surfaces);
+    defer comp.deinit();
+    comp.setChronofsClockPath(tmp_path);
+    defer {
+        if (comp.chronofs_clock) |*cc| cc.deinit();
+    }
+
+    // Enter audio-paced mode directly. start()'s adoption gate uses a 50 ms
+    // isAdvancing probe against a live counter, which a static test region
+    // cannot satisfy; the liveness state machine under test is independent of
+    // how adoption was reached.
+    comp.scheduler.clock = comp.chronofs_clock.?.source();
+    comp.scheduler.start();
+    comp.pacing_mode = .audio;
+    comp.audio_samples_mark = 48_000;
+    comp.audio_wall_mark = 0;
+
+    const ms = std.time.ns_per_ms;
+
+    // Healthy: the counter advances, mode stays audio, the mark refreshes.
+    comp.updatePacingLiveness(48_800, 1 * ms);
+    try std.testing.expectEqual(Compositor.PacingMode.audio, comp.pacing_mode);
+    try std.testing.expectEqual(@as(u64, 48_800), comp.audio_samples_mark);
+
+    // Frozen but still inside the stall window: stays audio.
+    comp.updatePacingLiveness(48_800, 1 * ms + 100 * ms);
+    try std.testing.expectEqual(Compositor.PacingMode.audio, comp.pacing_mode);
+
+    // Frozen past GATE_STALL_REWIRE_NS of wall time: rewire to wall.
+    comp.updatePacingLiveness(48_800, comp.audio_wall_mark + 501 * ms);
+    try std.testing.expectEqual(Compositor.PacingMode.wall, comp.pacing_mode);
+
+    // Wall mode: a single advancing tick before a full probe interval must not
+    // re-adopt; the interval is the dwell.
+    comp.updatePacingLiveness(49_600, comp.audio_wall_mark + 10 * ms);
+    try std.testing.expectEqual(Compositor.PacingMode.wall, comp.pacing_mode);
+
+    // Counter advanced across a full probe interval: re-adopt audio.
+    comp.updatePacingLiveness(50_400, comp.audio_wall_mark + 300 * ms);
+    try std.testing.expectEqual(Compositor.PacingMode.audio, comp.pacing_mode);
 }
 
 test "Compositor output init" {
