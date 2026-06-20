@@ -2281,6 +2281,130 @@ truncates the crash log (the long-lived reset branch). The
 shape as the reset. All against semasound, self-recovering per
 AD-47.
 
+
+### `[~]` AD-50: AD-47 null_sink never recovers (leaked fd deadlocks reconnect against exclusive open)  *(OPEN 2026-06-19, Small; root cause confirmed in code, fix implemented and committed, awaits bench ratification)*
+
+This is the bug AD-47 left behind. AD-47 stopped the engine dying
+on a device write error by transitioning real to null_sink and
+adding a once-per-second reconnect. The reconnect can never
+succeed, so the engine survives but is permanently degraded:
+holding the device open, feeding it nothing, underrunning every
+fragment forever.
+
+Bench shape (2026-06-19, observed twice across two semasound
+processes): an output stream live on controller 0's Speaker DAC
+(state region runtime_active=1, current_format=0x0011; clock
+clock_valid=1, samples advancing), unfed, with
+dev.audiofs.0.underflow_count climbing about 47 per second.
+semasound alive and idle, holding /dev/audiofs0 fd open with no
+connected client, output thread timer-pacing in null_sink. The
+condition recurred on a fresh process within hours, so the trigger
+fires in ordinary operation, not as a one-off.
+
+MECHANISM, confirmed in code (not inferred from the vanished live
+state, which truss and procstat kept perturbing into exit):
+
+  - output.zig real-state write error transitions to null_sink but
+    did NOT close the failed fd. The AD-47 comment at the fd
+    declaration was explicit and was the defect: "Dead fds are
+    never closed (a bounded leak per device-loss cycle), so no
+    reader can race a close." The leak was a deliberate choice to
+    avoid a close-race with the accept path's election ioctl.
+
+  - audiofs is exclusive-open: audiofs_cdev_open (audiofs.c:5588)
+    returns EBUSY while output_stream_cdev_open is set, cleared
+    only in cdev_close. While the leaked fd is held, the flag stays
+    set.
+
+  - So null_sink's once-per-second openWronly(DEVICE_PATH) returned
+    EBUSY every time: semasound blocked its own reconnect with its
+    own held fd. It could never return to real. Discards the mix,
+    never feeds the held stream, underruns forever.
+
+  - Trigger: a normal client connecting at a new rate runs the
+    accept-path election (applyElection then SET_FORMAT, ADR 0019),
+    which reconfigures the live stream and wakes the blocked writer;
+    that woken write returning an error flips real to null_sink.
+    This is why it recurs on ordinary use.
+
+The obvious one-line fix (close the fd on the transition) was
+UNSAFE because the fd was a bare shared atomic read by the accept
+thread: the accept path did g_out_fd.load() then ioctl with no
+synchronization (main.zig:238), so closing from the output thread
+raced a recycled descriptor into an in-flight election ioctl. The
+prior code only got away with the unsynchronized republish at
+reopen because the deadlock meant the fd never churned; fixing the
+deadlock unmasks that race. So this was a shared-descriptor
+ownership problem across three roles (main seeds, output
+republishes, accept reads-and-ioctls), not a one-liner.
+
+RULING (operator, 2026-06-19): make the fd a single-owner type,
+enforcing ownership by structure rather than by the comment that
+AD-47 relied on. AD-fix under this entry, no new ADR (AD-43.1
+precedent).
+
+IMPLEMENTED (2026-06-19, compile-checked against Zig 0.16 and the
+real compat module; committed; awaits bench):
+
+  - New semasound/src/device_fd.zig: DeviceFd wraps the fd with a
+    compat.sync.Mutex. The output thread owns lifecycle (release
+    and adopt) and reads its hot write path via snapshot() with no
+    lock (sound because it is the sole mutator). Every other thread
+    touches the fd only through use(), which holds the lock for the
+    call, so the fd cannot be closed and recycled mid-ioctl. The
+    mutex is contended only between the rare election ioctl and the
+    rare reconnect; the per-fragment write path never locks.
+
+  - output.zig: real-state write error now calls ctx.fd.release()
+    (close and mark absent, under the lock) before going to
+    null_sink; reconnect calls ctx.fd.adopt(nfd). cur_fd tracks the
+    owner-local value for the hot path. This is the actual fix: the
+    device is released, output_stream_cdev_open clears via
+    cdev_close, and the reconnect openWronly re-acquires it.
+
+  - main.zig: g_out_fd and g_null_fd bare atomics become g_out_dev
+    and g_null_dev DeviceFd. The accept path issues the election
+    ioctl through g_out_dev.use(...), so it can never ioctl a
+    closed-and-recycled fd. Startup adopts the fd; null target
+    stays -1.
+
+  - election.zig: applyElectionFd, an fd-first wrapper so
+    DeviceFd.use() can prepend the fd.
+
+Concurrency contract to check at ratification (documented in
+device_fd.zig): release and adopt are owner-thread only; the owner
+reads its hot path via snapshot() and is the sole mutator; every
+cross-thread use goes through use() under the lock; ioctl-vs-ioctl
+on a freshly adopted valid fd is serialized by the kernel cdev, not
+by this type, which only prevents use-after-close.
+
+RECORD (commit-message swap, cannot be reworded; pushed): the AD-50
+and D1 commit messages landed crossed.
+  - 06f68aa "AD-50: single-owner DeviceFd" actually contains the D1
+    s6-log path change (/var/log/utf to /var/log/awase).
+  - 64bcb9e "Point s6-log writers..." actually contains the AD-50
+    single-owner DeviceFd change (device_fd.zig plus the
+    output/main/election edits, verified byte-identical to the
+    reviewed patch).
+Both changes are correct and complete in tree; only the labels are
+crossed.
+
+BENCH (owed before close): deploy the rebuilt semasound; induce the
+null_sink transition (connect a client at a non-canonical rate so
+the election SET_FORMAT trips the writer, or kldunload then kldload
+audiofs per the AD-47 repro); confirm the log shows "device
+reopened ... resumed" within about a second, underflow_count stops
+climbing after recovery, and a sustained soak with repeated
+connect/disconnect at varying rates never leaves a held-but-unfed
+stream. The D1 log-path fix (committed) restores the
+playing/degraded heartbeat that is the direct recovery signal.
+
+Note: ADR 0031 (audiofs state/event decoupling) is the independent
+amplifier fix; it removes the path_dead_end storm that this unfed
+stream drove through the F.3.d xrun path. AD-50 removes the trigger
+(the unfed stream); 0031 removes the amplification. Both are
+needed; neither subsumes the other.
+
 ### `[ ]` AD-44: inputfs kbdmux bridge has no consumer on PGSD post-AD-39  *(Open, Small, P3; surfaced 2026-05-27 evening during the "is drawfs replacing vt(4) and efifb?" audit; documentation-only disposition chosen, no code change)*
 
 ADR 0019 (2026-05-09) implements an inputfs->kbdmux bridge so
