@@ -2282,7 +2282,7 @@ shape as the reset. All against semasound, self-recovering per
 AD-47.
 
 
-### `[~]` AD-50: AD-47 null_sink never recovers (leaked fd deadlocks reconnect against exclusive open)  *(OPEN 2026-06-19, Small; root cause confirmed in code, fix implemented and committed, awaits bench ratification)*
+### `[x]` AD-50: AD-47 null_sink never recovers (leaked fd deadlocks reconnect against exclusive open)  *(CLOSED 2026-06-20, operator-ratified; root caused in code, single-owner DeviceFd fix implemented, compile-verified, and bench-ratified the recovery path)*
 
 This is the bug AD-47 left behind. AD-47 stopped the engine dying
 on a device write error by transitioning real to null_sink and
@@ -2389,21 +2389,30 @@ and D1 commit messages landed crossed.
 Both changes are correct and complete in tree; only the labels are
 crossed.
 
-BENCH (owed before close): deploy the rebuilt semasound; induce the
-null_sink transition (connect a client at a non-canonical rate so
-the election SET_FORMAT trips the writer, or kldunload then kldload
-audiofs per the AD-47 repro); confirm the log shows "device
-reopened ... resumed" within about a second, underflow_count stops
-climbing after recovery, and a sustained soak with repeated
-connect/disconnect at varying rates never leaves a held-but-unfed
-stream. The D1 log-path fix (committed) restores the
-playing/degraded heartbeat that is the direct recovery signal.
+RATIFIED (bench, 2026-06-20, operator-run ad50-ratify.sh): with the
+AD-50 build installed (semasound rebuilt clean on the bench; the
+container's sockaddr_un/openWronly errors were toolchain skew and did
+not recur), the test forced the transition by kldunload audiofs under
+the running writer, then kldload. The heartbeat captured the full
+round trip: playing -> "degraded[default] ... device absent,
+reconnecting" through the absence -> "device reopened on
+/dev/audiofs0; output[default] resumed" -> playing, with
+underflow_count flat at 0 before and after. Under the old leaked-fd /
+EBUSY deadlock the degraded state persisted indefinitely; it now
+recovers within the window. RESULT: PASS on all three signals
+(resumed line seen, heartbeat back to playing, underflow flat). This
+is the first bench-ratified close of the session's audio thread; idle
+behavior separately showed zero underflow and an unbroken playing
+heartbeat. Remaining optional hardening (not blocking close): the
+gentler production trigger (client at a non-canonical rate tripping
+the election SET_FORMAT) and a multi-cycle connect/disconnect soak,
+both confirmatory of the same recovery already observed.
 
 Note: ADR 0031 (audiofs state/event decoupling) is the independent
 amplifier fix; it removes the path_dead_end storm that this unfed
 stream drove through the F.3.d xrun path. AD-50 removes the trigger
 (the unfed stream); 0031 removes the amplification. Both are
-needed; neither subsumes the other.
+needed; neither subsumes the other. 0031 remains open.
 
 ### `[ ]` AD-44: inputfs kbdmux bridge has no consumer on PGSD post-AD-39  *(Open, Small, P3; surfaced 2026-05-27 evening during the "is drawfs replacing vt(4) and efifb?" audit; documentation-only disposition chosen, no code change)*
 
