@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/awase-logo.png" alt="Awase logo" width="240">
+</p>
+
 # Awase
 
 Awase is a unified temporal fabric for FreeBSD: the core of the
