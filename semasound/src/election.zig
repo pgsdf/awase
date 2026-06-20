@@ -101,6 +101,12 @@ pub fn applyElection(st: *State, fd: std.posix.fd_t, new_rate: u32) u32 {
     return cur;
 }
 
+/// AD-50: fd-first wrapper so DeviceFd.use() can prepend the fd argument.
+/// Identical to applyElection with the fd moved to the front.
+pub fn applyElectionFd(fd: std.posix.fd_t, st: *State, new_rate: u32) u32 {
+    return applyElection(st, fd, new_rate);
+}
+
 test "electFor: hardware rates elected natively, others fall back to 48k" {
     try std.testing.expectEqual(@as(u32, 32000), electFor(32000));
     try std.testing.expectEqual(@as(u32, 44100), electFor(44100));

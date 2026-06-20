@@ -13,6 +13,7 @@ const std = @import("std");
 const compat = @import("compat");
 const posix = std.posix;
 const protocol = @import("protocol.zig");
+const DeviceFd = @import("device_fd.zig").DeviceFd;
 
 fn openWronly(path: []const u8) !posix.fd_t {
     var path_buf = try posix.toPosixPath(path);
@@ -57,7 +58,7 @@ pub const Ctx = struct {
     // wakes a blocked writer, which writeAll's loop absorbs). A value
     // of -1 means no device: run() starts on the null sink and
     // reconnects. runNull receives a permanently -1 atomic.
-    fd: *std.atomic.Value(std.posix.fd_t),
+    fd: *DeviceFd,
     // AD-47: election state to reseed after a device reopen (a
     // reloaded module rests at its own rate, not ours). Null for
     // runNull.
@@ -105,7 +106,12 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
 
 pub fn run(ctx: Ctx) void {
     // AD-47 device layer state.
-    var dev_state: DeviceState = if (ctx.fd.load(.monotonic) >= 0) .real else .null_sink;
+    // AD-50: owner-local copy of the device fd for the lock-free hot
+    // write path. The output thread is the sole mutator of the fd
+    // lifecycle, so this copy is always consistent with its own
+    // release()/adopt() calls below.
+    var cur_fd: posix.fd_t = ctx.fd.snapshot();
+    var dev_state: DeviceState = if (cur_fd >= 0) .real else .null_sink;
     if (dev_state == .null_sink) {
         std.debug.print("semasound: output[{s}] starting on null sink; device absent, reconnecting\n", .{ctx.name});
     }
@@ -156,8 +162,16 @@ pub fn run(ctx: Ctx) void {
         // never terminate the loop.
         switch (dev_state) {
             .real => {
-                writeAll(ctx.fd.load(.monotonic), &out) catch |e| {
+                writeAll(cur_fd, &out) catch |e| {
                     std.debug.print("semasound: audiofs write error {any}; output[{s}] continues on null sink, device layer reconnecting\n", .{ e, ctx.name });
+                    // AD-50: release the device on the transition so the
+                    // reconnect can re-acquire it. audiofs is exclusive
+                    // open; a held dead fd makes every reopen return
+                    // EBUSY (the AD-47 leak deadlocked its own reconnect).
+                    // release() closes under the lock, safe against the
+                    // accept path's election ioctl (DeviceFd.use).
+                    ctx.fd.release();
+                    cur_fd = -1;
                     dev_state = .null_sink;
                     next_ns = compat.time.nowMonotonic() + period_ns;
                 };
@@ -178,7 +192,8 @@ pub fn run(ctx: Ctx) void {
                 if (rc_now - last_reconnect_ms >= 1000) {
                     last_reconnect_ms = rc_now;
                     if (openWronly(protocol.DEVICE_PATH)) |nfd| {
-                        ctx.fd.store(nfd, .monotonic);
+                        ctx.fd.adopt(nfd);
+                        cur_fd = nfd;
                         if (ctx.election) |est| election_mod.seedFromDevice(est, nfd);
                         dev_state = .real;
                         std.debug.print("semasound: device reopened on {s}; output[{s}] resumed\n", .{ protocol.DEVICE_PATH, ctx.name });

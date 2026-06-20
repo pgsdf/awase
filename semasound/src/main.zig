@@ -16,6 +16,7 @@ const xrun = @import("xrun.zig");
 const resampler = @import("resampler.zig");
 const estimator_thread = @import("estimator_thread.zig");
 const election = @import("election.zig");
+const DeviceFd = @import("device_fd.zig").DeviceFd;
 const target_mod = @import("target.zig");
 const policy_mod = @import("policy.zig");
 const policy_state = @import("policy_state.zig");
@@ -35,15 +36,17 @@ var g_xrun_count = std.atomic.Value(u64).init(0);
 // Device fd, opened by main before the listener serves anyone; written once
 // at startup, then read-only (output thread writes audio through it, accept
 // path issues election ioctls on it). Also installed into g_targets[0].
-// AD-47 device layer: the device fd is shared between the accept path
-// (election ioctls) and the output thread, whose reconnect path
-// republishes it after a reopen. Atomic so every reader sees a
-// coherent fd. Dead fds are never closed (a bounded leak per
-// device-loss cycle), so no reader can race a close.
-var g_out_fd: std.atomic.Value(std.posix.fd_t) = .init(-1);
-// AD-47: the null target's Ctx takes the same pointer shape; this
-// atomic stays -1 for the daemon's life.
-var g_null_fd: std.atomic.Value(std.posix.fd_t) = .init(-1);
+// AD-50 device layer: the device fd is a single-owner DeviceFd. The
+// output thread owns lifecycle (release/adopt) and reads its hot path
+// via snapshot() without locking; the accept path touches the fd only
+// through use(), under the lock, so the fd cannot be closed and recycled
+// mid-ioctl. This replaces the AD-47 bare atomic whose "never close, so
+// no reader races a close" policy deadlocked the reconnect against
+// audiofs's exclusive open (EBUSY while the dead fd was held).
+var g_out_dev: DeviceFd = .init(-1);
+// AD-50: the null target's Ctx takes the same DeviceFd pointer shape;
+// this one stays -1 for the daemon's life (runNull never opens a device).
+var g_null_dev: DeviceFd = .init(-1);
 
 const POLICY_ETC = "/usr/local/etc/semasound";
 
@@ -235,7 +238,7 @@ fn handleAccept(conn: posix.fd_t, id: u32) void {
     // resampled to the current rate, which is correct overlap behavior.)
     if (tgt.isDevice() and tgt.set.activeCount() == 0) {
         const before = tgt.election.rate();
-        _ = election.applyElection(&tgt.election, g_out_fd.load(.monotonic), election.electFor(hello.rate_hz));
+        _ = g_out_dev.use(u32, election.applyElectionFd, .{ &tgt.election, election.electFor(hello.rate_hz) });
         const after = tgt.election.rate();
         if (after != before) {
             var db: [48]u8 = undefined;
@@ -309,8 +312,8 @@ pub fn main() !void {
         std.debug.print("semasound: cannot open {s}: {any}; starting on null sink, device layer will reconnect\n", .{ protocol.DEVICE_PATH, e });
         break :blk -1;
     };
-    g_out_fd.store(startup_fd, .monotonic);
     if (startup_fd >= 0) {
+        g_out_dev.adopt(startup_fd);
         std.debug.print(
             "semasound: output open on {s} ({d} Hz canonical), mixing\n",
             .{ protocol.DEVICE_PATH, protocol.CANON_RATE },
@@ -333,7 +336,7 @@ pub fn main() !void {
         .set = &g_targets[0].set,
         .stop = &g_stop,
         .frames_written = &g_targets[0].frames_written,
-        .fd = &g_out_fd,
+        .fd = &g_out_dev,
         .election = &g_targets[0].election,
         .name = "default",
         .duck_milli = &g_targets[0].duck_milli,
@@ -351,7 +354,7 @@ pub fn main() !void {
         .set = &g_targets[1].set,
         .stop = &g_stop,
         .frames_written = &g_targets[1].frames_written,
-        .fd = &g_null_fd,
+        .fd = &g_null_dev,
         .election = null,
         .name = "null",
         .duck_milli = &g_targets[1].duck_milli,
