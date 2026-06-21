@@ -28,7 +28,7 @@ testable.
 
 ### What was done
 
-A soak watcher (tools/display-freeze-soak.sh) sampled cheap,
+A soak watcher (scripts/display-freeze-soak.sh) sampled cheap,
 non-perturbing liveness signals at 15 s intervals over one-hour windows:
 the audiofs pacing clock samples_written (offset 12, the clock semadrawd
 paces on), underflow_count flatness, the three supervised daemons
