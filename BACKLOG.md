@@ -1766,6 +1766,55 @@ trigger and respects its kernel-diagnostic-channel boundary).
 once its recovery criteria are satisfied, Phase 0.5. Each named
 decision in the design doc becomes its own ADR before its code.
 
+
+### `[ ]` AD-57: Source of truth for the PGSD kernel  *(Open, Medium; design drafted 2026-06-21, foundation for AD-56 Phase 0.5)*
+
+Define the canonical representation of the PGSD kernel so it is
+reproducible over time, independent of any artifact pipeline. Today PGSD
+is a transformation (install stock FreeBSD with sources, run install.sh
+to convert in place), so its kernel source of truth is "whatever is in
+/usr/src" when install.sh runs, which drifts. AD-56 Phase 0.5 introduces
+kernel instrumentation that MEASURES the boot ABI, and a measurement is
+only meaningful relative to a specific kernel; an unreproducible
+measurement defeats Phase 0.5's measure-not-assume premise. So a durable
+kernel definition is a precondition of AD-56, not a consequence of a
+future ISO goal.
+
+This is a PROJECT-level decision (the project's representation of itself),
+not a kernel-subsystem one: it affects AD-56, future kernel work,
+install.sh, onboarding, and any later artifact pipeline.
+
+**Design document (2026-06-21, DRAFT):**
+`docs/design/AD57-PGSD-KERNEL-SOURCE-OF-TRUTH.md`.
+
+**Scope:** development reproducibility only (reconstruct the exact kernel
+used for a given investigation from the repo plus the pinned revision).
+Artifact reproducibility (ISO/IMG, release tooling, publication) is
+explicitly deferred to a later ADR that builds on this one.
+
+**Four decisions:**
+  1. Pinning: PGSD is defined against a specific FreeBSD source revision;
+     "whatever is in /usr/src" ceases to be authoritative.
+  2. Representation: the canonical kernel is {pinned upstream revision} +
+     {ordered project deltas}, a recipe not a stored tree (preserves the
+     derive-not-fork discipline; patch-storage mechanics deliberately out
+     of scope so the ADR does not rot with tooling).
+  3. Classification: deltas partition into definitional (part of PGSD)
+     and investigational (transient research artifacts such as the AD-56
+     instrumentation).
+  4. Reconstruction: a developer can rebuild the exact kernel of a given
+     investigation from repo contents plus the pin.
+
+**Migration:** install.sh must move from "use whatever /usr/src is
+present" to "use the pinned, patched kernel" (fetch the pin or verify
+/usr/src matches it, then apply deltas). Real work; AD-56 is its
+justification.
+
+**Not vendoring the tree:** the recipe model gives a reproducible kernel
+definition without turning the repo into a FreeBSD source mirror. Full
+vendoring is rejected as the first move; whether any touched-file
+patch-base is vendored is a representation detail, not this decision.
+
 ### `[ ]` AD-11: Console and recovery: pgsd-sessiond as universal login surface  *(Open, Medium; reframed 2026-05-21)*
 
 **Tracks**: a future ADR (AD-11.1 below) and three small
