@@ -1,110 +1,138 @@
-# AD-56 Phase 0.5: ABI instrumentation design (DRAFT)
+# AD-56 Phase 0.5: ABI measurement design (DRAFT)
 
-Status: DRAFT for ratification. A PGSD kernel change; specified before
-code per discipline. Gated behind the five Phase 0 exit criteria.
+Status: DRAFT for ratification. A PGSD kernel change plus controlled
+boot experiments; specified before code per discipline.
 
-## Purpose
+## Purpose and scope discipline
 
 Turn the source-read compatibility bridge (AD56-ABI-BRIDGE.md) into a
-MEASURED load-bearing subset. Source inspection and runtime behavior
-diverge: dead branches, arch-conditional paths, and present-but-never-
-dereferenced fields make a static reading larger than the actual runtime
-dependency. Phase 0.5 measures what the kernel actually consumes, so the
-Phase 3a minimal handoff and the eventual Awase-native contract carry
-only what is load-bearing, not everything the loader emits.
+MEASURED load-bearing subset, so the Awase-native boot contract and the
+Phase 3 minimal handoff carry only what is required, not everything the
+loader can emit.
 
-## What to measure (the four-way distinction, made runtime)
+This is NOT a general boot-telemetry framework around
+preload_search_info. It answers one specific question about one small,
+already-enumerated set of records. The bridge document gives the
+candidate set:
 
-For each metadata record type, across multiple successful boots:
-  - requested: was preload_search_info called for it?
-  - caller: which site (so consumption maps to subsystem).
-  - found: did the loader actually provide it (non-NULL return)?
-  - dereferenced: was the returned pointer actually read, or fetched and
-    discarded?
+  - EFI_MAP, EFI_FB, HOWTO, ENVP, KERNEND,
+  - the per-module records (MODINFO_NAME/TYPE/ADDR/SIZE),
+  - the kernel record (the "elf kernel" module).
 
-The "dereferenced" axis is the subtle one and the whole point. A record
-that is searched and found but whose pointer is never read is
-EMITTED-BUT-IGNORED, exactly the dead weight a fresh loader should not
-reproduce. Search-and-found alone does not prove load-bearing.
+Roughly seven things. The whole of Phase 0.5 is to classify those seven.
+If the design grows beyond classifying this set, it has overreached.
 
-## Design: an accounting layer around preload_search_info, not per-access logging
+## Two stages answer two different questions
 
-Do NOT printf every metadata access (a boot-time flood, and it perturbs
-timing). Instead, a small accounting table inside subr_module.c:
+Observation and reduction are not interchangeable:
 
-  - A static array indexed by (or keyed on) the requested `inf` value
-    (MODINFO_* or MODINFO_METADATA|MODINFOMD_*). Each entry accumulates:
-    request count, found count, a small set of distinct caller return
-    addresses (__builtin_return_address(0)), and a dereferenced flag.
-  - preload_search_info records request + found + caller on each call.
-  - A single post-boot report (a SYSINIT at SI_SUB_LAST, or a sysctl
-    handler dumped on demand) walks the table and prints one inventory:
-    per record type, requested/found/deref and the caller sites.
+  - Observation: "What does the system TOUCH?"
+  - Reduction: "What can the system LIVE WITHOUT?"
 
-This yields a usage INVENTORY, one report, instead of a message per
-access.
+A record can be touched and still not be load-bearing. Observation alone
+cannot tell required from merely-read; promoting "observed" to "required"
+is the exact read-equals-required error the bridge document warns
+against, and it must not reappear at the measurement layer.
 
-## The "dereferenced" problem and how to handle it honestly
+### Stage 1: Observation (bounds the candidate set from above)
 
-preload_search_info returns a pointer; whether the CALLER dereferences
-it cannot be seen from inside preload_search_info. Three options, in
-increasing fidelity and cost:
+A small accounting layer around preload_search_info records, per
+requested record type: request count, found (non-NULL) count, and the
+distinct caller return addresses. One post-boot inventory (a sysctl
+handler, non-perturbing and re-readable; not a per-access printf flood).
 
-  1. Proxy: treat found+returned-non-NULL as "consumed". Cheapest;
-     overcounts (cannot distinguish fetched-and-used from
-     fetched-and-discarded). Honest label: this measures REQUESTED-AND-
-     PROVIDED, not dereferenced. Still strictly better than source
-     reading because it captures arch/runtime-conditional requests.
-  2. Caller audit: from the recorded caller sites, read each one in
-     source ONCE and classify whether it dereferences. Combines the
-     runtime request inventory (which sites actually ran on this bench)
-     with a targeted source read of only those sites. Good fidelity,
-     low code risk, no kernel-internal dereference tracking. Recommended
-     starting point.
-  3. Full taint: wrap returns so a later read is detectable. High cost,
-     intrusive, not justified yet.
+What observation establishes, and ONLY this:
 
-Recommendation: option 2. The accounting layer gives the runtime request
-set (the hard-to-infer part: which records were actually requested, by
-which sites, and were they present); a one-time source audit of just the
-recorded caller sites resolves dereferenced-vs-discarded. This avoids the
-"search-and-found means used" overclaim that option 1 alone would make.
+  - NEVER TOUCHED -> classifiable immediately as DEAD. This is the only
+    terminal classification observation can assign.
+  - TOUCHED -> remains UNCLASSIFIED. Suspect, not proven required.
+    Reduction must test it.
+
+Observation's real job is to VALIDATE THE CANDIDATE SET: confirm the
+boot consumes nothing the bridge document missed (no surprise record
+type requested), and confirm each candidate is actually requested on
+this bench. It bounds from above (what is safely dead) and checks the
+list is complete. It does not classify the touched records.
+
+### Stage 2: Reduction (the experiment; assigns mandatory vs optional)
+
+For each candidate record believed live, suppress or malform exactly
+that one record in the handoff, boot, and observe. This is the only
+thing that produces a REQUIRED verdict, because the justification for
+dropping a record from the Awase-native contract is not "it was read
+once" but "the system boots without it."
+
+Classification (the table reduction fills):
+
+  - DEAD: never consumed. Assigned by observation alone.
+  - MANDATORY: boot FAILS when the record is absent or malformed.
+    Reduction required to assign.
+  - OPTIONAL: boot SUCCEEDS when the record is absent or malformed, but
+    functionality degrades (e.g. EFI_FB absent: kernel reaches init,
+    drawfs has no display). Reduction required to assign.
+
+## Reduction must be staged by risk (recovery odds first)
+
+Order the reduction experiments so early experiments bank simplification
+while recovery is most certain, and the experiment expected to fail runs
+last:
+
+  1. Records believed NON-CRITICAL (provisional-dead or clearly
+     peripheral): test first; cheap simplification, low failure risk.
+  2. Records believed OPTIONAL (e.g. EFI_FB, HOWTO, ENVP): expected to
+     boot-without; confirms the degrade-not-fail prediction.
+  3. Records SUSPECTED MANDATORY (KERNEND, the module/kernel records):
+     higher failure probability.
+  4. EFI_MAP LAST: native_parse_memmap panics without it, so this
+     experiment is already EXPECTED to fail. There is no value in
+     discovering that first; run it after the recovery path has been
+     exercised repeatedly and is trusted.
+
+This is "build the mitigation immediately before the risk" applied to
+experiment ordering.
+
+## Hard prerequisite for reduction (not a Phase 0 item)
+
+Reduction DELIBERATELY makes the system unbootable to find the mandatory
+records. It therefore requires a proven recovery path. Before reduction
+begins:
+
+  - The ZFS boot-environment recovery must be proven END TO END: boot
+    into the known-good BE on real hardware once, not merely switch-test
+    the activate/revert (which Phase 0 already did). This is a
+    prerequisite OF REDUCTION, not an unfinished Phase 0 deliverable;
+    Phase 0's recovery posture is complete, and this proof is consumed
+    by the work that needs it.
+  - Reduction experiments operate on a DISPOSABLE / instrumented boot
+    path (the PGSD-DEBUG kernel and a throwaway handoff), never the
+    production handoff, so a failed experiment recovers by booting the
+    known-good BE and the production path is never the thing broken.
 
 ## Output and how it feeds the contract
 
-After several clean boots (capture variation: with/without display, the
-recovery profile, etc.), the inventory plus the caller audit yields, per
-record type, a measured verdict: REQUIRED (boot fails without; tested by
-the panic case and by absence experiments later), CONSUMED-AND-DEREF,
-REQUESTED-BUT-IGNORED, NEVER-REQUESTED on this bench.
+After observation validates the candidate set and reduction classifies
+each record DEAD / MANDATORY / OPTIONAL, the result is the measured ABI:
+the boundary between the bridge ABI (everything source can touch), the
+measured ABI (what this bench actually requires), and the Awase-native
+ABI (the minimal contract Phase 3 implements). Phase 3 implements only
+what the measured subset requires.
 
-That table is the boundary between:
-  - the bridge ABI (everything the source path can touch),
-  - the measured ABI (what this bench's kernel actually consumes),
-  - the Awase-native ABI (the minimal contract Phase 3/4 defines and the
-    PGSD kernel and Awase loader jointly own).
+## The dereference caveat (carried from the earlier draft)
 
-When that boundary is drawn from measurement, the fresh loader stops
-being a reverse-engineering project and becomes an OS design project:
-the contract is chosen, not inherited.
-
-## Scope and safety
-
-  - A PGSD-DEBUG-only change initially (instrument the debug kernel,
-    keep PGSD production clean), so the accounting has zero cost in the
-    shipped kernel.
-  - subr_module.c is MI code; the change must be guarded
-    (#ifdef or a tunable) so it compiles out entirely when not measuring.
-  - Read-only with respect to boot behavior: the accounting only
-    observes; it must not alter what preload_search_info returns.
-  - Gated behind Phase 0's five exit criteria, including tested
-    media-free recovery, because it modifies and reboots the kernel.
+preload_search_info cannot see whether its CALLER dereferences the
+returned pointer, so observation's "found" is "requested-and-provided,"
+not "used." This is fine under the two-stage model: observation is not
+trusted to prove use; reduction proves required. The earlier worry about
+overcounting dissolves because reduction, not observation, assigns the
+load-bearing verdict.
 
 ## Decisions to ratify before code
 
-  - option 1 vs 2 for the dereference question (recommended: 2).
-  - report mechanism: boot-time SYSINIT dump vs on-demand sysctl
-    (sysctl is non-perturbing and re-readable; likely better).
-  - PGSD-DEBUG-only vs a tunable on PGSD.
-  - how many boots and which boot variations constitute a sufficient
-    measurement before drawing the minimal-handoff line.
+  - report mechanism for observation: sysctl handler (recommended,
+    non-perturbing, re-readable) vs boot-time SYSINIT dump.
+  - PGSD-DEBUG-only instrumentation (recommended; zero cost in the
+    shipped kernel) vs a tunable on PGSD.
+  - the suppress/malform mechanism for reduction: how one record is
+    removed or corrupted in the handoff on the disposable path.
+  - confirmation that the end-to-end BE reboot proof is done before
+    reduction starts.

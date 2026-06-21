@@ -202,22 +202,39 @@ not satisfy criterion 5; add a media-free path until one exists.
 Rationale: the Yokohama bench iterates remotely; a recovery needing
 hands-on media is not leanable-on during rapid iteration.
 
-## Exit
+## Exit: Phase 0 complete as revised
 
-Phase 0 closes when its criteria are met and recorded:
-  - criterion 2: boot-chain document (DONE),
-  - criterion 3: ABI bridge documented from source (DONE; load-bearing
-    subset deferred to Phase 0.5 by design),
-  - criterion 1: recovery architecture verified, independent-loader
-    fallback specified and deferred to the Phase 3 entry gate (DONE as a
-    design; implementation gates Phase 3, not Phase 0),
-  - criterion 4: recovery procedure documented and tested for the
-    kernel/userland domains (ZFS BE switch-tested; reboot-into-BE proof
-    pending a reboot window),
-  - criterion 5: media-free recovery proven for kernel/userland; broken
-    loader deferred to Phase 3 entry gate; disk failure is an accepted
-    external-media limit.
-Only then does Phase 0.5 (kernel ABI instrumentation) begin.
+Phase 0's deliverables, all complete:
+  - Boot chain documented (criterion 2). COMPLETE.
+  - Kernel-entry ABI bridge documented from source (criterion 3).
+    COMPLETE; the load-bearing subset is deferred to Phase 0.5 by
+    design, not an open Phase 0 item.
+  - Recovery model documented from hardware observation (criterion 1).
+    COMPLETE.
+  - ZFS boot-environment recovery verified (criteria 4, 5 for the
+    kernel/userland domains). COMPLETE (switch-tested; the loader BE
+    menu reached and known-good-pre-ad56 selectable).
+  - Independent-loader fallback architecture defined and sequenced to
+    the Phase 3 entry gate (criterion 1). COMPLETE as a specification.
+
+Intentionally NOT in Phase 0 (moved out by the criterion-1 correction,
+not left undone):
+  - Independent-loader fallback IMPLEMENTATION. It mitigates a failure
+    domain that does not exist until the Phase 3 fresh loader, and
+    building it now would mean repartitioning a near-full ZFS-root disk
+    (the riskiest operation that would be in Phase 0). Deferred to the
+    Phase 3 entry gate. Re-listing it as a pending Phase 0 item would
+    undo that sequencing decision.
+
+One end-to-end boot into the known-good BE is still advisable, but it is
+a PREREQUISITE OF PHASE 0.5 REDUCTION (which deliberately makes the
+system unbootable), not an unfinished Phase 0 deliverable. Phase 0's
+recovery posture is established; that proof is consumed by the work that
+needs it. See AD56-PHASE05-INSTRUMENTATION.md.
+
+Phase 0 is complete as revised. Phase 0.5 may begin (observation needs
+no unbootable states; reduction has the BE-reboot-proof prerequisite
+above).
 
 ## What Phase 0 deliberately does NOT do
 
