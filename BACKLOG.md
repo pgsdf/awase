@@ -1686,6 +1686,86 @@ display hardware via pciconf on each bench machine, add the native
 backend tier, commit the first-vendor target) is the only step that
 can begin without scheduling the program.
 
+
+### `[ ]` AD-56: Boot-path ownership: replace FreeBSD's loader and menu with a fresh Awase loader  *(Open, Large; design ratified 2026-06-21, Phase 0 and 0.5 startable, Phases 2 and 3 scheduled as a program)*
+
+Replace FreeBSD's loader.efi and its menu entirely with a fresh Awase
+loader: the boot experience the firmware hands control to, the
+framebuffer it runs on, and the loader engine that parses the kernel
+and hands it off all become Awase's. This is the boot-side counterpart
+to AD-4's "Awase owns the floor": AD-4 stops drawfs consuming the
+loader-provided GOP metadata at the output layer; AD-56 replaces the
+loader that provides it.
+
+Operator decision (2026-06-21): the Awase loader is written FRESH, not
+forked from loader.efi, so the kernel handoff, framebuffer ownership,
+and boot UI are designed around Awase's model. Fresh-over-fork is a
+principle, not a preference: it extends AD-4's floor ownership backward
+into boot, so the display belongs to Awase from power-on to shutdown
+with no ownership transitions that exist solely for historical FreeBSD
+reasons.
+
+**Design document (2026-06-21, operator-ratified with Objective
+amendment):** `docs/design/BOOT-PATH-OWNERSHIP.md`.
+
+**Ratified objective (the amendment):** the goal is NOT permanent
+reproduction of FreeBSD's boot ABI. It is boot compatibility sufficient
+to establish an Awase-native boot contract under joint control of the
+Awase loader and the PGSD kernel. Awase owns both sides of the
+boundary, so compatibility is a bridge, not the destination: document
+the current ABI, implement compatibility, MEASURE what the kernel
+actually consumes, define an Awase-native contract, remove the
+compatibility layers over time.
+
+**Risk concentration:** writing fresh relocates the program's danger
+onto the kernel entry ABI (the modinfo blob, memory-map and
+system-table handoff, GOP fields the kernel reads on entry). It is an
+undocumented, version-coupled target; a wrong field panics or wedges
+the kernel on a bench that then will not boot. The program is
+structured to contain exactly that risk.
+
+**Phases (observation first, fallback always reachable):**
+  - Phase 0: observation, the stock-loader fallback entry, the ABI
+    bridge document, and a tested recovery path. Five hard exit
+    criteria (below).
+  - Phase 0.5: ABI instrumentation. Modify the PGSD kernel to log what
+    boot metadata it receives and which fields early init actually
+    consumes. Measure, do not assume; likely shrinks the fresh loader.
+  - Phase 1: own the menu inside stock loader.efi (pure script,
+    reversible, zero bootability risk).
+  - Phase 2: own the presentation and framebuffer, still inside stock
+    loader.efi (the AD-4 seam).
+  - Phase 3: the fresh Awase loader, split so a minimal handoff reaches
+    init before any UI or native display contract is built on it (3a
+    minimal handoff, 3b full modules, 3c fold in the UI, 3d
+    Awase-native display contract, 3e AD-11 recovery integration).
+
+**Phase 0 exit criteria (hard gates, all five required):**
+  1. Permanent fallback boot entry verified on real hardware.
+  2. Boot-chain document produced.
+  3. Kernel-entry ABI documented from source.
+  4. Recovery procedure documented and tested (not just designed).
+  5. A bench can always be returned to a known-good state without
+     external media.
+
+**Trust model / secure boot:** scheduled EARLY (decided before the
+Awase-native contract, implemented late). Whether the loader verifies
+the kernel, the kernel verifies modules, secure boot is
+required/optional/unsupported, and whether recovery is allowed on
+verification failure are terms of the boot contract, coupled to exit
+criterion 5 (a brick-on-failed-signature model violates no-external-
+media recovery).
+
+**Relationship to existing work:** AD-4 (the GOP handoff AD-56's Phase
+3d completes at the boot layer), AD-39 (already cleared vt(4)/vt_efifb
+from the kernel; AD-56 clears the boot-side loader, which AD-39 did not
+touch), AD-11 (AD-56's loader inherits AD-11's Alt-held recovery
+trigger and respects its kernel-diagnostic-channel boundary).
+
+**Startable now without scheduling the whole program:** Phase 0 and,
+once its recovery criteria are satisfied, Phase 0.5. Each named
+decision in the design doc becomes its own ADR before its code.
+
 ### `[ ]` AD-11: Console and recovery: pgsd-sessiond as universal login surface  *(Open, Medium; reframed 2026-05-21)*
 
 **Tracks**: a future ADR (AD-11.1 below) and three small
