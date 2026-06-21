@@ -292,9 +292,11 @@ either, the ambiguity that must be avoided on an unbootable-bench risk.
     Phase 0 recovery posture. Decided early, implemented late.
   - recovery and the permanent stock-loader fallback entry: how it is
     provisioned, kept, and guaranteed bootable across updates.
-  - the new component's place in the tree and build: a new top-level
-    component (for example boot/ or loader/), how it builds against the
-    SDK toolchain, and how it is installed to the ESP.
+  - the component's build: the loader lives in the pgsd-boot/ top-level
+    component (named pgsd-boot, not boot, to avoid colliding with
+    FreeBSD's runtime /boot and /usr/src/stand; see pgsd-boot/README.md
+    for the naming rationale). How it builds against the SDK toolchain
+    and how it is installed to the ESP remain to be decided.
   - the AD-4 boundary (the GOP handoff) and the AD-11 boundary (console
     and recovery posture), restated as this program crosses them.
 
