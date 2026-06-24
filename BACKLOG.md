@@ -1767,7 +1767,7 @@ once its recovery criteria are satisfied, Phase 0.5. Each named
 decision in the design doc becomes its own ADR before its code.
 
 
-### `[ ]` AD-57: Source of truth for the PGSD kernel  *(Open, Medium; design drafted 2026-06-21, foundation for AD-56 Phase 0.5)*
+### `[ ]` AD-57: Source of truth for the PGSD kernel  *(Open, Medium; design ratified 2026-06-21, foundation for AD-56 Phase 0.5)*
 
 Define the canonical representation of the PGSD kernel so it is
 reproducible over time, independent of any artifact pipeline. Today PGSD
