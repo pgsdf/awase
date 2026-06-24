@@ -226,15 +226,18 @@ not left undone):
     Phase 3 entry gate. Re-listing it as a pending Phase 0 item would
     undo that sequencing decision.
 
-One end-to-end boot into the known-good BE is still advisable, but it is
-a PREREQUISITE OF PHASE 0.5 REDUCTION (which deliberately makes the
-system unbootable), not an unfinished Phase 0 deliverable. Phase 0's
-recovery posture is established; that proof is consumed by the work that
-needs it. See AD56-PHASE05-INSTRUMENTATION.md.
+The end-to-end boot into the known-good BE, the prerequisite of Phase
+0.5 reduction, is DONE (2026-06-24): the known-good BE was selected at
+the loader by hand and booted, then the system restored to default. The
+recovery path reduction relies on is proven on hardware. Phase 0.5
+observation has no unbootable states and was never gated on this;
+reduction's recovery prerequisite is now satisfied.
 
-Phase 0 is complete as revised. Phase 0.5 may begin (observation needs
-no unbootable states; reduction has the BE-reboot-proof prerequisite
-above).
+Phase 0 is complete, including the reboot-dependent proofs (criterion 4
+reboot-into-BE done 2026-06-24; criterion 1's independent-loader fallback
+remains deferred to the Phase 3 gate by design, not pending). Phase 0.5
+may begin: observation needs no unbootable states, and reduction's
+recovery prerequisite (the proven BE reboot path) is now satisfied.
 
 ## What Phase 0 deliberately does NOT do
 
