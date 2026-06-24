@@ -1749,7 +1749,7 @@ backend tier, commit the first-vendor target) is the only step that
 can begin without scheduling the program.
 
 
-### `[ ]` AD-56: Boot-path ownership: replace FreeBSD's loader and menu with a fresh Awase loader  *(Open, Large; design ratified 2026-06-21, Phase 0 and 0.5 startable, Phases 2 and 3 scheduled as a program)*
+### `[ ]` AD-56: Boot-path ownership: replace FreeBSD's loader and menu with a fresh Awase loader  *(Open, Large; design ratified 2026-06-21; Phase 0 complete, Phase 0.5 design ratified 2026-06-24, Phases 2 and 3 scheduled as a program)*
 
 Replace FreeBSD's loader.efi and its menu entirely with a fresh Awase
 loader: the boot experience the firmware hands control to, the

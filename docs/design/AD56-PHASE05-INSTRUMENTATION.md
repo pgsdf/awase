@@ -1,7 +1,8 @@
-# AD-56 Phase 0.5: ABI measurement design (DRAFT)
+# AD-56 Phase 0.5: ABI measurement design
 
-Status: DRAFT for ratification. A PGSD kernel change plus controlled
-boot experiments; specified before code per discipline.
+Status: RATIFIED 2026-06-24 (operator). A PGSD kernel change plus
+controlled boot experiments; the five decisions below are settled.
+Observation and reduction may be implemented under them.
 
 ## Purpose and scope discipline
 
@@ -126,13 +127,63 @@ trusted to prove use; reduction proves required. The earlier worry about
 overcounting dissolves because reduction, not observation, assigns the
 load-bearing verdict.
 
-## Decisions to ratify before code
+## Ratified decisions (2026-06-24)
 
-  - report mechanism for observation: sysctl handler (recommended,
-    non-perturbing, re-readable) vs boot-time SYSINIT dump.
-  - PGSD-DEBUG-only instrumentation (recommended; zero cost in the
-    shipped kernel) vs a tunable on PGSD.
-  - the suppress/malform mechanism for reduction: how one record is
-    removed or corrupted in the handoff on the disposable path.
-  - confirmation that the end-to-end BE reboot proof is done before
-    reduction starts.
+  1. OBSERVATION MECHANISM: a sysctl handler, not a boot-time SYSINIT
+     dump. Observation must be repeatable, non-destructive, and available
+     after boot; a SYSINIT dump is an event, a sysctl is an interface
+     that allows repeated inspection without changing the boot being
+     observed.
+
+  2. AVAILABILITY: PGSD-DEBUG only, not a tunable on production PGSD. The
+     instrumentation is investigational scaffolding (an AD-57
+     investigational delta), not part of the kernel's definition;
+     production PGSD stays free of measurement machinery, and the debug
+     kernel hosts the temporary mechanism.
+
+  3. REDUCTION MECHANISM: kernel-side suppression in the PGSD-DEBUG
+     kernel's metadata lookup path, NOT loader-side modification.
+     Phase 0.5 asks "does the kernel require this record," which is a
+     consumer question: if the kernel behaves identically when
+     preload_search_info returns NULL for a record type, the kernel does
+     not require it. Loader-side suppression would test both the record's
+     absence AND the correctness of a modified loader, conflating two
+     variables; loader fidelity belongs to Phase 3, not reduction.
+     Reduction experiments SHALL be performed by controlled suppression
+     within the debug kernel's lookup path, not by modifying the loader
+     handoff.
+
+  4. MALFORMED-RECORD SUPPORT: deferred. Phase 0.5 SHALL implement
+     SUPPRESSION ONLY (NULL return). Malformed-record experiments are
+     future work, added only if reduction results show a genuinely
+     ambiguous record that needs the further discrimination. Suppression
+     alone is terminal in both directions: if it proves a record
+     unnecessary the work is done, and if it proves a record required the
+     work is done. Malform answers a different question (is the kernel
+     sensitive to record VALIDITY or merely PRESENCE), which is not the
+     primary reduction question. Keeping Phase 0.5 suppress-only keeps the
+     implementation small, the interpretation straightforward, and the
+     recovery path simple.
+
+  5. BE REBOOT PREREQUISITE: satisfied and confirmed. The end-to-end
+     known-good BE reboot proof was done on hardware 2026-06-24 (manual
+     loader selection of the non-active BE, confirmed root, restored to
+     default). Reduction may proceed under the established recovery
+     procedure.
+
+### Implementation scope that follows from these decisions
+
+  - Observation: a sysctl handler in the PGSD-DEBUG kernel exposing the
+    preload_search_info accounting inventory (per requested record type:
+    request count, found count, distinct caller sites), re-readable after
+    boot.
+  - Reduction: a debug-kernel mechanism (for example a boot tunable
+    naming a record type) that makes preload_search_info return NULL for
+    that one type, so each experiment is set-tunable / reboot / observe /
+    recover-via-BE. Suppress-only.
+  - Neither ships in production PGSD.
+
+The remaining concerns stay open as implementation, not decisions: the
+exact sysctl name and inventory format, the exact tunable/suppression
+mechanism, and the per-record experiment ordering (already specified by
+risk in the Reduction section: non-critical first, EFI_MAP last).
