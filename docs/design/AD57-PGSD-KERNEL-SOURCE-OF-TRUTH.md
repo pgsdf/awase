@@ -1,18 +1,32 @@
-# AD-57: Source of truth for the PGSD kernel (DRAFT)
+# AD-57: Source of truth for the PGSD kernel
 
-Status: DRAFT for ratification. A project-level architectural decision,
-not a kernel-subsystem one: it defines how PGSD represents and preserves
-its own kernel over time. No tooling is built from this document until
-it is ratified.
+Status: RATIFIED 2026-06-21 (operator). A project-level architectural
+decision, not a kernel-subsystem one: it defines how PGSD represents and
+preserves its own kernel over time. The architectural decision is
+ratified; implementation concerns it deliberately leaves open (patch
+storage, pin-recording mechanism, install.sh migration strategy,
+pin-advancement workflow, investigation metadata format) are settled
+separately and do not reopen this ADR.
+
+## Decision
+
+PGSD SHALL define its kernel as a pinned FreeBSD source revision plus an
+ordered, version-controlled set of project deltas. This recipe
+constitutes the canonical source of truth for the PGSD kernel and SHALL
+be sufficient to reconstruct any kernel used for development or
+investigation. The remainder of this document gives the rationale, the
+four constituent decisions, the scope boundary (development
+reproducibility now; artifact reproducibility later), and the
+consequences.
 
 ## Why this is project-level, and why now
 
 PGSD is currently produced by a transformation: install stock FreeBSD
 (with sources), then run install.sh to convert the machine into PGSD in
 place. The result depends on whatever FreeBSD release and whatever
-/usr/src happened to be present when install.sh ran. PGSD is therefore a
-procedure, not a defined thing, and "whatever is in /usr/src" is its de
-facto kernel source of truth.
+/usr/src happened to be present when install.sh ran. PGSD is currently
+defined by a procedure rather than by a reproducible kernel definition,
+and "whatever is in /usr/src" is its de facto kernel source of truth.
 
 AD-56 makes this untenable. Phase 0.5 introduces kernel instrumentation
 that MEASURES the boot ABI, and a measurement is only meaningful relative
@@ -53,9 +67,17 @@ artifact builder has a defined thing to build.
 
 PGSD is defined against a SPECIFIC FreeBSD source revision. "Whatever
 happens to be in /usr/src" ceases to be authoritative. The pinned
-revision is recorded in the repository. A policy for advancing the pin
-(when tracking a new FreeBSD release) is part of this decision; the
-mechanism for recording it is not (see Representation).
+revision is recorded in the repository.
+
+The architectural decision is only that PGSD IS pinned. Policies
+governing advancement of that pin (when and how to track a new FreeBSD
+release) are deferred and may be specified separately: they are
+operational, depend on release cadence and other independently-changing
+concerns, and are deliberately NOT ratified here. Binding an advancement
+policy into this ADR would force reopening an architectural decision
+every time the project's release rhythm changes. Advancing the pin is an
+explicit project action (see Consequences); its policy lives outside
+AD-57.
 
 ### 2. Representation
 
@@ -68,6 +90,12 @@ is a RECIPE, not a stored tree: the project stores the delta from
 upstream, not a mirror of upstream. This preserves the established
 "derive, do not fork" discipline (pgsd-kernel/README) and keeps the
 repository from becoming a FreeBSD source mirror.
+
+Ordering is part of the kernel definition, not an incidental property:
+patch application is not generally commutative, so applying the same
+deltas in a different order may produce a different kernel or fail to
+apply. The delta set is therefore an ordered sequence, and the order is
+recorded as part of the recipe.
 
 NOTE: the patch-storage MECHANISM is deliberately not decided here. Raw
 patch files, a series file, patches generated from a branch, or another
@@ -82,10 +110,20 @@ The deltas are partitioned by intent:
   - DEFINITIONAL patches: part of what PGSD IS (for example the HID class
     driver suppression that pgsd-kernel already defines, and any
     permanent kernel modifications the distribution requires).
-  - INVESTIGATIONAL patches: temporary research artifacts, such as the
-    AD-56 Phase 0.5 instrumentation. They are reproducible and
-    version-controlled like definitional patches, but are understood to
-    be transient and removable once their investigation concludes.
+  - INVESTIGATIONAL patches: research artifacts, such as the AD-56 Phase
+    0.5 instrumentation and reduction experiments. They may INSTRUMENT,
+    CONSTRAIN, or temporarily MODIFY kernel behavior for the purpose of
+    measurement or experimentation; their defining characteristic is not
+    their technical effect but that they are NOT part of the long-term
+    definition of PGSD. They are reproducible and version-controlled like
+    definitional patches, but are understood to be transient and
+    removable once their investigation concludes.
+
+The defining axis is intent, not effect. An investigational patch is not
+distinguished by being read-only: AD-56 Phase 0.5's reduction stage
+deliberately suppresses or malforms metadata records to find which are
+load-bearing, which is a behavioral change, yet it is investigational
+because it is measurement scaffolding, never part of what PGSD is.
 
 The partition matters because it keeps the permanent derivation distinct
 from measurement scaffolding. An investigational patch that proves a
@@ -96,21 +134,40 @@ removed; it was never part of the definition of PGSD.
 
 A developer can reconstruct the EXACT kernel used for a given
 investigation from repository contents plus the pinned revision: fetch
-the pinned upstream source, apply the recorded deltas (definitional, plus
-the investigational set for that investigation), build. The investigation
-records which delta set it used, so its kernel is reproducible from the
-repository alone (given network access to fetch the pinned upstream).
+the pinned upstream source, apply the recorded deltas IN THEIR RECORDED
+ORDER (definitional, plus the investigational set for that
+investigation), build. Ordering is restated here deliberately: the deltas
+are an ordered sequence (see Representation), and reconstruction applies
+them in that order, not as an unordered collection.
+
+Every investigation SHALL identify the pinned revision and the
+investigational delta set used to produce its results, so its kernel is
+reproducible from the repository alone (given network access to fetch the
+pinned upstream). What constitutes a sufficient identifier (a commit
+hash, an ADR reference, a manifest, a tag) is implementation; the
+requirement is that the pin and the delta set be recorded, not the form
+of the record.
+
+Non-goal: local modifications outside the recorded delta set are NOT part
+of the canonical PGSD kernel and do NOT produce reproducible
+investigation results. A kernel built with uncommitted local edits, or
+from a /usr/src that diverges from the pin, is not a PGSD kernel for the
+purpose of this ADR, and any measurement taken against it is not
+reproducible. Reproducibility is a property of the recorded recipe, not
+of any particular developer's working tree.
 
 ## Migration (install.sh)
 
 install.sh today assumes and uses whatever /usr/src is present. Under
-this ADR the build must instead use the PINNED, patched kernel: either
-fetch the pinned upstream source itself, or verify the present /usr/src
-matches the pin before building, then apply the recorded deltas. This is
-real work; AD-56 is its justification, since Phase 0.5 cannot be
-reproducible without it. The migration is staged as part of implementing
-this ADR; the exact mechanism is implementation, not part of the
-decision.
+this ADR, install.sh SHALL build only from source that is VERIFIABLY
+IDENTICAL to the pinned upstream revision: either fetch the pinned
+upstream source itself, or verify (not merely assume) that the present
+/usr/src matches the pin before building, then apply the recorded
+deltas. A tree that merely claims to be the correct revision, without
+verification, does not satisfy this requirement. The verification
+mechanism is implementation; the requirement that source be provably the
+pinned revision is part of the decision. This is real work; AD-56 is its
+justification, since Phase 0.5 cannot be reproducible without it.
 
 ## Relationship to other work
 
@@ -124,12 +181,26 @@ decision.
   - A later ADR (PGSD as a reproducible artifact): builds on this one;
     the artifact builder consumes the recipe this ADR defines.
 
+## Consequences
+
+  - Kernel investigations become reproducible: a given AD-56 measurement
+    can be re-run against the exact kernel that produced it.
+  - AD-56 measurements become durable and independently verifiable,
+    rather than historical trivia tied to a lost /usr/src.
+  - install.sh becomes more complex: it must obtain or verify the pinned
+    source and apply the delta set, rather than using whatever is
+    present.
+  - Developers can no longer rely on arbitrary contents of /usr/src;
+    only the recorded recipe defines a PGSD kernel.
+  - Advancing the FreeBSD base becomes an explicit project action, not an
+    implicit side effect of whatever release happened to be installed.
+
 ## Decisions to ratify
 
   - the recipe model (pin + ordered, classified deltas; reconstruct on
     build) as the canonical representation of the PGSD kernel.
   - development reproducibility as the primary (and current sole)
     objective; artifact reproducibility explicitly deferred.
-  - the policy for advancing the pin (left as a named decision, mechanism
-    deferred).
   - that patch-storage mechanics are out of scope for this ADR.
+  - that the pin-advancement policy is operational and explicitly NOT
+    ratified here (only that PGSD is pinned).
