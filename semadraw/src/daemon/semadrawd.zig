@@ -197,6 +197,12 @@ pub const Daemon = struct {
     config: Config,
     server: socket_server.SocketServer,
     tcp: ?tcp_server.TcpServer,
+    /// D-7 (ADR 0011): the focus region writer. The compositor is the
+    /// sole writer and owner of /var/run/sema/input/focus (INPUT_FOCUS.md);
+    /// inputfs reads it to route keyboard input. Created in init, used by
+    /// the set_focus handler (increment 3) to publish keyboard focus, and
+    /// deinitialised in Daemon.deinit.
+    focus_writer: input.FocusWriter,
     clients: client_session.ClientManager,
     remote_clients: std.AutoHashMap(protocol.ClientId, *RemoteSession),
     next_remote_id: protocol.ClientId,
@@ -348,6 +354,16 @@ pub const Daemon = struct {
         }
         errdefer if (tcp) |*t| t.deinit();
 
+        // D-7 increment 2 (ADR 0011): the compositor is the sole writer
+        // and owner of the focus region (INPUT_FOCUS.md lifecycle:
+        // "Compositor startup: region created/truncated with
+        // focus_valid = 0"). FocusWriter.init creates, truncates, mmaps,
+        // and zeroes the region, leaving keyboard_focus = NO_FOCUS and
+        // focus_valid = 0. It is mandatory: without it the daemon cannot
+        // drive keyboard focus, so a failure here fails startup.
+        var focus_writer = try input.FocusWriter.init(input.FOCUS_PATH);
+        errdefer focus_writer.deinit();
+
         // AD-31.3 part 2: resolve the daemon's runtime uid.
         //
         // Two cases:
@@ -407,6 +423,7 @@ pub const Daemon = struct {
             .config = config,
             .server = server,
             .tcp = tcp,
+            .focus_writer = focus_writer,
             .clients = client_session.ClientManager.init(allocator),
             .remote_clients = std.AutoHashMap(protocol.ClientId, *RemoteSession).init(allocator),
             .next_remote_id = 0x80000000, // Remote clients start at high IDs
@@ -986,6 +1003,8 @@ pub const Daemon = struct {
         self.comp.deinit();
         self.surfaces.deinit();
         self.clients.deinit();
+        // D-7 (ADR 0011): release the focus region (munmap + close).
+        self.focus_writer.deinit();
         if (self.tcp) |*tcp| tcp.deinit();
         self.server.deinit();
     }
