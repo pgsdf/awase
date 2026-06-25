@@ -227,6 +227,10 @@
                     "value": "0x0033",
                     "description": "Set cursor sprite + hotspot (focus-validated; AD-21 sub-item 7, ADR 0005 section 5)"
                 },
+                "SET_FOCUS": {
+                    "value": "0x0034",
+                    "description": "Assign keyboard focus to the given surface (D-7, ADR 0011); privileged client only; surface 0 clears to NO_FOCUS; fire-and-forget, observable via FOCUS_CHANGED; reply on failure is ERROR_REPLY"
+                },
                 "SESSION_LOCK": {
                     "value": "0x0035",
                     "description": "Enter compositor session-lock mode with the given surface as the lock surface (D-10, ADR 0012); root-only; reply event is SESSION_LOCKED"
@@ -310,6 +314,10 @@
                 "MOUSE_EVENT": {
                     "value": "0x9002",
                     "description": "Mouse event"
+                },
+                "FOCUS_CHANGED": {
+                    "value": "0x9003",
+                    "description": "Keyboard focus changed (D-7, ADR 0011 D5); sent to the gaining client (surface_id = focused surface) and the losing/cleared client (surface_id = 0)"
                 },
                 "SESSION_LOCKED": {
                     "value": "0x9004",

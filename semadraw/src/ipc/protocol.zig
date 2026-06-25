@@ -62,6 +62,7 @@ pub const MsgType = enum(u16) {
     set_z_order = 0x0031, // Set stacking order
     set_position = 0x0032, // Set position
     set_cursor = 0x0033, // Set cursor sprite + hotspot (focus-validated; AD-21 sub-item 7, ADR 0005 section 5)
+    set_focus = 0x0034, // Assign keyboard focus to the given surface (D-7, ADR 0011); privileged client only; surface 0 clears to NO_FOCUS; fire-and-forget, observable via FOCUS_CHANGED; reply on failure is ERROR_REPLY
     session_lock = 0x0035, // Enter compositor session-lock mode with the given surface as the lock surface (D-10, ADR 0012); root-only; reply event is SESSION_LOCKED
     session_unlock = 0x0036, // Leave session-lock mode; lock owner only (D-10, ADR 0012); reply event is SESSION_UNLOCKED
     idle_query = 0x0037, // Query last input timestamp for idle detection; reply is IDLE_REPLY (ADR 0013; 0x0034 reserved for set_focus)
@@ -86,6 +87,7 @@ pub const MsgType = enum(u16) {
     // Daemon -> Client events (0x9xxx)
     key_press = 0x9001, // Keyboard event
     mouse_event = 0x9002, // Mouse event
+    focus_changed = 0x9003, // Keyboard focus changed (D-7, ADR 0011 D5); sent to the gaining client (surface_id = focused surface) and the losing/cleared client (surface_id = 0)
     session_locked = 0x9004, // Compositor entered session-lock mode (D-10, ADR 0012); sent to all clients, WM treats as a suspension signal
     session_unlocked = 0x9005, // Compositor left session-lock mode (D-10, ADR 0012); sent to all clients
     gesture_event = 0x9030, // Gesture event (interval-shaped, see ADR 0017-rev2)
@@ -319,6 +321,50 @@ pub const SetZOrderMsg = extern struct {
         return .{
             .surface_id = std.mem.readInt(u32, buf[0..4], .little),
             .z_order = std.mem.readInt(i32, buf[4..8], .little),
+        };
+    }
+};
+
+/// Set-focus request (D-7, ADR 0011). Carries the target surface id;
+/// surface_id 0 clears keyboard focus to NO_FOCUS. Privileged client
+/// only; fire-and-forget (no success reply). Mirrors the single-u32
+/// shape of DestroySurfaceMsg.
+pub const SetFocusMsg = extern struct {
+    surface_id: SurfaceId,
+
+    pub const SIZE: usize = 4;
+
+    pub fn serialize(self: SetFocusMsg, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !SetFocusMsg {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{
+            .surface_id = std.mem.readInt(u32, buf[0..4], .little),
+        };
+    }
+};
+
+/// Focus-changed event (D-7, ADR 0011 D5). Sent to the gaining client
+/// (surface_id = the focused surface) and to the losing or cleared
+/// client (surface_id = 0). surface_id 0 uniformly means "you no longer
+/// hold focus," symmetric with SetFocusMsg surface 0 and NO_FOCUS.
+pub const FocusChangedMsg = extern struct {
+    surface_id: SurfaceId,
+
+    pub const SIZE: usize = 4;
+
+    pub fn serialize(self: FocusChangedMsg, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !FocusChangedMsg {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{
+            .surface_id = std.mem.readInt(u32, buf[0..4], .little),
         };
     }
 };
@@ -1274,6 +1320,45 @@ test "CreateSurfaceMsg serialize/deserialize roundtrip" {
     try std.testing.expectEqual(msg.logical_width, decoded.logical_width);
     try std.testing.expectEqual(msg.logical_height, decoded.logical_height);
     try std.testing.expectEqual(msg.scale, decoded.scale);
+}
+
+test "SetFocusMsg serialize/deserialize roundtrip" {
+    const msg = SetFocusMsg{ .surface_id = 42 };
+    var buf: [SetFocusMsg.SIZE]u8 = undefined;
+    msg.serialize(&buf);
+    const decoded = try SetFocusMsg.deserialize(&buf);
+    try std.testing.expectEqual(msg.surface_id, decoded.surface_id);
+}
+
+test "SetFocusMsg surface 0 clears focus" {
+    // surface_id 0 is the clear-to-NO_FOCUS sentinel (D-7, ADR 0011 D1).
+    const msg = SetFocusMsg{ .surface_id = 0 };
+    var buf: [SetFocusMsg.SIZE]u8 = undefined;
+    msg.serialize(&buf);
+    const decoded = try SetFocusMsg.deserialize(&buf);
+    try std.testing.expectEqual(@as(u32, 0), decoded.surface_id);
+}
+
+test "SetFocusMsg deserialize rejects short buffer" {
+    var buf: [SetFocusMsg.SIZE - 1]u8 = undefined;
+    try std.testing.expectError(error.BufferTooSmall, SetFocusMsg.deserialize(&buf));
+}
+
+test "FocusChangedMsg serialize/deserialize roundtrip" {
+    const msg = FocusChangedMsg{ .surface_id = 7 };
+    var buf: [FocusChangedMsg.SIZE]u8 = undefined;
+    msg.serialize(&buf);
+    const decoded = try FocusChangedMsg.deserialize(&buf);
+    try std.testing.expectEqual(msg.surface_id, decoded.surface_id);
+}
+
+test "FocusChangedMsg surface 0 means focus lost" {
+    // surface_id 0 to the losing/cleared client (D-7, ADR 0011 D5).
+    const msg = FocusChangedMsg{ .surface_id = 0 };
+    var buf: [FocusChangedMsg.SIZE]u8 = undefined;
+    msg.serialize(&buf);
+    const decoded = try FocusChangedMsg.deserialize(&buf);
+    try std.testing.expectEqual(@as(u32, 0), decoded.surface_id);
 }
 
 test "HelloMsg version check" {
