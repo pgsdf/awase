@@ -383,6 +383,39 @@ semadrawd LOCKED state machine, inputfs precedence, bench.
 
 ## Deferred
 
+### `[ ]` SM-TEST-1: daemon testability and IPC integration harness  *(Deferred 2026-06-26, opened by D-7; serves the window-management line, not D-7 alone)*
+
+A reusable way to exercise semadrawd end-to-end with connected clients,
+and the daemon refactor that makes it possible. Opened by D-7 (privileged
+set-focus), whose handler composition and end-to-end routing could not be
+unit-tested because Daemon couples construction to operating-system
+resources (it binds a Unix socket and mmaps the focus region in init), so
+it cannot be instantiated in a unit test. D-7 verified its primitives
+(focus writer/reader contract, privilege predicate, surface ownership) at
+the unit level and recorded the boundary; this item covers the rest.
+
+Two related pieces, intentionally NOT built for D-7 alone:
+
+  - Daemon testability: separate resource acquisition from the testable
+    core (for example a constructor that does not bind real OS resources,
+    or splitting socket/focus-region setup from the dispatch logic), so
+    handler composition (gate plus resolve plus write wired together) can
+    be tested without real sockets and files.
+  - IPC integration harness: start the daemon and connect multiple
+    distinct clients (including a privileged one), drive protocol
+    messages, and assert externally observable behavior. This would let
+    D-7's full acceptance bench run automatically (two surfaces from
+    distinct clients, focus routing, clear, privilege refusal, the D7
+    invariant on destroy and disconnect) and would serve subsequent
+    window-management work (NDE-1, input routing, compositor behavior)
+    rather than being one-off D-7 scaffolding.
+
+Rationale for deferral: building either solely to satisfy D-7 would
+expand "implement privileged keyboard focus" into "design an IPC
+integration framework." Treated as separate engineering work, both pay
+off across future features. See semadraw/docs/D7-IMPLEMENTATION-SCOPE.md,
+"Verification boundary."
+
 ### `[~]` B3.3: Damage / partial-update swap-path implementation  *(Pass 1 in tree; Pass 2 and Pass 3 not landed. Status corrected 2026-05-27 evening; previously claimed "Done" in error.)*
 
 Three-pass implementation of `DRAWFS_REQ_SURFACE_PRESENT_REGION` in

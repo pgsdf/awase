@@ -182,3 +182,35 @@ a future ADR, per ADR 0011).
   - any NDE-specific path: this is a general privileged-client capability
     consumed only through WM_CLIENT_CONTRACT.md; NDE does not touch
     semadraw internals.
+
+## Verification boundary
+
+D-7's behaviors are verified at the level where each can be tested
+cleanly, which is a layered strategy rather than a single end-to-end
+test:
+
+  - Focus writer/reader contract: unit-tested in shared/src/input.zig
+    (keyboard focus round-trip across distinct session ids, NO_FOCUS
+    read-back, and successive writes replacing the previous value, each
+    under a consistent seqlock snapshot). This is the ABI D-7 exports to
+    inputfs, so it is pinned directly.
+  - Privilege predicate: already unit-tested in privilege.zig
+    (isPrivilegedUid cases). D-7's gate is exactly this predicate.
+  - Surface ownership lookup: already unit-tested in surface_registry.zig
+    (surface carries owner ClientId). This is the resolution D-7 uses.
+  - Handler composition (gate + resolve + write wired together in
+    semadrawd) is intentionally NOT unit-tested, because Daemon currently
+    couples construction to operating-system resources (it binds a Unix
+    socket and mmaps the focus region in init), so it cannot be
+    instantiated in a unit test without a refactor. Adding a test-only
+    constructor or dependency injection solely for D-7 would expand the
+    change from "implement privileged keyboard focus" into "make the
+    daemon unit-testable," which is separate engineering work. This is a
+    conscious architectural decision, not an oversight.
+  - End-to-end routing (inputfs delivers keyboard input to the focused
+    client) is the semadrawd-to-inputfs integration contract, not D-7
+    daemon logic, and belongs in the planned IPC/integration harness.
+
+Daemon testability and a reusable IPC integration harness are tracked as
+separate work so they benefit future window-management features rather
+than being justified by D-7 alone.

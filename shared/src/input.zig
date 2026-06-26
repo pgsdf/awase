@@ -1984,6 +1984,95 @@ test "focus writer/reader round-trip with surface map" {
     try testing.expectEqual(@as(u32, 800), snap.surfaces[0].width);
 }
 
+// D-7 (ADR 0011): the focus region is the ABI between the daemon
+// (FocusWriter) and inputfs (FocusReader). These tests pin the
+// keyboard-focus contract D-7 exports: a written session id reads back
+// unchanged, NO_FOCUS reads back as NO_FOCUS, and successive writes
+// replace the previous value, each under a consistent seqlock snapshot.
+// Handler composition (gate + resolve + write wired in semadrawd) is not
+// exercised here; the daemon couples construction to OS resources and is
+// verified by the bench and the planned integration harness, not unit
+// tests. See the D-7 implementation scope, "verification boundary."
+
+test "focus keyboard-focus round-trip across distinct session ids" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmpFocusPath(&tmp, &buf);
+
+    var w = try FocusWriter.init(path);
+    defer w.deinit();
+    const r = FocusReader.init(path);
+    defer r.deinit();
+
+    for ([_]u32{ 7, 42, 1, 4294967295 }) |sid| {
+        w.beginUpdate();
+        w.setKeyboardFocus(sid);
+        w.endUpdate();
+        w.markValid();
+        const snap = try r.snapshot();
+        try testing.expectEqual(sid, snap.keyboard_focus);
+    }
+}
+
+test "focus NO_FOCUS reads back as NO_FOCUS" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmpFocusPath(&tmp, &buf);
+
+    var w = try FocusWriter.init(path);
+    defer w.deinit();
+    const r = FocusReader.init(path);
+    defer r.deinit();
+
+    // Set a real focus, then clear it; the clear must be observable.
+    w.beginUpdate();
+    w.setKeyboardFocus(5);
+    w.endUpdate();
+    w.markValid();
+    try testing.expectEqual(@as(u32, 5), (try r.snapshot()).keyboard_focus);
+
+    w.beginUpdate();
+    w.setKeyboardFocus(NO_FOCUS);
+    w.endUpdate();
+    w.markValid();
+    try testing.expectEqual(@as(u32, NO_FOCUS), (try r.snapshot()).keyboard_focus);
+}
+
+test "focus successive writes replace previous value (A to B to NO_FOCUS)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmpFocusPath(&tmp, &buf);
+
+    var w = try FocusWriter.init(path);
+    defer w.deinit();
+    const r = FocusReader.init(path);
+    defer r.deinit();
+
+    // A: focus session 10.
+    w.beginUpdate();
+    w.setKeyboardFocus(10);
+    w.endUpdate();
+    w.markValid();
+    try testing.expectEqual(@as(u32, 10), (try r.snapshot()).keyboard_focus);
+
+    // B: transfer to session 20 (replaces, not accumulates).
+    w.beginUpdate();
+    w.setKeyboardFocus(20);
+    w.endUpdate();
+    w.markValid();
+    try testing.expectEqual(@as(u32, 20), (try r.snapshot()).keyboard_focus);
+
+    // Clear: back to NO_FOCUS (the destroy/disconnect end state).
+    w.beginUpdate();
+    w.setKeyboardFocus(NO_FOCUS);
+    w.endUpdate();
+    w.markValid();
+    try testing.expectEqual(@as(u32, NO_FOCUS), (try r.snapshot()).keyboard_focus);
+}
+
 test "focus resolvePointer respects grab" {
     var snap: FocusSnapshot = undefined;
     snap.keyboard_focus = NO_FOCUS;
