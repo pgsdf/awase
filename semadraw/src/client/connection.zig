@@ -67,6 +67,7 @@ pub const Event = union(enum) {
     error_reply: protocol.ErrorReplyMsg,
     key_press: protocol.KeyPressMsg,
     mouse_event: protocol.MouseEventMsg,
+    focus_changed: protocol.FocusChangedMsg,
     gesture_event: ParsedGesture,
     clipboard_data: ClipboardData,
     disconnected: void,
@@ -305,6 +306,20 @@ pub const Connection = struct {
         var payload: [protocol.SetZOrderMsg.SIZE]u8 = undefined;
         msg.serialize(&payload);
         try self.sendMessage(.set_z_order, &payload);
+    }
+
+    /// Assign keyboard focus to a surface (D-7, ADR 0011). Privileged
+    /// (window manager) clients only; an unprivileged caller receives an
+    /// error_reply event and focus is unchanged. surface_id 0 clears
+    /// keyboard focus. Fire-and-forget: the daemon sends no success
+    /// reply; observe focus_changed events for the resulting transition.
+    pub fn setFocus(self: *Self, surface_id: protocol.SurfaceId) !void {
+        if (self.state != .connected) return error.NotConnected;
+
+        const msg = protocol.SetFocusMsg{ .surface_id = surface_id };
+        var payload: [protocol.SetFocusMsg.SIZE]u8 = undefined;
+        msg.serialize(&payload);
+        try self.sendMessage(.set_focus, &payload);
     }
 
     /// Set surface position (in pixels)
@@ -559,6 +574,13 @@ pub const Connection = struct {
                 if (msg.payload) |p| {
                     if (protocol.MouseEventMsg.deserialize(p)) |m| {
                         return .{ .mouse_event = m };
+                    } else |_| {}
+                }
+            },
+            .focus_changed => {
+                if (msg.payload) |p| {
+                    if (protocol.FocusChangedMsg.deserialize(p)) |m| {
+                        return .{ .focus_changed = m };
                     } else |_| {}
                 }
             },

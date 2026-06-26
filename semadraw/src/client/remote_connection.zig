@@ -259,6 +259,16 @@ pub const RemoteConnection = struct {
         try self.sendMessage(.set_z_order, &msg_buf);
     }
 
+    /// Assign keyboard focus to a surface (D-7, ADR 0011). Privileged
+    /// clients only; surface_id 0 clears focus. Fire-and-forget; observe
+    /// focus_changed events for the resulting transition.
+    pub fn setFocus(self: *Self, surface_id: protocol.SurfaceId) !void {
+        var msg_buf: [protocol.SetFocusMsg.SIZE]u8 = undefined;
+        const msg = protocol.SetFocusMsg{ .surface_id = surface_id };
+        msg.serialize(&msg_buf);
+        try self.sendMessage(.set_focus, &msg_buf);
+    }
+
     /// Synchronization barrier
     pub fn sync(self: *Self) !void {
         var msg_buf: [protocol.SyncMsg.SIZE]u8 = undefined;
