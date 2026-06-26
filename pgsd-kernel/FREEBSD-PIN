@@ -1,0 +1,48 @@
+# PGSD kernel source pin (AD-57).
+#
+# This file is the CANONICAL definition of the FreeBSD source the PGSD
+# kernel is built against. Identity is the immutable commit id, not a
+# branch name: a branch may be renamed or rebased without invalidating
+# this pin. The fork is an external dependency the recipe references;
+# the awase repository embeds no copy of FreeBSD source.
+#
+# Reconstruction: clone base_repository, check out delta_commit, build
+# with the PGSD kernel config (pgsd-kernel/pgsd-kernel-build.sh). See
+# pgsd-kernel/KERNEL-RECIPE.md.
+#
+# Fields marked TO-BE-FILLED-ON-BENCH require values that can only be
+# produced on the bench after the fork is created; do not invent them.
+
+format: 1
+source_type: git
+
+# The maintained fork (separate repository; not embedded in awase).
+base_repository: https://github.com/pgsdf/freebsd-src
+
+# The upstream base this fork derives from, for provenance. releng/15.1
+# is the FreeBSD 15.1-RELEASE branch the bench currently runs.
+base_branch: releng/15.1
+base_commit: TO-BE-FILLED-ON-BENCH
+
+# The delta commit that defines the PGSD kernel: the fork commit (on a
+# delta branch or linear history atop base_commit) carrying the project
+# deltas. For a kernel with no base-source deltas yet, this equals
+# base_commit. Phase 0.5 instrumentation will advance it (investigational).
+delta_branch: awase/pgsd-base
+delta_commit: TO-BE-FILLED-ON-BENCH
+
+# Human-readable release identity, verifiable on any running system via
+# uname -K and freebsd-version -k. These are provenance and the basis of
+# the release-level cross-check even though commit is the primary check.
+freebsd_release: 15.1-RELEASE
+freebsd_version_k: 1501000
+
+# Free-form provenance notes (how the fork was created, upstream sync
+# point, anything a future reconstructor should know).
+notes: >
+  Fork of https://github.com/freebsd/freebsd-src, releng/15.1 branch,
+  tracking FreeBSD 15.1-RELEASE (uname -K 1501000). Created to give the
+  PGSD kernel a Git-backed, commit-pinned base per AD-57 (Git-backed
+  representation amendment, 2026-06-26), replacing the prior release
+  tarball model. base_commit/delta_commit to be recorded from the fork
+  once it exists on the bench.

@@ -165,6 +165,102 @@ note() { printf "         %s\n" "$1"; }
 hdr()  { printf "\n=== %s\n" "$1"; }
 
 # ----------------------------------------------------------------------
+# AD-57: source pin verification.
+#
+# Identity is the immutable commit recorded in pgsd-kernel/FREEBSD-PIN
+# (canonical). This checks that the source tree at SRC_DIR satisfies that
+# definition. Returns 0 if satisfied (or intentionally overridden), 1 on
+# an enforced mismatch. PGSD_ALLOW_UNPINNED=1 downgrades any mismatch to
+# a loud warning for deliberate, non-reproducible investigation.
+
+PIN_FILE="$(dirname "$0")/FREEBSD-PIN"
+
+# Read a "key: value" field from the pin file (first match, trimmed).
+pin_field() {
+    awk -F': *' -v k="$1" '
+        $1 == k { sub(/^[^:]*: */, ""); print; exit }
+    ' "$PIN_FILE" 2>/dev/null
+}
+
+verify_pin() {
+    if [ ! -f "$PIN_FILE" ]; then
+        fail "AD-57 pin file missing: $PIN_FILE"
+        return 1
+    fi
+
+    pin_commit="$(pin_field delta_commit)"
+    pin_release="$(pin_field freebsd_release)"
+    pin_vk="$(pin_field freebsd_version_k)"
+
+    allow="${PGSD_ALLOW_UNPINNED:-0}"
+
+    # The pin is not yet populated (fork not created / commit not
+    # recorded). Treat an unpopulated pin as an enforced failure unless
+    # overridden, so an investigation cannot silently run against an
+    # undefined baseline.
+    if [ -z "$pin_commit" ] || [ "$pin_commit" = "TO-BE-FILLED-ON-BENCH" ]; then
+        if [ "$allow" = "1" ]; then
+            warn "AD-57 pin not yet populated (delta_commit unset); PGSD_ALLOW_UNPINNED set, proceeding UNREPRODUCIBLY"
+            return 0
+        fi
+        fail "AD-57 pin not yet populated: record the fork commit in $PIN_FILE (or set PGSD_ALLOW_UNPINNED=1 for deliberate unpinned work)"
+        return 1
+    fi
+
+    # Primary check: is SRC_DIR a git checkout whose HEAD matches the pin?
+    head_commit=""
+    if [ -d "${SRC_DIR}/.git" ] && command -v git >/dev/null 2>&1; then
+        head_commit="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null)"
+    fi
+
+    if [ -n "$head_commit" ]; then
+        if [ "$head_commit" = "$pin_commit" ]; then
+            ok "AD-57 pin satisfied: /usr/src HEAD matches pinned commit"
+            # Drift check: a dirty tree is not the pinned source.
+            if [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then
+                if [ "$allow" = "1" ]; then
+                    warn "/usr/src has uncommitted local changes; PGSD_ALLOW_UNPINNED set, proceeding UNREPRODUCIBLY"
+                    return 0
+                fi
+                fail "/usr/src matches the pinned commit but has uncommitted local changes (drift); commit, stash, or set PGSD_ALLOW_UNPINNED=1"
+                return 1
+            fi
+            return 0
+        fi
+        if [ "$allow" = "1" ]; then
+            warn "/usr/src HEAD $head_commit != pinned $pin_commit; PGSD_ALLOW_UNPINNED set, proceeding UNREPRODUCIBLY"
+            return 0
+        fi
+        fail "/usr/src HEAD ($head_commit) does not match pinned commit ($pin_commit). Check out the pinned commit or set PGSD_ALLOW_UNPINNED=1"
+        return 1
+    fi
+
+    # SRC_DIR is not a git checkout (release tarball etc). Commit-level
+    # provenance is unavailable; fall back to the release cross-check,
+    # which is weaker (cannot detect local modification). This is a
+    # degraded mode: warn even on a match, because the Git-backed model
+    # (AD-57 amendment) expects a clone of the fork.
+    run_vk="$(uname -K 2>/dev/null)"
+    run_rel="$(freebsd-version -k 2>/dev/null)"
+    if [ "$run_vk" = "$pin_vk" ] || [ "$run_rel" = "$pin_release" ]; then
+        warn "/usr/src is not a git checkout; release cross-check matches ($pin_release / $pin_vk) but commit-level provenance is unavailable. AD-57 expects a clone of $(pin_field base_repository); reproducibility is release-level only here."
+        if [ "$allow" = "1" ]; then return 0; fi
+        # Degraded but matching: do not hard-fail solely for not being git
+        # if the release matches, but make the gap explicit. Treat as a
+        # soft failure so the operator must opt in.
+        fail "AD-57 expects a Git checkout of the fork for commit-level provenance; present /usr/src is not git. Set PGSD_ALLOW_UNPINNED=1 to build at release-level reproducibility only."
+        return 1
+    fi
+
+    if [ "$allow" = "1" ]; then
+        warn "/usr/src neither matches the pinned commit nor the pinned release; PGSD_ALLOW_UNPINNED set, proceeding UNREPRODUCIBLY"
+        return 0
+    fi
+    fail "/usr/src does not satisfy the AD-57 pin (no git HEAD match and release mismatch: running $run_rel / $run_vk vs pinned $pin_release / $pin_vk)"
+    return 1
+}
+
+# ----------------------------------------------------------------------
 # Argument handling
 
 if [ "$#" -lt 1 ]; then
@@ -251,6 +347,12 @@ phase_check() {
         fail "/usr/src missing or incomplete"
         fails=$((fails + 1))
     fi
+
+    # AD-57: verify the source tree matches the recorded pin. Identity is
+    # the immutable commit in the fork; the pin file is canonical. Fail by
+    # default on mismatch; PGSD_ALLOW_UNPINNED=1 downgrades to a warning
+    # for deliberate unpinned investigation (which is not reproducible).
+    verify_pin || fails=$((fails + 1))
 
     # Conf directory writable for install -m
     if [ -d "$ARCH_CONF_DIR" ]; then

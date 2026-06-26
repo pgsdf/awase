@@ -1,8 +1,10 @@
 # AD-57: Source of truth for the PGSD kernel
 
-Status: RATIFIED 2026-06-21 (operator). A project-level architectural
-decision, not a kernel-subsystem one: it defines how PGSD represents and
-preserves its own kernel over time. The architectural decision is
+Status: RATIFIED 2026-06-21 (operator); AMENDED 2026-06-26 (Git-backed
+representation, see the amendment in section 2). A project-level
+architectural decision, not a kernel-subsystem one: it defines how PGSD
+represents and preserves its own kernel over time. The architectural
+decision is
 ratified; implementation concerns it deliberately leaves open (patch
 storage, pin-recording mechanism, install.sh migration strategy,
 pin-advancement workflow, investigation metadata format) are settled
@@ -103,6 +105,49 @@ mechanism are implementation details that may evolve. The architectural
 decision is the recipe model (pin + ordered deltas); hardcoding a patch
 technology would let the ADR rot while the decision remained valid.
 
+AMENDMENT (2026-06-26): Git-backed representation. The recipe mechanism
+is now realised against a maintained Git fork of FreeBSD source rather
+than an upstream release tarball plus separate patch files. This refines
+the implementation of the recipe model above; it does not change the
+architectural decision (the canonical kernel is still a recipe, not a
+tree embedded in this repository).
+
+  - Base and deltas live in a SEPARATE fork repository
+    (https://github.com/pgsdf/freebsd-src), not in the awase repository.
+    The awase repository continues to embed no copy of FreeBSD; it
+    REFERENCES a pinned commit in the fork. "Derive, do not embed" is
+    preserved: the fork is an external dependency the recipe points at,
+    the same way any upstream dependency is referenced rather than
+    vendored. The earlier "do not become a FreeBSD source mirror"
+    principle was about the AWASE repository, and that still holds; the
+    fork is a distinct repository.
+  - The PIN FILE remains canonical, not the fork branch. Identity is the
+    immutable COMMIT id, not a branch name. A branch is only a convenient
+    pointer and may be renamed or rebased without invalidating the pin,
+    because the pin records the commit. "Whatever is on branch X today"
+    is never the definition.
+  - Deltas are commits in the fork (a delta branch or linear history on
+    top of the pinned upstream base), version-controlled with full
+    history in the same tool. The definitional/investigational
+    classification (section 3) is unchanged; an investigational delta is
+    a fork commit (or branch) understood as transient.
+  - Reconstruction is: clone the fork, check out the pinned delta commit,
+    build with the PGSD config. The pin records the delta commit and the
+    upstream base commit it derives from, so reconstruction does not
+    depend on branch state.
+  - Provenance and drift: because the base is now a Git checkout, drift
+    detection is intrinsic (git status / rev-parse), closing the
+    release-tarball gap where local modification of /usr/src could not be
+    detected. Verification checks the working tree's HEAD against the
+    pinned commit.
+
+This amendment changes the REPRESENTATION mechanism, which is why it is
+recorded as an ADR amendment rather than left as an implementation
+detail. How the fork is kept current with upstream (merge, rebase,
+fast-forward, periodic recreation) is OPERATIONAL practice, not
+architectural, and is deliberately not prescribed here; it may evolve
+without a further amendment.
+
 ### 3. Classification
 
 The deltas are partitioned by intent:
@@ -168,6 +213,16 @@ verification, does not satisfy this requirement. The verification
 mechanism is implementation; the requirement that source be provably the
 pinned revision is part of the decision. This is real work; AD-56 is its
 justification, since Phase 0.5 cannot be reproducible without it.
+
+Under the 2026-06-26 Git-backed amendment, the concrete migration is:
+install.sh and the kernel build obtain source by cloning the fork at the
+pinned commit, or verify that the present /usr/src is a checkout of the
+fork whose HEAD matches the pinned commit, before building. The
+verifiably-identical requirement is satisfied by a Git commit check
+(rev-parse HEAD against the pin), which also detects local drift. An
+explicit override (PGSD_ALLOW_UNPINNED) permits deliberate unpinned
+investigation with a prominent non-reproducible warning, so the default
+stays strict without blocking intentional exploratory work.
 
 ## Relationship to other work
 
