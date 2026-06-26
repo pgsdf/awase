@@ -288,7 +288,7 @@ contract, never through semadraw internals. Project decision
 privileged NDE-specific access path is introduced. Each item is ADR
 before code.
 
-### `[ ]` D-7: privileged set-focus message  *(Open 2026-06-08, Small, P1; NDE-1 blocker)*
+### `[x]` D-7: privileged set-focus message  *(Closed 2026-06-26, Small, P1; NDE-1 Milestone 1 focus blocker cleared)*
 
 The Surface Manager must assign keyboard focus (NDE policy per
 DESIGN.md sections 3.2 and 3.3). The focus-region writer already
@@ -335,6 +335,35 @@ only, and unifying the two focus models would need its own ADR.
 D-7 is paused pending that prerequisite work and a protocol-constants
 reconciliation (AD-54) that had to land before increment 1 could
 regenerate cleanly.
+
+**Completed (2026-06-26).** All four increments plus the client library
+landed and bench-verified (zig build and zig build test green on
+bare-metal-test-bench). What landed: (1) set_focus 0x0034 and
+focus_changed 0x9003 constants with SetFocusMsg/FocusChangedMsg wire
+structs and tests; (2) semadrawd owns the FocusWriter, created at startup
+(mandatory, per INPUT_FOCUS.md lifecycle); (3) handleSetFocus and
+handleRemoteSetFocus, gated on isPrivileged (not per-surface ownership),
+resolving surface to owning session and publishing keyboard focus through
+the seqlock, recording focused_surface; (4) focus_changed emission with
+the policy that destroy notifies the surviving owner while disconnect
+clears silently, and the D7 invariant enforced on three paths (set_focus,
+surface-destroy, client-disconnect) with the clear running before
+removeClientSurfaces frees the records. The client library exposes
+setFocus (local and remote) and decodes focus_changed.
+
+The AD-54 prerequisite was already closed; the focus-region writer
+prerequisite turned out to be already built in shared/src/input.zig, so
+increment 2 was wiring rather than new construction.
+
+Verification is layered (see semadraw/docs/D7-IMPLEMENTATION-SCOPE.md,
+"Verification boundary"): the focus writer/reader ABI, the privilege
+predicate, and surface ownership are unit-tested; handler composition and
+end-to-end keyboard routing are deferred to SM-TEST-1 (daemon testability
+plus a reusable IPC integration harness), because Daemon couples
+construction to OS resources and routing is the semadrawd-to-inputfs
+contract rather than D-7 logic. The full two-client acceptance bench runs
+once SM-TEST-1 exists; D-7's own responsibilities are complete and
+verified at the primitive level.
 
 ### `[ ]` D-8: privileged pointer-grab message  *(Open 2026-06-08, Small, P2; serves fuller section 3.2, after D-7)*
 
