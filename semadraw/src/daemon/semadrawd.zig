@@ -203,6 +203,14 @@ pub const Daemon = struct {
     /// the set_focus handler (increment 3) to publish keyboard focus, and
     /// deinitialised in Daemon.deinit.
     focus_writer: input.FocusWriter,
+    /// D-7 (ADR 0011): the surface that most recently received keyboard
+    /// focus via set_focus, or NO_FOCUS when focus is cleared. The focus
+    /// region itself stores only a session id (keyboard_focus), so the
+    /// daemon must remember which SURFACE produced that focus to enforce
+    /// the D7 validity invariant when the surface is destroyed or its
+    /// owner disconnects (increment 4). Written by the set_focus handler;
+    /// read by the destroy and disconnect paths.
+    focused_surface: protocol.SurfaceId,
     clients: client_session.ClientManager,
     remote_clients: std.AutoHashMap(protocol.ClientId, *RemoteSession),
     next_remote_id: protocol.ClientId,
@@ -424,6 +432,7 @@ pub const Daemon = struct {
             .server = server,
             .tcp = tcp,
             .focus_writer = focus_writer,
+            .focused_surface = input.NO_FOCUS,
             .clients = client_session.ClientManager.init(allocator),
             .remote_clients = std.AutoHashMap(protocol.ClientId, *RemoteSession).init(allocator),
             .next_remote_id = 0x80000000, // Remote clients start at high IDs
@@ -481,6 +490,16 @@ pub const Daemon = struct {
         const surface = self.surfaces.getSurface(surface_id) orelse return false;
         if (privilege.isPrivilegedUid(peer_uid, self.privileged_uid)) return true;
         return peer_uid == surface.owner_uid;
+    }
+
+    /// D-7 (ADR 0011): is this peer the configured privileged client?
+    /// Thin wrapper over privilege.isPrivilegedUid binding the daemon's
+    /// configured privileged_uid, so capability handlers (set_focus, and
+    /// future privileged operations) express the policy once. NOBODY_UID
+    /// is never privileged, and an unset privileged_uid means no client
+    /// is privileged (both enforced by isPrivilegedUid).
+    fn isPrivileged(self: *Daemon, peer_uid: posix.uid_t) bool {
+        return privilege.isPrivilegedUid(peer_uid, self.privileged_uid);
     }
 
     /// AD-21 sub-item 3: create the daemon-owned cursor surface per
@@ -1395,6 +1414,7 @@ pub const Daemon = struct {
             .commit => try self.handleRemoteCommit(session, payload),
             .set_visible => try self.handleRemoteSetVisible(session, payload),
             .set_z_order => try self.handleRemoteSetZOrder(session, payload),
+            .set_focus => try self.handleRemoteSetFocus(session, payload),
             .set_position => try self.handleRemoteSetPosition(session, payload),
             .set_cursor => try self.handleRemoteSetCursor(session, payload),
             .sync => try self.handleRemoteSync(session, payload),
@@ -1586,6 +1606,67 @@ pub const Daemon = struct {
             try self.sendRemoteError(session, .invalid_surface, msg.surface_id);
             return;
         };
+    }
+
+    /// D-7 (ADR 0011): publish keyboard focus to the focus region and
+    /// record which surface produced it. session_id is the focus-region
+    /// keyboard_focus value; focusing_surface is the surface that caused
+    /// the focus (NO_FOCUS when clearing). The write is bracketed by the
+    /// seqlock and marked valid so FocusReader (inputfs) sees a coherent
+    /// snapshot (INPUT_FOCUS.md: focus changes are seqlock-bracketed).
+    ///
+    /// IDENTIFIER NAMESPACE INVARIANT: the value passed as session_id
+    /// MUST be a surface owner id (protocol.ClientId). ClientId and the
+    /// focus region's session_id are the same u32 namespace: the surface
+    /// map's session_id slots are populated from Surface.owner, and
+    /// inputfs routes keyboard input by matching keyboard_focus against
+    /// those same owner ids. This equality is a convention, not enforced
+    /// by type (both are u32). Do not pass any other u32 here, and if a
+    /// distinct session-id space is ever introduced, this resolution and
+    /// the surface-map publication must be updated together.
+    fn publishKeyboardFocus(self: *Daemon, session_id: u32, focusing_surface: protocol.SurfaceId) void {
+        self.focus_writer.beginUpdate();
+        self.focus_writer.setKeyboardFocus(session_id);
+        self.focus_writer.endUpdate();
+        self.focus_writer.markValid();
+        self.focused_surface = focusing_surface;
+    }
+
+    /// D-7 (ADR 0011): assign keyboard focus on behalf of a privileged
+    /// (window manager) client, remote variant. Mirrors
+    /// handleRemoteSetZOrder's shape, but the authorization model is
+    /// different: set_focus requires the caller be the privileged client
+    /// (isPrivileged), not per-surface ownership. surface_id 0 clears
+    /// focus to NO_FOCUS. Fire-and-forget: no success reply (D6).
+    /// focus_changed emission is increment 4.
+    fn handleRemoteSetFocus(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
+        if (payload == null or payload.?.len < protocol.SetFocusMsg.SIZE) {
+            try self.sendRemoteError(session, .protocol_error, 0);
+            return;
+        }
+
+        const msg = try protocol.SetFocusMsg.deserialize(payload.?);
+
+        // D3: privilege gate. Only the privileged client may direct
+        // focus. On refusal, send error and return WITHOUT changing
+        // focus, so an unauthorized request cannot perturb state.
+        if (!self.isPrivileged(session.peer_uid)) {
+            try self.sendRemoteError(session, .permission_denied, msg.surface_id);
+            return;
+        }
+
+        // D1: surface 0 clears keyboard focus to NO_FOCUS.
+        if (msg.surface_id == input.NO_FOCUS) {
+            self.publishKeyboardFocus(input.NO_FOCUS, input.NO_FOCUS);
+            return;
+        }
+
+        // Resolve the surface to its owning session id (Surface.owner).
+        const surface = self.surfaces.getSurface(msg.surface_id) orelse {
+            try self.sendRemoteError(session, .invalid_surface, msg.surface_id);
+            return;
+        };
+        self.publishKeyboardFocus(surface.owner, msg.surface_id);
     }
 
     fn handleRemoteSetPosition(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
@@ -1866,6 +1947,7 @@ pub const Daemon = struct {
             .commit => try self.handleCommit(session, payload),
             .set_visible => try self.handleSetVisible(session, payload),
             .set_z_order => try self.handleSetZOrder(session, payload),
+            .set_focus => try self.handleSetFocus(session, payload),
             .set_position => try self.handleSetPosition(session, payload),
             .set_cursor => try self.handleSetCursor(session, payload),
             .sync => try self.handleSync(session, payload),
@@ -2090,6 +2172,42 @@ pub const Daemon = struct {
         };
         log.debug("client {} set surface {} z_order={} (requested {})",
             .{ session.id, msg.surface_id, clamped_z, msg.z_order });
+    }
+
+    /// D-7 (ADR 0011): assign keyboard focus on behalf of a privileged
+    /// client, local (Unix socket) variant. Twin of
+    /// handleRemoteSetFocus; same authorization and resolution, using the
+    /// local session's error channel. surface_id 0 clears focus.
+    /// Fire-and-forget. focus_changed emission is increment 4.
+    fn handleSetFocus(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
+        if (payload == null or payload.?.len < protocol.SetFocusMsg.SIZE) {
+            try session.sendError(.protocol_error, 0);
+            return;
+        }
+
+        const msg = try protocol.SetFocusMsg.deserialize(payload.?);
+
+        // D3: only the privileged client may direct focus. Refuse
+        // without perturbing focus.
+        if (!self.isPrivileged(session.peer_uid)) {
+            try session.sendError(.permission_denied, msg.surface_id);
+            return;
+        }
+
+        // D1: surface 0 clears keyboard focus to NO_FOCUS.
+        if (msg.surface_id == input.NO_FOCUS) {
+            self.publishKeyboardFocus(input.NO_FOCUS, input.NO_FOCUS);
+            log.debug("client {} cleared keyboard focus", .{session.id});
+            return;
+        }
+
+        const surface = self.surfaces.getSurface(msg.surface_id) orelse {
+            try session.sendError(.invalid_surface, msg.surface_id);
+            return;
+        };
+        self.publishKeyboardFocus(surface.owner, msg.surface_id);
+        log.debug("client {} set keyboard focus to surface {} (session {})",
+            .{ session.id, msg.surface_id, surface.owner });
     }
 
     fn handleSetPosition(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
