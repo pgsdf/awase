@@ -1480,6 +1480,12 @@ pub const Daemon = struct {
         // panicking.
         const owner_uid = if (self.surfaces.getSurface(msg.surface_id)) |s| s.owner_uid else privilege.NOBODY_UID;
 
+        // D-7 (ADR 0011, D7 invariant): if the surface being destroyed
+        // currently holds keyboard focus, clear focus before the surface
+        // record is freed, and notify its (still-live) owner. Must run
+        // before destroySurface.
+        if (msg.surface_id == self.focused_surface) self.clearFocus(true);
+
         self.comp.onSurfaceDestroyed(msg.surface_id);
         self.surfaces.destroySurface(msg.surface_id);
         log.debug("remote client {} destroyed surface {}", .{ session.id, msg.surface_id });
@@ -1624,12 +1630,125 @@ pub const Daemon = struct {
     /// by type (both are u32). Do not pass any other u32 here, and if a
     /// distinct session-id space is ever introduced, this resolution and
     /// the surface-map publication must be updated together.
-    fn publishKeyboardFocus(self: *Daemon, session_id: u32, focusing_surface: protocol.SurfaceId) void {
+    /// D-7 (ADR 0011): write keyboard focus to the focus region and
+    /// record which surface produced it. Raw state change only, no
+    /// notification: callers apply their own notification policy
+    /// (publishKeyboardFocus for set_focus, clearFocus for the lifecycle
+    /// paths). The write is bracketed by the seqlock and marked valid so
+    /// FocusReader (inputfs) sees a coherent snapshot (INPUT_FOCUS.md:
+    /// focus changes are seqlock-bracketed).
+    ///
+    /// IDENTIFIER NAMESPACE INVARIANT: the value passed as session_id
+    /// MUST be a surface owner id (protocol.ClientId). ClientId and the
+    /// focus region's session_id are the same u32 namespace: the surface
+    /// map's session_id slots are populated from Surface.owner, and
+    /// inputfs routes keyboard input by matching keyboard_focus against
+    /// those same owner ids. This equality is a convention, not enforced
+    /// by type (both are u32). Do not pass any other u32 here, and if a
+    /// distinct session-id space is ever introduced, this resolution and
+    /// the surface-map publication must be updated together.
+    fn writeKeyboardFocus(self: *Daemon, session_id: u32, focusing_surface: protocol.SurfaceId) void {
         self.focus_writer.beginUpdate();
         self.focus_writer.setKeyboardFocus(session_id);
         self.focus_writer.endUpdate();
         self.focus_writer.markValid();
         self.focused_surface = focusing_surface;
+    }
+
+    /// D-7 (ADR 0011): the set_focus path. Change focus state, then
+    /// notify both the losing and the gaining client (D5 policy). On an
+    /// A -> B transition the former focus owner receives focus_changed(0)
+    /// and the new owner receives focus_changed(focusing_surface).
+    /// session_id 0 / focusing_surface NO_FOCUS clears focus (and notifies
+    /// only the loser). The lifecycle paths (destroy, disconnect) use
+    /// clearFocus, which has its own notification policy.
+    fn publishKeyboardFocus(self: *Daemon, session_id: u32, focusing_surface: protocol.SurfaceId) void {
+        // Capture the outgoing owner before overwriting, so the losing
+        // client can be notified. Resolve via the old focused surface;
+        // null if it is already gone.
+        const prev_surface = self.focused_surface;
+        const losing_owner: ?u32 = if (prev_surface != input.NO_FOCUS)
+            (if (self.surfaces.getSurface(prev_surface)) |s| s.owner else null)
+        else
+            null;
+
+        // State change first, unconditionally (observer-after-state).
+        self.writeKeyboardFocus(session_id, focusing_surface);
+
+        // Notify the losing client (if any and distinct from the gainer),
+        // then the gaining client (if any).
+        if (losing_owner) |owner| {
+            if (owner != session_id) self.emitFocusChanged(owner, input.NO_FOCUS);
+        }
+        if (session_id != input.NO_FOCUS) {
+            self.emitFocusChanged(session_id, focusing_surface);
+        }
+    }
+
+    /// D-7 (ADR 0011 D5): send a focus_changed event to the client that
+    /// owns target_session. Best-effort and informational: focus_changed
+    /// is an observer of the focus state change, not part of it, so a
+    /// delivery failure is logged and ignored and never invalidates the
+    /// transition or cascades into a disconnect (unlike key events under
+    /// AD-46). target_session is a surface owner id (protocol.ClientId);
+    /// surface_id is the gained surface, or 0 to mean focus lost.
+    fn emitFocusChanged(self: *Daemon, target_session: u32, surface_id: protocol.SurfaceId) void {
+        if (target_session == input.NO_FOCUS) return;
+        var payload: [protocol.FocusChangedMsg.SIZE]u8 = undefined;
+        (protocol.FocusChangedMsg{ .surface_id = surface_id }).serialize(&payload);
+        if (self.clients.findById(target_session)) |session| {
+            _ = session.trySend(.focus_changed, &payload);
+        } else if (self.remote_clients.get(target_session)) |remote_session| {
+            _ = remote_session.client.trySendMessage(.focus_changed, &payload);
+        }
+        // No recipient (already gone): nothing to do. Idempotent.
+    }
+
+    /// D-7 (ADR 0011, D7 invariant): clear keyboard focus to NO_FOCUS and
+    /// reset focused_surface. Used by the focus-lifecycle paths
+    /// (surface-destroy and client-disconnect) to keep the published
+    /// focus from referencing a dead surface.
+    ///
+    /// notify selects the notification policy, which is the only thing
+    /// that differs across the lifecycle paths: surface-destroy notifies
+    /// the (still-live) former focus owner that it lost focus; client-
+    /// disconnect does NOT notify, because the only losing client is the
+    /// one tearing down and cannot observe the event (and emitting into a
+    /// closing socket is pointless and risks re-entrancy with the AD-46
+    /// disconnect-on-send-failure path).
+    ///
+    /// Idempotent and defensive: no-ops if focus is already NO_FOCUS, and
+    /// tolerates a stale focused_surface whose registry entry is already
+    /// gone (getSurface null) without asserting, since this helper is what
+    /// resolves such staleness.
+    fn clearFocus(self: *Daemon, notify: bool) void {
+        if (self.focused_surface == input.NO_FOCUS) return;
+        const losing_surface = self.focused_surface;
+        // Resolve the losing owner before clearing, while the surface may
+        // still exist. If it is already gone, owner is null and we simply
+        // skip notification.
+        const losing_owner: ?u32 = if (self.surfaces.getSurface(losing_surface)) |s| s.owner else null;
+
+        // State change first, unconditionally (observer-after-state).
+        // Raw write, not publishKeyboardFocus, so this path controls its
+        // own notification policy via the notify flag.
+        self.writeKeyboardFocus(input.NO_FOCUS, input.NO_FOCUS);
+
+        if (notify) {
+            if (losing_owner) |owner| self.emitFocusChanged(owner, input.NO_FOCUS);
+        }
+    }
+
+    /// D-7 (ADR 0011, D7 invariant): if the focused surface is owned by
+    /// the given client, clear focus. For the disconnect paths: notify is
+    /// false because the only losing client is the one disconnecting and
+    /// cannot observe the event. Must run before removeClientSurfaces, so
+    /// the focused surface is still resolvable to its owner.
+    fn clearFocusIfOwnedBy(self: *Daemon, client_id: protocol.ClientId) void {
+        if (self.focused_surface == input.NO_FOCUS) return;
+        if (self.surfaces.getSurface(self.focused_surface)) |s| {
+            if (s.owner == client_id) self.clearFocus(false);
+        }
     }
 
     /// D-7 (ADR 0011): assign keyboard focus on behalf of a privileged
@@ -1638,7 +1757,8 @@ pub const Daemon = struct {
     /// different: set_focus requires the caller be the privileged client
     /// (isPrivileged), not per-surface ownership. surface_id 0 clears
     /// focus to NO_FOCUS. Fire-and-forget: no success reply (D6).
-    /// focus_changed emission is increment 4.
+    /// publishKeyboardFocus emits focus_changed to the losing and gaining
+    /// clients (D5).
     fn handleRemoteSetFocus(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
         if (payload == null or payload.?.len < protocol.SetFocusMsg.SIZE) {
             try self.sendRemoteError(session, .protocol_error, 0);
@@ -1858,6 +1978,10 @@ pub const Daemon = struct {
         events.emitClientDisconnected(client_id, "disconnect", peer_uid);
         if (self.remote_clients.fetchRemove(client_id)) |entry| {
             const session = entry.value;
+            // D-7 (ADR 0011, D7 invariant): if this client held focus,
+            // clear it before its surfaces are freed. Silent (notify =
+            // false): the losing client is the one disconnecting.
+            self.clearFocusIfOwnedBy(client_id);
             self.surfaces.removeClientSurfaces(client_id);
             if (session.sdcs_buffer) |buf| self.allocator.free(buf);
             session.client.close();
@@ -2031,6 +2155,11 @@ pub const Daemon = struct {
         // defensive.
         const owner_uid = if (self.surfaces.getSurface(msg.surface_id)) |s| s.owner_uid else privilege.NOBODY_UID;
 
+        // D-7 (ADR 0011, D7 invariant): clear focus if the destroyed
+        // surface holds it, before the record is freed; notify its
+        // still-live owner. Must run before destroySurface.
+        if (msg.surface_id == self.focused_surface) self.clearFocus(true);
+
         // Notify compositor
         self.comp.onSurfaceDestroyed(msg.surface_id);
 
@@ -2178,7 +2307,7 @@ pub const Daemon = struct {
     /// client, local (Unix socket) variant. Twin of
     /// handleRemoteSetFocus; same authorization and resolution, using the
     /// local session's error channel. surface_id 0 clears focus.
-    /// Fire-and-forget. focus_changed emission is increment 4.
+    /// Fire-and-forget. publishKeyboardFocus emits focus_changed (D5).
     fn handleSetFocus(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
         if (payload == null or payload.?.len < protocol.SetFocusMsg.SIZE) {
             try session.sendError(.protocol_error, 0);
@@ -2535,6 +2664,10 @@ pub const Daemon = struct {
         const peer_uid: posix.uid_t = if (self.clients.sessions.get(client_id)) |s| s.peer_uid else privilege.NOBODY_UID;
 
         events.emitClientDisconnected(client_id, "disconnect", peer_uid);
+        // D-7 (ADR 0011, D7 invariant): if this client held focus, clear
+        // it before its surfaces are freed. Silent (notify = false): the
+        // losing client is the one disconnecting.
+        self.clearFocusIfOwnedBy(client_id);
         // Clean up surfaces owned by this client
         self.surfaces.removeClientSurfaces(client_id);
         self.clients.destroySession(client_id);
