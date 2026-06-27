@@ -22,14 +22,17 @@ base_repository: https://github.com/pgsdf/freebsd-src
 # The upstream base this fork derives from, for provenance. releng/15.1
 # is the FreeBSD 15.1-RELEASE branch the bench currently runs.
 base_branch: releng/15.1
-base_commit: TO-BE-FILLED-ON-BENCH
+base_tag: release/15.1.0
+base_commit: 96841ea08dcfa84b954a32dc5ae1a26c28966cf4
 
-# The delta commit that defines the PGSD kernel: the fork commit (on a
-# delta branch or linear history atop base_commit) carrying the project
-# deltas. For a kernel with no base-source deltas yet, this equals
-# base_commit. Phase 0.5 instrumentation will advance it (investigational).
-delta_branch: awase/pgsd-base
-delta_commit: TO-BE-FILLED-ON-BENCH
+# The delta commit that defines the PGSD kernel: the fork commit carrying
+# the project deltas. No base-source deltas exist yet (PGSD is config plus
+# module suppression and modifies no FreeBSD base source), so delta_commit
+# EQUALS base_commit: the pristine 15.1.0 tree. AD-56 Phase 0.5
+# instrumentation will be the first investigational delta and will advance
+# this to a commit on a clearly named fork branch.
+delta_branch: releng/15.1
+delta_commit: 96841ea08dcfa84b954a32dc5ae1a26c28966cf4
 
 # Human-readable release identity, verifiable on any running system via
 # uname -K and freebsd-version -k. These are provenance and the basis of
@@ -44,5 +47,8 @@ notes: >
   tracking FreeBSD 15.1-RELEASE (uname -K 1501000). Created to give the
   PGSD kernel a Git-backed, commit-pinned base per AD-57 (Git-backed
   representation amendment, 2026-06-26), replacing the prior release
-  tarball model. base_commit/delta_commit to be recorded from the fork
-  once it exists on the bench.
+  tarball model. Pinned to commit 96841ea08dcfa84b954a32dc5ae1a26c28966cf4,
+  identified by the immutable tag release/15.1.0 (FreeBSD 15.1-RELEASE GA).
+  As of pinning, the releng/15.1 branch tip equals this tag (no errata have
+  landed past GA); the commit, not the branch, is canonical. delta_commit
+  equals base_commit because no base-source deltas exist yet.
