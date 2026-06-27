@@ -52,3 +52,6 @@ notes: >
   As of pinning, the releng/15.1 branch tip equals this tag (no errata have
   landed past GA); the commit, not the branch, is canonical. delta_commit
   equals base_commit because no base-source deltas exist yet.
+  Reconstruction verified 2026-06-26: /usr/src cloned from the fork at this
+  commit, the pin check passed, and a kernel built from it installed and
+  rebooted on bare-metal-test-bench with no discrepancies.
