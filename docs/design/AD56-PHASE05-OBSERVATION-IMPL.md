@@ -88,11 +88,39 @@ measurement contract and must hold for the inventory to be trustworthy:
     via the sysctl handler), so it cannot recurse or perturb its own
     measurement.
 
-SMP assumption: Phase 0.5 assumes all relevant metadata lookups occur
-during early, effectively single-threaded boot, before secondary CPUs
-start. Lock-free accounting is therefore sufficient and no atomics are
-used. If observation shows lookups occurring after SMP start (a finding),
-synchronization becomes a future revision; it is not added speculatively.
+Concurrency (confirmed against the pinned source). preload_search_info IS
+reachable post-boot and post-SMP: callers in sys/kern divide into
+
+  - early, single-threaded boot reads of the BOOT-METADATA records that
+    AD-56 cares about (EFI_FB, EFI_MAP, HOWTO, ENVP, SMAP and the boot
+    environment), via the kernel linker bootstrap (link_elf.c preload_kmdp
+    reads), kern_jail.c (PRISON0 UUID), kern_tslog.c (loader TSLOG); and
+
+  - post-boot, potentially concurrent reads of a MODULE's own STRUCTURAL
+    records (MODINFO_NAME/ADDR/SIZE/TYPE, MODINFO_METADATA|ELF_*) during
+    kldload (kern_linker.c, link_elf.c, link_elf_obj.c) and runtime
+    firmware loading (subr_firmware.c).
+
+The AD-56 measurement target is the first group, which is single-threaded.
+The second group races only the MODINFO_* structural rows, and only if a
+kldload runs while the table is being updated or read.
+
+Design choice: lock-free plain counters, BOOT-SCOPED measurement. Read the
+inventory right after boot has quiesced and before any deliberate kldload;
+then the AD-56-relevant rows (the boot-metadata types) are single-threaded
+and race-free, and the inventory is stable. Post-boot races affect only
+the structural MODINFO_* rows, which are not the measurement target, so
+they are ACCEPTABLE and deliberately not synchronized. Atomics are not
+added: they would cost on every module load to protect data we do not
+analyze. If a future need arises to measure post-boot module-load activity
+race-free, atomic increments (or a snapshot-at-quiesce) become a revision.
+
+Consequence for Delta 2: the inventory will contain MODINFO_* rows that
+are module-load lookups, not boot-metadata reads. Do NOT read a high
+MODINFO_NAME/ADDR/SIZE/TYPE request count as boot-metadata consumption;
+those are structural lookups (boot linking plus any later kldload). The
+type value distinguishes them: the EFI_*/HOWTO/ENVP/SMAP types are the
+AD-56 candidates; the MODINFO_* types are structural module fields.
 
 ## How it is read (decision 1: sysctl, re-readable, post-boot)
 
@@ -116,9 +144,23 @@ earlier; high confidence but not re-checked against the pinned tree):
   - MD_FETCH routes through the same function, so typed small-record
     reads (HOWTO, ENVP) are captured too.
 
-REQUIRES VERIFICATION AGAINST PINNED SOURCE (subr_module.c at
-96841ea08dcfa84b954a32dc5ae1a26c28966cf4; the source is the authority,
-this draft infers them):
+RESOLVED AGAINST PINNED SOURCE (verified in subr_module.c at
+96841ea08dcfa84b954a32dc5ae1a26c28966cf4):
+  - the parameter is `inf`, not `type` (there is an internal local named
+    `type`); the accounting keys on `inf`.
+  - the function has THREE return points: an early return(NULL) on
+    mod == NULL, a non-NULL return on the in-loop match (found), and a
+    final return(NULL) after the walk (not found). Accounting records the
+    request once on entry and exactly one of found/not_found at each
+    return, preserving found + not_found == requests.
+  - the body is pure pointer-walking (no lock, no allocation, no sleep),
+    so plain static-storage accounting is safe at this call site.
+  - caller PC capture uses __builtin_return_address(0) cast to uintptr_t,
+    matching the kernel's own idiom (sys/kern/subr_csan.c __RET_ADDR,
+    sys/kern/subr_coverage.c). stack_save is deliberately NOT used: it
+    allocates and unwinds, which would perturb the measurement.
+
+REMAINING VERIFICATION (against the real source / by the boot itself):
   - the exact function body and where to place the accounting calls
     (record the type on entry, record found/not-found on the return
     path). The patch shows the intended shape; adjust to the real body.
