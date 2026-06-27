@@ -1,5 +1,9 @@
 # AD-56 Phase 0.5 Delta 2: boot metadata inventory analysis
 
+Status: RATIFIED 2026-06-27 (operator). The SMAP correction (F2) and
+the EFI_FB-only reduction conclusion are accepted; Delta 3 (reduction)
+is authorized to proceed against the EFI_FB target only.
+
 Analysis of the observation inventory produced by Delta 1
 (debug.ad56.preload_inventory) on bare-metal-test-bench. This is Delta 2
 of the three-delta workflow (observe, understand, modify): a project

@@ -236,8 +236,13 @@ NOT the same question, and the document keeps them separate:
 
 Source-reading verdicts (PROVISIONAL until Phase 0.5 measures them):
 
-  - MODINFOMD_EFI_MAP / SMAP: REQUIRED and CONSUMED. native_parse_memmap
-    panics if both are absent. The mandatory record.
+  - MODINFOMD_EFI_MAP / SMAP: a memory map is REQUIRED and CONSUMED;
+    native_parse_memmap panics if both are absent. Refined by AD-56 Phase
+    0.5 Delta 2 measurement (2026-06-27): on an EFI boot only EFI_MAP is
+    present (found 3/3); SMAP is requested but ABSENT (found 0/2, caller
+    machdep.c:834) and the kernel uses EFI_MAP instead. So EFI_MAP is the
+    mandatory record on EFI; SMAP is a probed legacy fallback, not present
+    or required here. See AD56-PHASE05-INVENTORY-ANALYSIS.md F2.
   - the "elf kernel" module record (MODINFO_TYPE/ADDR/SIZE): REQUIRED.
     Without the kernel image record there is nothing to run.
   - MODINFOMD_ENVP, MODINFOMD_HOWTO: CONSUMED (hammer_time, MD_FETCH).
