@@ -1,6 +1,8 @@
 # AD-59 Part 2: Bootstrap Architecture
 
-Status: DRAFT DESIGN.
+Status: DRAFT ARCHITECTURE, RATIFIED IN PRINCIPLE (operator,
+2026-06-28), pending no further architectural change. The ownership and
+invariant sections below were incorporated during ratification.
 
 This document designs the bootstrap architecture that satisfies the AD-59
 Part 1 recovery guarantees (RG-1 through RG-6). Unlike Part 1, which is a
@@ -9,6 +11,21 @@ structural choice is justified against the Part 1 guarantees rather than
 asserted. The entry trigger and storage mechanisms are deliberately left
 to Part 3 (implementation); they do not change the architecture and are
 named as open questions at the end.
+
+## Architectural principles
+
+The architecture is derived from four principles. The structure that
+follows is a consequence of them, not an independent invention.
+
+  P1: The bootstrap exists to select an execution environment, not to
+      perform administration.
+  P2: Recovery is performed by an operating system, not by the loader and
+      not by firmware.
+  P3: Architectural concepts (roles) shall remain independent of
+      operational artifacts (boot environments).
+  P4: Authority and execution shall remain separated.
+
+Everything below derives from these.
 
 ## The architecture in one sentence
 
@@ -63,7 +80,14 @@ a packaging.
      reading of "roles are contracts," and it is what explains why the
      architecture is stable.
 
-## Roles are bilateral contracts
+## Roles are specifications, not objects
+
+A role is an architectural contract consisting solely of obligations. It
+contains no implementation. An implementation may satisfy a role only after
+promotion has verified that its capabilities fulfill every obligation the
+role defines. This trisects the layer cleanly: the role is obligations, the
+binding is the assignment, the implementation is the capabilities. None of
+the three contains another.
 
 A role defines obligations. An implementation provides capabilities.
 Promotion verifies that the capabilities satisfy the obligations. Binding
@@ -118,14 +142,14 @@ Today there are two roles:
     coupling, that are not part of this architecture. The property that
     matters is simply: changes only through promotion after verification.)
 
-The architecture does not depend on there being exactly two roles. It
-supports any number. Installer, Diagnostics, Factory Reset, and Secure
-Update could be added as additional roles WITHOUT changing the bootstrap,
-because the bootstrap's operation is role-invariant: resolve the requested
-role to an implementation and boot it. New architectural concepts extend
-the system by adding policy and implementations, not by modifying the
-bootstrap. That the loader need not change to add a role is the sign the
-abstraction is at the correct level.
+The architecture is role-invariant: adding or removing roles does not
+require changing the bootstrap architecture. This is a property of the
+structure, not a feature. Installer, Diagnostics, Factory Reset, and Secure
+Update could be added as additional roles, and the bootstrap's operation is
+unchanged: resolve the requested role to an implementation and boot it.
+Architectural concepts extend the system by adding policy and
+implementations, not by modifying the bootstrap. That the loader need not
+change to add a role is the sign the abstraction is at the correct level.
 
 ## The Recovery Environment is a recovery operating system
 
@@ -179,6 +203,22 @@ policy engine because it has no write authority over the binding, and the
 binding cannot depend on the bootstrap because the dependency runs the
 other way.
 
+## Ownership
+
+Each responsibility has exactly one owner. This is the one-way dependency
+graph restated as ownership, and it is the test that prevents drift.
+
+  Architecture owns roles.
+  AD-58 owns promotion.
+  Policy owns bindings.
+  Bootstrap owns selection.
+  Operating systems own execution.
+
+No component modifies another component's responsibilities. Any proposal in
+which the bootstrap touches policy, or the loader performs recovery, or
+anything other than promotion assigns an implementation to a role, visibly
+violates this ownership table and is rejected on that basis.
+
 ## The full layering
 
   Bootstrap
@@ -197,6 +237,33 @@ other way.
 The bootstrap selects roles; roles are implemented by boot environments;
 boot environments execute systems. Changing how a role is implemented does
 not move the architecture.
+
+The whole design on one page:
+
+                 Architecture
+                       |
+              defines role contracts
+                       |
+                       v
+                 AD-58 promotion
+                       |
+              verifies obligations
+                       |
+                       v
+                 Policy binding
+                       |
+                  (read only)
+                       |
+                       v
+                  Bootstrap
+                       |
+                selects role
+                       |
+                       v
+          Boot environment implementing role
+                       |
+                       v
+              Operational OS / Recovery OS
 
 ## How the design satisfies the Part 1 guarantees
 
@@ -231,25 +298,41 @@ not move the architecture.
     implementations bound to recovery-capable roles) over a single
     critical path.
 
-## Open questions (Part 3, implementation)
+## Open questions (deferred to Part 3, implementation)
 
-These remain, and none of them change the architectural relationships
-above. They are implementation questions for Part 3:
+These remain and are deferred to Part 3. None of them change the
+architectural relationships above; they are downstream of a settled
+structure and cannot move the boundaries.
 
-  - WHO owns the role binding, and where is it stored. The owner is the
-    AD-58 promotion authority (established above); the storage must be
+  - Where the role binding is stored. The owner is the AD-58 promotion
+    authority (the ownership section is settled); the storage must be
     readable by the bootstrap at selection time and must survive a broken
     Operational Environment, so it cannot live inside the OE. The exact
-    storage location and format are implementation details.
+    location and format are implementation details.
   - How the bootstrap reads the binding at selection time.
   - How the entry trigger requests the Recovery Role (a key, a prompt, a
-    menu, or other). This is an implementation detail; the architectural
-    decision is only the separation between selecting the Operational Role
-    and selecting the Recovery Role.
+    menu, or other). The architectural decision is only the separation
+    between selecting the Operational Role and selecting the Recovery Role;
+    the trigger itself is an implementation detail.
   - How AD-58 promotion updates the binding.
 
-Because these are downstream of a settled structure and cannot move the
-architectural boundaries, the architecture is considered complete for the
-purpose of proceeding to design review. Part 3 (implementation) carries the
-boot-path risk and must preserve a known-good boot path at every step and
-exercise any new path (RG-5) before relying on it.
+Part 3 carries the boot-path risk and must preserve a known-good boot path
+at every step and exercise any new path (RG-5) before relying on it.
+
+## Architectural invariants
+
+These are the tests every Part 3 implementation must satisfy. An
+implementation that violates any of them is non-conforming regardless of
+how well it otherwise works.
+
+  - The bootstrap shall never perform recovery.
+  - The bootstrap shall never own policy.
+  - The bootstrap shall never know implementation details (datasets,
+    snapshots, ZFS).
+  - Recovery shall always execute inside a Recovery Operating System, never
+    inside the loader.
+  - Promotion shall remain the only authority permitted to assign
+    implementations to roles.
+
+These are durable properties of the architecture, not implementation
+choices, which is what Part 2 exists to establish.
