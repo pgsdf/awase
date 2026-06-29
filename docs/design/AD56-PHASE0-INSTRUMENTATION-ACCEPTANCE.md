@@ -1,6 +1,7 @@
 # AD-56 Phase 0: Instrumentation Acceptance Criteria
 
-Status: DRAFT DESIGN CONTRACT.
+Status: RATIFIED DESIGN CONTRACT (operator, 2026-06-28); drafted
+2026-06-28.
 
 This document specifies ACCEPTANCE CRITERIA, not an implementation and not
 a decision. It is a design contract: the properties every candidate
@@ -45,7 +46,13 @@ Two clusters are worth naming:
     counts as KNOWING that instrumentation does not interfere. This
     cluster exists because non-interference is the property most easily
     asserted and least easily proven, and assertion from inspection is
-    exactly the failure mode it guards against.
+    exactly the failure mode it guards against. Within the cluster the
+    criteria address different questions: AC-5 is admissibility (what
+    counts as evidence at all), AC-8 is testability (whether that
+    evidence could prove the claim wrong), and AC-9 is independence
+    (whether the evidence stands apart from the instrumentation). A claim
+    can be admissible yet untestable, or testable yet self-certifying;
+    the criteria are separate because the defects are separate.
 
 ## Acceptance criteria
 
@@ -57,16 +64,28 @@ Unintended system-wide effects are unacceptable.
 
 ### AC-2: Non-interference
 
-Instrumentation shall not alter the observable behavior of the kernel
-except by producing observations. The burden of proof lies with the
-instrumentation design; assuming non-interference is insufficient.
+Instrumentation shall not alter the semantics of the kernel except by
+producing observations. "Semantics" means the behavior the kernel
+defines, not merely what a user notices: timing, scheduling, memory
+layout, and ordering are in scope, not only user-visible output. The
+burden of proof lies with the instrumentation design; assuming
+non-interference is insufficient.
+
+Instrumentation inevitably has some implementation cost (instruction
+count, memory footprint). Such costs are acceptable only insofar as they
+preserve the kernel's defined semantics. A cost that changes what the
+kernel does, rather than merely what it spends, is a semantic alteration
+and is not acceptable under this criterion.
 
 ### AC-3: Locality
 
-Instrumentation should be implemented as locally as practical. Kernel-wide
+Instrumentation shall be local unless broader scope is an explicit
+architectural requirement justified by the design. Kernel-wide
 compilation changes, global compile-time flags, and broad configuration
-changes require explicit architectural justification. Local mechanisms are
-preferred over global ones.
+changes are the broader scope this criterion governs: each must be
+justified as a design requirement, not adopted by default or
+convenience. The burden of justification lies with the broader-scope
+design.
 
 ### AC-4: Reversibility
 
@@ -123,10 +142,11 @@ Those activities belong to later phases.
 
 Once these acceptance criteria are ratified:
 
-  Phase A: investigate the mechanism responsible for a previous
-    perturbation. Distinguish verified evidence from hypothesis. The
-    smallest change sufficient to reproduce a perturbation is the goal,
-    so that the mechanism is isolated rather than assumed.
+  Phase A: the objective is to identify the smallest change sufficient to
+    reproduce the perturbation. Reduction precedes explanation: isolate
+    the minimal reproducing change first, then explain it. Once isolated,
+    distinguish verified evidence from hypothesis, so that the mechanism
+    is established rather than assumed.
 
   Phase B: design replacement instrumentation that satisfies every
     acceptance criterion above. The resulting invariants follow from two
@@ -135,7 +155,11 @@ Once these acceptance criteria are ratified:
 
 Implementation begins only after Phase B.
 
-## Note: a possible unifying principle (not pursued here)
+## Appendix: a possible unifying principle (not pursued here)
+
+This appendix is deliberately outside the contract proper; the contract is
+about instrumentation, and this is a thread for later, recorded here only
+so it is not lost.
 
 AC-9, and the epistemics cluster generally, echo a discipline emerging
 elsewhere in the project: a mechanism used to establish confidence should
@@ -144,6 +168,6 @@ Stated from two directions, this reads as "promotion requires independent
 verification" and "observation requires independent non-interference."
 Whether this deserves its own foundational statement is explicitly NOT
 pursued here, to preserve the discipline of one active architectural
-uncertainty at a time. It is noted only as a thread to revisit after this
-AD-56 work is complete, when the concrete instance can inform whether the
-general principle merits its own document.
+uncertainty at a time. Revisit after this AD-56 work is complete, when the
+concrete instance can inform whether the general principle merits its own
+document.
