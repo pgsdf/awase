@@ -1,7 +1,9 @@
 # AD-56 Phase A: perturbation mechanism investigation
 
-Status: IN PROGRESS. Phase A0 (artifact audit) complete; Phase A1
-(experimental isolation) beginning.
+Status: PAUSED at A1.3. Phase A0 complete; A1.1 complete (the
+perturbation reproduces from a characterized baseline); A1.3 (reduction)
+is paused pending a reliable boot/recovery-selection mechanism, which is
+sequenced ahead of it.
 
 Governing objective (from the Phase 0 acceptance criteria contract):
 identify the smallest change sufficient to reproduce the perturbation.
@@ -189,6 +191,62 @@ path; the verified BE awase-verified-pgsd-clean preserves the working
 system. A1 must not proceed without the fallback reachable at the loader.
 
 Results recorded below as experiments are run.
+
+### A1.1 result (2026-06-28): the perturbation reproduces
+
+Setup, characterized: /usr/src on the observation branch with the
+instrumentation present (8 occurrences of the guard symbol in
+subr_module.c, confirmed); the enabling config line restored to
+PGSD-DEBUG; a clean build (PGSD_ALLOW_UNPINNED for the untracked module
+drift); and, before boot, the built kernel confirmed to contain the
+instrumentation (strings over the kernel found preload_inventory). So this
+was the full committed AD-56 change, built clean, instrumentation verified
+compiled in.
+
+Observation (the only three A1.1 asks): it built; it booted as far as EFI
+framebuffer initialization; it then hung at that point. Same hang location
+as the original failure. (Photographed: loads kernel, then drawfs.ko, then
+prints EFI framebuffer information for the 3840x2160 mode, then stalls.)
+
+Conclusion (stated to the evidence):
+  - The committed AD-56 change is SUFFICIENT to reproduce the perturbation
+    from a characterized baseline. This is the answer A1.1 set out to get.
+  - It REFUTES the environmental-artifact branch (the live alternative
+    after A0 and the code inspection found no obvious mechanism). The
+    cause is in the committed change, not a build-state accident.
+  - Combined with A0 (the symbol is mechanically inert outside
+    subr_module.c), the perturbation is in the instrumentation as compiled
+    into the kernel: exactly the case the epistemics correction
+    anticipated, where apparently innocuous code perturbs through a
+    mechanism invisible to source inspection (timing, code generation,
+    inlining, register allocation, stack layout, cache locality, or
+    initialization ordering).
+
+What A1.1 does NOT establish: which element of the instrumentation
+perturbs, or by what mechanism. That is A1.3 (reduce to the minimal
+perturbing change).
+
+Recovery: the bench was recovered to the fallback BE known-good-generic.
+The fallback BE prevented a reinstall, but selecting it under the hang
+required manual loader-prompt commands
+(set currdev=zfs:zroot/ROOT/known-good-generic: then boot), not a menu
+selection: the FreeBSD boot menu did not present the fallback BE for
+selection. The recovery POINT existed and booted; the recovery MECHANISM
+(reliably selecting it under failure) did not.
+
+### Phase A paused pending a reliable recovery mechanism
+
+AD-56 Phase A is DELIBERATELY PAUSED here, for a dependency, not because
+it stalled. A1.3 and all further AD-56 experiments deliberately reproduce
+the hang and depend on reliable recovery. A1.1 demonstrated that the
+recovery mechanism is not reliable (selecting the fallback BE required
+memorized loader incantations at a hang). Per the discipline that a
+recovery path which has not been verified is not a recovery path, the boot
+and recovery-selection mechanism must be made reliable BEFORE further
+experiments that depend on it. The bootstrap and recovery-selection work
+(a standard boot path plus a deliberate admin path) is therefore
+sequenced ahead of the remainder of Phase A. AD-56 resumes at A1.3 once a
+reliable recovery mechanism exists.
 
 ## Methodology note (captured, not a separate design effort)
 
