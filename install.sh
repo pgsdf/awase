@@ -485,42 +485,121 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     fi
 fi
 # ============================================================================
-# OS-specific source-tree packages
+# OS source tree at /usr/src (AD-57: Git-backed, commit-pinned fork)
 # ============================================================================
 #
-# Building the PGSD kernel and the drawfs/inputfs modules requires the
-# OS source tree at /usr/src. On FreeBSD this comes from FreeBSD-src
-# and FreeBSD-src-sys; on GhostBSD from GhostBSD-src and GhostBSD-src-sys.
-# These are pkgbase package names. Add them to MISSING_PKGS only if not
-# already installed.
+# Building the PGSD kernel and the drawfs/inputfs/audiofs modules requires
+# the OS source tree at /usr/src. Per AD-57 (Git-backed kernel source of
+# truth), this is a clone of the maintained fork pinned to a specific
+# commit, NOT the FreeBSD-src/GhostBSD-src pkgbase packages (which deliver
+# unpinned release source, defeating commit-level provenance). The pin is
+# read from pgsd-kernel/FREEBSD-PIN.
+#
+# This is provisioned here rather than added to MISSING_PKGS because it is
+# a git clone plus a pinned checkout plus an ownership change, not a pkg
+# install. The clone runs with privilege (root owns /usr) and is then
+# chowned to the installing user so later git operations and edits need no
+# root (avoiding dubious-ownership and index.lock friction).
+#
+# Existing /usr/src is handled by kind:
+#   - already the fork at the pinned commit  -> nothing to do (idempotent)
+#   - a git checkout at a different commit    -> report, leave for operator
+#   - non-git package source (the fresh-OS    -> offer to replace it; rm is
+#     case, e.g. FreeBSD-src pkgbase)            destructive, so it is gated
+#                                                on explicit consent
+#   - absent                                  -> clone (nothing destroyed)
 
 check_pkg_installed() {
     pkg info -e "$1" >/dev/null 2>&1
 }
 
+provision_usr_src() {
+    pin_file="$SCRIPT_DIR/pgsd-kernel/FREEBSD-PIN"
+    if [ ! -f "$pin_file" ]; then
+        echo "  WARN: $pin_file not found; cannot provision /usr/src" >&2
+        echo "        provide /usr/src manually (AD-57 pinned fork)." >&2
+        return 0
+    fi
+
+    # Read key: value pairs from the pin, stripping surrounding space.
+    src_repo="$(awk '$1=="base_repository:"{sub(/^[^:]*:[ 	]*/,"");print;exit}' "$pin_file")"
+    src_commit="$(awk '$1=="base_commit:"{sub(/^[^:]*:[ 	]*/,"");print;exit}' "$pin_file")"
+    src_branch="$(awk '$1=="base_branch:"{sub(/^[^:]*:[ 	]*/,"");print;exit}' "$pin_file")"
+
+    if [ -z "$src_repo" ] || [ -z "$src_commit" ]; then
+        echo "  WARN: could not read base_repository/base_commit from pin" >&2
+        echo "        skipping /usr/src provisioning." >&2
+        return 0
+    fi
+
+    if [ -d /usr/src/.git ]; then
+        have="$(git -C /usr/src rev-parse HEAD 2>/dev/null || echo unknown)"
+        if [ "$have" = "$src_commit" ]; then
+            echo "  ok  /usr/src is the pinned fork at $src_commit"
+        else
+            echo "  ok  /usr/src is a git checkout (HEAD $have)"
+            echo "      NOTE: not the pinned commit $src_commit; leaving as-is."
+            echo "      (the AD-57 pin check in the kernel build is authoritative)"
+        fi
+        return 0
+    fi
+
+    if [ -e /usr/src ] && [ -n "$(ls -A /usr/src 2>/dev/null)" ]; then
+        echo "  -- /usr/src exists and is non-empty but is not a git checkout"
+        echo "     (likely pkgbase release source). Per AD-57 the source must"
+        echo "     be the pinned fork. Replacing it removes the current"
+        echo "     /usr/src, which is destructive."
+        replace=0
+        if [ "$ASSUME_YES" -eq 1 ]; then
+            replace=1
+        elif [ -t 0 ] && [ -t 1 ]; then
+            printf "     Remove /usr/src and clone the pinned fork? [y/N]: "
+            read -r ans
+            case "$ans" in [Yy]*) replace=1 ;; esac
+        else
+            echo "     WARN: non-interactive and --yes not given; not replacing." >&2
+            echo "           remove /usr/src and re-run, or pass --yes." >&2
+            return 0
+        fi
+        if [ "$replace" -eq 0 ]; then
+            echo "     skip: /usr/src left unchanged; kernel build will fail the"
+            echo "           AD-57 pin check until /usr/src is the pinned fork."
+            return 0
+        fi
+        echo "  -- removing existing /usr/src"
+        if ! priv rm -rf /usr/src; then
+            echo "  WARN: could not remove /usr/src; left unchanged." >&2
+            return 0
+        fi
+    fi
+
+    echo "  -- cloning the pinned fork into /usr/src (this is large)"
+    echo "     repo:   $src_repo"
+    echo "     branch: ${src_branch:-(default)}"
+    echo "     commit: $src_commit"
+    if ! priv git clone "$src_repo" /usr/src; then
+        echo "  WARN: git clone of $src_repo failed; /usr/src not provisioned" >&2
+        echo "        check network and that git is installed." >&2
+        return 0
+    fi
+    if ! priv git -C /usr/src checkout --quiet "$src_commit"; then
+        echo "  WARN: clone succeeded but checkout of the pinned commit failed" >&2
+        echo "        $src_commit may be missing from the fork." >&2
+    fi
+    if priv chown -R "$(id -u):$(id -g)" /usr/src; then
+        echo "  ok  cloned and chowned /usr/src to $(id -un):$(id -gn)"
+    else
+        echo "  WARN: chown of /usr/src failed; git operations may need root" >&2
+    fi
+    git config --global --add safe.directory /usr/src 2>/dev/null || true
+}
+
 case "$UTF_OS" in
-    freebsd)
-        for p in FreeBSD-src FreeBSD-src-sys; do
-            if ! check_pkg_installed "$p"; then
-                MISSING_PKGS="$MISSING_PKGS $p"
-                echo "  -- $p not installed"
-            else
-                echo "  ok  $p installed"
-            fi
-        done
-        ;;
-    ghostbsd)
-        for p in GhostBSD-src GhostBSD-src-sys; do
-            if ! check_pkg_installed "$p"; then
-                MISSING_PKGS="$MISSING_PKGS $p"
-                echo "  -- $p not installed"
-            else
-                echo "  ok  $p installed"
-            fi
-        done
+    freebsd|ghostbsd)
+        provision_usr_src
         ;;
     *)
-        echo "  ?? unknown OS ($UTF_OS); skipping source-tree package check"
+        echo "  ?? unknown OS ($UTF_OS); skipping /usr/src provisioning"
         ;;
 esac
 
