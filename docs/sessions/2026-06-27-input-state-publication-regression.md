@@ -139,3 +139,64 @@ the reference (clean default) configuration?
   - If not, where does delivery diverge from the working boot environment?
   - Is the regression attributable to a source change, a build
     configuration, or an installation difference?
+
+## Resolution 2026-06-28 (CLOSED): root cause was the AD-56 kernel work
+
+This investigation is closed. The root cause was NOT in the input
+userspace (semadrawd/sessiond) or in inputfs, the layers this record
+spent its effort on. It was the AD-56 Phase 0.5 kernel modifications
+destabilizing drawfs at EFI framebuffer initialization. The cause was
+found by a different route than this investigation pursued, and the
+record is closed honestly on that basis rather than by retrofitting the
+hypotheses here into the answer.
+
+How the true cause was established (separate from this record's lines of
+inquiry):
+  - A drawfs/framebuffer hang took the bench down and forced a reinstall.
+    Isolating it showed that disabling drawfs (drawfs_load=NO) booted
+    cleanly while enabling it hung at framebuffer init, on a clean kernel
+    as well, so drawfs at framebuffer init was the failing point.
+  - drawfs had worked for months on the PGSD kernel and broke only after
+    the AD-56 kernel modifications (the compile-wide CONF_CFLAGS define
+    and the subr_module.c instrumentation), making those modifications the
+    regression.
+  - A verified-clean PGSD kernel (no AD-56 content, confirmed by strings
+    over the built kernel) booted drawfs with no hang, and a full clean
+    install on that kernel produced working physical keyboard and mouse at
+    the pgsd-sessiond login. The original symptom does not reproduce
+    without the AD-56 kernel modifications.
+
+The input symptom in this record (0-byte state region, no physical input
+at the login) is therefore understood as a downstream manifestation of
+drawfs/framebuffer instability under the AD-56 kernel, not an independent
+userspace defect. With drawfs healthy on a clean kernel, input is healthy.
+
+Answers to the Questions remaining, in light of the true cause:
+  - Do HID reports reach inputfs under a clean configuration? On the
+    recovered clean PGSD install, input works end to end, so the question
+    is moot for the regression: there is no longer a failing
+    configuration to instrument. The inputfs_intr report-path question was
+    never reached, because the cause was upstream in the kernel/drawfs,
+    not in inputfs report delivery or state publication.
+  - Where does behavior diverge between receipt and publication? Not
+    applicable; the divergence was not in inputfs but in drawfs at
+    framebuffer init under the AD-56 kernel.
+  - Where does delivery diverge from the working environment? The
+    differentiator between working and broken was the AD-56 kernel
+    modifications, not a userspace or inputfs delivery difference.
+  - Source, build, or installation difference? A kernel BUILD/source
+    difference: the AD-56 modifications to /usr/src (the FreeBSD fork),
+    outside the awase repository. This is why the awase commit bisection
+    in the related records did not reproduce it; the awase source history
+    was not the cause.
+
+Lesson recorded as architecture: the AD-56 instrumentation perturbed the
+observed system (drawfs), which is exactly the failure that motivates the
+AD-56 instrumentation redesign (instrumentation must not perturb kernel
+behavior) and is adjacent to AD-58 (promotion follows verification, not
+execution). AD-56 Phase 0.5 remains paused pending that redesign; Delta 3
+(EFI_FB suppression) remains gated on it.
+
+Status: CLOSED. The system is recovered and verified (clean install, clean
+PGSD kernel, working physical input, captured as the BE
+awase-verified-pgsd-clean).
