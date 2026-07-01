@@ -1,0 +1,39 @@
+--
+-- local.lua.example -- thin adapter for the AD-59 bootstrap module.
+--
+-- This is an EXAMPLE adapter for the current loader mechanism. It is deployed
+-- into an instrumentation/test BE's /boot/lua/local.lua to exercise the
+-- bootstrap module. It is intentionally thin: it requires the module and
+-- delegates. It does NOT contain bootstrap logic itself.
+--
+-- For the first step (Discover only), it reports what discover() observed so
+-- the observation object can be verified at boot. It performs no redirect and
+-- no policy; those arrive as Decide, Bind, and Transfer are implemented.
+--
+
+local ok, bootstrap = pcall(require, "pgsd_bootstrap")
+if not ok then
+	print("pgsd bootstrap: module load failed: " .. tostring(bootstrap))
+	return
+end
+
+local obs = bootstrap.discover()
+
+print("")
+print("=== AD-59 Discover: LOM v" .. tostring(obs.lom_version) .. " ===")
+print("=== selected_boot_environment   = " .. tostring(obs.selected_boot_environment))
+-- available_boot_environments is a list; print a count and the entries.
+local avail = obs.available_boot_environments
+if type(avail) == "table" then
+	print("=== available_boot_environments = " .. tostring(#avail) .. " entries")
+	for i = 1, #avail do
+		print("===   [" .. tostring(i) .. "] " .. tostring(avail[i]))
+	end
+else
+	print("=== available_boot_environments = " .. tostring(avail))
+end
+print("=== operator_recovery_request   = " .. tostring(obs.operator_recovery_request))
+print("=== promotion_state             = " .. tostring(obs.promotion_state))
+print("=== boot_generation             = " .. tostring(obs.boot_generation))
+print("=== (Discover only: no decision, no redirect) ===")
+print("")
