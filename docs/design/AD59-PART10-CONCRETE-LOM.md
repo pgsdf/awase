@@ -19,6 +19,19 @@ unavailable field without changing the interface, and versioning is additive.
 The producer table was established by read-only reconnaissance on the bench,
 which asked, per field: what is its current producer?
 
+## Amendment: recovery_be_present removed (derived fact, not observation)
+
+This revision removes recovery_be_present from the LOM vocabulary. It was
+initially listed as an observation, but classifying a boot environment as the
+one filling the Recovery role is interpretation over
+available_boot_environments plus the binding, which makes it a derived fact,
+not a loader-stage observation. By the Part 9 observation/conclusion rule,
+derived facts do not belong in the LOM. Discover reports the raw
+available_boot_environments; Decide derives whether a Recovery environment is
+present, using the binding (Part 7), when policy requires it. This keeps
+Discover purely observational and the layering intact. The removal is a
+vocabulary change and is recorded as such; it is the LOM's first amendment.
+
 ## The observation vocabulary (stable)
 
 LOM v1 defines these observations. Each is a loader-stage observation, stated
@@ -31,13 +44,6 @@ Each field's value may be a concrete value or the sentinel "unavailable"
 
   available_boot_environments
       The set of boot environments the loader can enumerate.
-
-  recovery_be_present
-      Whether a boot environment filling the Recovery role is present among
-      the available environments. (See the note below: the enumeration
-      producer is available, but recognizing which environment fills the
-      Recovery role depends on a recognition convention that is a binding
-      concern, not an observation concern.)
 
   operator_recovery_request
       Whether a loader-stage operator signal requesting recovery is present.
@@ -66,8 +72,6 @@ the vocabulary above stays stable.
   ---------------------------  --------------------------------  -----------
   selected_boot_environment    loader (currdev, zfs_be_active)   Available
   available_boot_environments  loader (bootenvs[], BE datasets)  Available
-  recovery_be_present          loader enumeration, pending an    Partial
-                               RE-recognition convention
   operator_recovery_request    none (AD-11 D4 mechanism unbuilt) Unavailable
   promotion_state              none (AD-58 write path unbuilt)   Unavailable
   boot_generation              none (no boot-completion tracking Unavailable
@@ -87,13 +91,15 @@ Reconnaissance notes:
     environment dataset; only standard properties are present. So these
     observations have no loader-readable source yet.
 
-  - recovery_be_present is marked Partial: the enumeration producer is
-    available (the loader lists boot environments), but recognizing which
-    enumerated environment fills the Recovery role requires a recognition
-    convention (a naming rule, a property, or a binding entry). That
-    convention is a binding concern (Part 7), not an observation concern. Until
-    it is fixed, recovery_be_present can report the raw enumeration but cannot
-    yet classify an environment as the Recovery environment.
+  - recovery_be_present was removed from the vocabulary (amendment below).
+    Whether a boot environment fills the Recovery role is a DERIVED FACT, not
+    an observation: it requires classifying a boot environment by role, which
+    is interpretation over available_boot_environments plus the binding.
+    Classification is Decide/policy work (with Bind's binding), not Discover's.
+    Discover reports the raw available_boot_environments; Decide derives
+    whether a Recovery environment is present when it needs to. Keeping a
+    derived fact out of the LOM preserves the observation/conclusion rule
+    (Part 9) and keeps Discover purely observational.
 
 ## What this makes implementable now
 
