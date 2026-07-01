@@ -187,11 +187,33 @@ the current loader, and they informed the design of the responsibilities.
 If implementation later moves into an Awase loader, those responsibilities
 migrate with it.
 
-AD-11 (the Alt-held recovery trigger) is not in tension with the Decide
-step. Part 4 asks what information policy requires, using the neutral
-formulation "what observable state distinguishes a normal boot from a
-recovery boot." AD-11 is one PRODUCER of that information: AD-59 consumes
-"recovery requested?" as an input, and AD-11 defines one mechanism by which
-that input becomes true. Other producers (inference, a mandatory recovery
-condition) remain possible; AD-11 is one, not the only one, and the
-bootstrap consumes the information without depending on how it was produced.
+AD-11 (recovery-and-console posture) is not in tension with the Decide
+step, and it is worth stating precisely why, because it is easy to reach
+for a shared "recovery requested?" interface between the two and that
+interface does not exist.
+
+AD-59's decision is not "has recovery been requested?" It is "which
+operating environment should execute?" A recovery request is only one of
+many possible policy inputs that could lead to selecting the Recovery
+Environment. Policy might select the RE because the OE is known bad,
+because promotion is incomplete, because rollback is mandatory, or because
+some future condition requires it. None of those is "recovery requested"
+in the AD-11 sense. Privileging "recovery requested?" as the input would
+mistake one possible policy input for the decision itself, which is the
+narrowing Part 4's neutral formulation exists to avoid.
+
+So AD-59 deliberately remains independent of any particular trigger or
+policy mechanism. It consumes only the observable state required by policy
+to distinguish the boot cases. The bootstrap neither knows nor cares how
+that observable state came into existence.
+
+AD-11 sits at a different layer entirely. Under the OE/RE separation, the
+sequence is: firmware, then loader, then AD-59 selects OE or RE, then the
+kernel, then rc.d, then AD-11. AD-59 selects the environment; AD-11 governs
+the runtime behavior of whichever environment was selected (rc.d profile,
+pgsd-sessiond posture, recovery tooling). These are adjacent layers, not
+two implementations of the same decision. Recovery, in the AD-59 model, is
+a separate operating environment, not a mode the OE adopts; once recovery
+is understood that way, the shared trigger interface largely disappears,
+because environment selection (AD-59) and runtime behavior within the
+selected environment (AD-11) are simply different responsibilities.
