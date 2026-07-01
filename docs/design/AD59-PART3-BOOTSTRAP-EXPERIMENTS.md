@@ -267,3 +267,49 @@ Nothing about Decide, Bind, or Transfer, which are not yet implemented.
 Nothing about the Unavailable observations' eventual producers. The exercise
 was observational; it does not exercise any redirect (that arrives with
 Transfer).
+
+## Experiment 6: decide() exercised at loader stage (DESIGNED, not yet run)
+
+### Question
+
+Does decide(), evaluating the ratified Selection Policy v1 (Part 12) under
+the Part 11 semantics over discover()'s live observation object, produce the
+Operational Role at loader stage today?
+
+The Operational result is the expected one because the policy's only
+positive rule tests operator_recovery_request, whose producer is unbuilt;
+by E1 the rule must fail against the unavailable sentinel and the terminal
+rule must select the Operational Role. The experiment therefore exercises,
+in one boot: the evaluator, the policy-as-data separation, and E1 against a
+real unavailable observation.
+
+### Method
+
+Same deployment as Experiment 5: pgsd_bootstrap.lua (now containing
+decide() and the Selection Policy v1 table) and the extended pausing
+adapter (local.lua) into the bootstrap-poc instrumentation BE only, booted
+under a single-boot temporary activation (bectl activate -t bootstrap-poc).
+The adapter calls discover(), prints the observation object, calls
+decide(obs, SELECTION_POLICY_V1), prints the selected role, and pauses. No
+binding and no redirect: the role is observed, not acted on (Bind and
+Transfer are not implemented).
+
+Before the bench run, the evaluator was exercised off-loader as a pure
+function over synthetic observation objects (Part 11 independent
+testability): E1 against the sentinel, present -> Recovery, absent ->
+Operational, determinism, input non-modification, and policy-agnosticism
+under a synthetic alternate policy. All passed. The off-loader exercise is
+supporting evidence only; the bench run is the acceptance.
+
+### Exit criterion
+
+The printed role is the Operational Role, with the observation object
+matching Experiment 5's shape, and the system booting normally afterward.
+
+### Observation
+
+Pending bench run.
+
+### Conclusion
+
+Pending observation.

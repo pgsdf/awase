@@ -6,9 +6,10 @@
 -- bootstrap module. It is intentionally thin: it requires the module and
 -- delegates. It does NOT contain bootstrap logic itself.
 --
--- For the first step (Discover only), it reports what discover() observed so
--- the observation object can be verified at boot. It performs no redirect and
--- no policy; those arrive as Decide, Bind, and Transfer are implemented.
+-- It reports what discover() observed, then evaluates Selection Policy v1
+-- via decide() and reports the selected role (AD-59 Parts 11 and 12,
+-- Experiment 6). It performs no binding and no redirect: the role is
+-- observed, not acted on. Bind and Transfer arrive with their contracts.
 --
 
 local ok, bootstrap = pcall(require, "pgsd_bootstrap")
@@ -35,5 +36,11 @@ end
 print("=== operator_recovery_request   = " .. tostring(obs.operator_recovery_request))
 print("=== promotion_state             = " .. tostring(obs.promotion_state))
 print("=== boot_generation             = " .. tostring(obs.boot_generation))
-print("=== (Discover only: no decision, no redirect) ===")
+local policy = bootstrap.SELECTION_POLICY_V1
+local role = bootstrap.decide(obs, policy)
+
+print("=== AD-59 Decide: Selection Policy v" .. tostring(policy.policy_version)
+    .. " over LOM v" .. tostring(policy.lom_version) .. " ===")
+print("=== selected role               = " .. tostring(role))
+print("=== (Decide only: no binding, no redirect) ===")
 print("")
