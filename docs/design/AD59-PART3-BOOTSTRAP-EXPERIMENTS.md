@@ -200,3 +200,70 @@ The design is no longer speculative; it has empirical support, without
 overclaiming what the individual experiments proved. This closes the Part 3
 research phase. The next phase revisits the Part 2 architecture in light of
 this evidence; it does not begin by writing bootstrap code.
+
+## Experiment 5: discover() exercised at loader stage
+
+### Question
+
+Does the discover() implementation, run at loader stage in the instrumentation
+BE, produce the LOM v1 observation object its contract and the concrete LOM
+require?
+
+### Method
+
+The bootstrap module (pgsd_bootstrap.lua) and a thin pausing adapter
+(local.lua) were deployed into the bootstrap-poc instrumentation BE only. The
+adapter requires the module, calls discover(), prints the observation object,
+and pauses. bootstrap-poc was booted under a single-boot temporary activation
+(bectl activate -t). No redirect and no policy; observation only.
+
+### Observation
+
+At loader stage, discover() produced:
+
+  lom_version                 = 1
+  selected_boot_environment   = zfs:zroot/ROOT/awase-verified-pgsd-clean
+  available_boot_environments = 4 entries
+    [1] zfs:zroot/ROOT/awase-verified-pgsd-clean
+    [2] zfs:zroot/ROOT/bootstrap-poc
+    [3] zfs:zroot/ROOT/known-good-generic
+    [4] zfs:zroot/ROOT/default
+  operator_recovery_request   = unavailable
+  promotion_state             = unavailable
+  boot_generation             = unavailable
+
+The system then booted normally into bootstrap-poc.
+
+### Conclusion
+
+discover() runs at loader stage and produces the LOM v1 observation object.
+The two Available fields carry values from their loader producers; the three
+Unavailable fields carry the explicit sentinel. The object carries its LOM
+version.
+
+### What this establishes
+
+The first bootstrap responsibility (Discover) is implemented and exercised.
+Its Available producers (zfs_be_active, core.bootenvList) work at loader
+stage; its Unavailable fields are represented explicitly; and the module runs
+without disturbing boot (it booted normally afterward, consistent with the
+no-side-effects obligation).
+
+### Ancillary observation (not a defect)
+
+selected_boot_environment reported awase-verified-pgsd-clean while the booted
+BE was bootstrap-poc. This is because zfs_be_active reflects the persistent
+default, which the temporary activation (-t) left as
+awase-verified-pgsd-clean, not the temporarily activated BE. discover()
+faithfully reports the loader variable's value; whether "selected" should mean
+the persistent default or this boot's environment is an interpretation
+question for Decide, not for Discover. discover() correctly reports the raw
+value and leaves interpretation to Decide, consistent with the
+observation/conclusion boundary.
+
+### What this does not establish
+
+Nothing about Decide, Bind, or Transfer, which are not yet implemented.
+Nothing about the Unavailable observations' eventual producers. The exercise
+was observational; it does not exercise any redirect (that arrives with
+Transfer).
