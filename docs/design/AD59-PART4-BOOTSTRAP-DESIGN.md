@@ -159,3 +159,39 @@ are the subject of implementation design, which may proceed on this
 foundation. Part 2's ownership section already answers "who owns the
 binding" (the AD-58 promotion authority); the remaining questions are how,
 where, and in what form, which are implementation choices.
+
+## Relationship to BOOT-PATH-OWNERSHIP and AD-11
+
+Part 4 defines the bootstrap ARCHITECTURE and responsibilities. The current
+implementation target is the FreeBSD local.lua hook validated in Part 3.
+BOOT-PATH-OWNERSHIP defines a future transition to an Awase-owned EFI
+loader. That transition changes the implementation MECHANISM, not the
+architectural responsibilities defined here.
+
+This is the architecture/mechanism distinction Part 4 is built around.
+Nothing in the four responsibilities (Discover, Decide, Bind, Transfer)
+requires Lua. Today they are realized in local.lua inside the stock loader,
+because Part 3 demonstrated that this insertion point exists and can
+redirect boot. Under BOOT-PATH-OWNERSHIP they could later be realized in an
+Awase-owned loader. The mechanism changes; the architecture does not: the
+role/policy separation, the binding model, and the Discover to Decide to
+Bind to Transfer decomposition all remain. Only the code that performs the
+responsibilities moves. There is one recovery architecture with two
+possible implementation mechanisms: the current Lua realization validated
+by Part 3, and the future Awase-owned loader envisioned by
+BOOT-PATH-OWNERSHIP.
+
+The Part 3 experiments remain valuable regardless of which loader is the
+long-term host: they established that the architecture is realizable using
+the current loader, and they informed the design of the responsibilities.
+If implementation later moves into an Awase loader, those responsibilities
+migrate with it.
+
+AD-11 (the Alt-held recovery trigger) is not in tension with the Decide
+step. Part 4 asks what information policy requires, using the neutral
+formulation "what observable state distinguishes a normal boot from a
+recovery boot." AD-11 is one PRODUCER of that information: AD-59 consumes
+"recovery requested?" as an input, and AD-11 defines one mechanism by which
+that input becomes true. Other producers (inference, a mandatory recovery
+condition) remain possible; AD-11 is one, not the only one, and the
+bootstrap consumes the information without depending on how it was produced.

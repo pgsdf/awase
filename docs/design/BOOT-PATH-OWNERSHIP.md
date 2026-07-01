@@ -22,6 +22,20 @@ forked from FreeBSD's loader.efi, to design the kernel handoff, the
 framebuffer ownership, and the boot UI around Awase's model rather than
 inherit FreeBSD's structure.
 
+## Relationship to AD-59
+
+The Awase-owned loader is expected to realize the recovery-selection
+architecture defined by AD-59 (roles, policy, bindings, and the bootstrap
+responsibilities Discover, Decide, Bind, Transfer). Replacing the FreeBSD
+Lua loader does not replace the AD-59 recovery architecture; it changes the
+mechanism that implements it. AD-59 defines the bootstrap architecture;
+this program defines a future implementation mechanism for that
+architecture. The current mechanism is the FreeBSD local.lua hook validated
+in AD-59 Part 3; the fresh loader is the future mechanism. There is one
+recovery architecture with two possible realizations, and the architectural
+responsibilities migrate from Lua into native boot code when this program's
+loader replaces the stock one.
+
 ## Objective (ratified amendment, 2026-06-21)
 
 The objective is NOT permanent reproduction of FreeBSD's boot ABI. It is
