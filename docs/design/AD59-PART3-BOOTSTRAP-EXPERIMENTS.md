@@ -268,7 +268,7 @@ Nothing about the Unavailable observations' eventual producers. The exercise
 was observational; it does not exercise any redirect (that arrives with
 Transfer).
 
-## Experiment 6: decide() exercised at loader stage (DESIGNED, not yet run)
+## Experiment 6: decide() exercised at loader stage (DONE)
 
 ### Question
 
@@ -308,8 +308,69 @@ matching Experiment 5's shape, and the system booting normally afterward.
 
 ### Observation
 
-Pending bench run.
+Run on bare-metal-test-bench 2026-07-02, with bootstrap-poc as the
+persistent default (bectl activate, not -t; see the note below). The
+adapter ran at loader stage before the menu and printed the full LOM v1
+observation object followed by the selected role:
+
+    selected_boot_environment   = zfs:zroot/ROOT/bootstrap-poc
+    available_boot_environments = 4 entries
+        [1] zfs:zroot/ROOT/bootstrap-poc
+        [2] zfs:zroot/ROOT/awase-verified-pgsd-clean
+        [3] zfs:zroot/ROOT/known-good-generic
+        [4] zfs:zroot/ROOT/default
+    operator_recovery_request   = unavailable
+    promotion_state             = unavailable
+    boot_generation             = unavailable
+
+    Selection Policy v1 over LOM v1
+    selected role               = operational-role
+
+The system then continued the boot normally to a login.
+
+Two points of note. First, selected_boot_environment reported the
+actually-booted BE (bootstrap-poc) this time, differing from Experiment
+5, where the temporary -t activation left zfs_be_active reporting the
+persistent default rather than the booted BE. Here bootstrap-poc was the
+persistent default, so the observation and the booted BE agree. Neither
+value is wrong: Discover reports what the loader environment holds, and
+what it holds depends on how the BE was activated. Policy v1 does not
+read this field, so the difference did not affect the decision.
+
+Second, the result was observable only after adding a pause to the
+adapter. On the first attempts the output printed and the boot continued
+before it could be read; loader console output cannot be scrolled back.
+An io.getchar() pause at the end of the adapter (Experiment 3 established
+it works at loader stage) held the block on screen. The earlier "no LOM
+block seen" was an observability failure, not an execution failure: the
+adapter had been running correctly all along.
 
 ### Conclusion
 
-Pending observation.
+decide() evaluated Selection Policy v1 over the live LOM at loader stage
+and produced the Operational Role, satisfying the exit criterion. The
+mechanism observed matches the design exactly: operator_recovery_request
+was unavailable (no producer built), so R1's predicate
+(operator_recovery_request == present) was false by E1 (Part 11), and
+evaluation fell through to the terminal rule, which selects the
+Operational Role (Part 12). The Operational default emerged from rule
+order with no special case, as specified.
+
+This is the bench acceptance for the second bootstrap responsibility.
+Discover (Experiment 5) and Decide (this experiment) are both proven at
+loader stage. The evaluator, the policy-as-data separation, and E1
+against a real unavailable observation all behaved as designed on the
+first boot where the output was actually read.
+
+### Discipline note
+
+Loader-stage experiments must build in a pause. The loader console
+cannot be scrolled back and the loader proceeds the instant the adapter
+returns, so any output without a pause is effectively unreadable. This
+cost most of an investigation session that repeatedly misdiagnosed the
+flashing output as a deployment, BE-selection, or Lua-environment fault
+before it was recognized as pure observability. The pause is now part of
+the adapter example. The general rule, alongside the audiofs lesson that
+hardware-shaped sub-stages need a register-level spec re-read: loader-
+stage sub-stages need a built-in pause and a plan to read the output
+before the boot continues.

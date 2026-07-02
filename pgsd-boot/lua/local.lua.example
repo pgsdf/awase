@@ -44,3 +44,14 @@ print("=== AD-59 Decide: Selection Policy v" .. tostring(policy.policy_version)
 print("=== selected role               = " .. tostring(role))
 print("=== (Decide only: no binding, no redirect) ===")
 print("")
+
+-- Pause so the output stays on screen. Loader console output cannot be
+-- scrolled back, and the loader continues to the menu immediately after
+-- this file returns, so without a pause the whole block flashes past
+-- faster than it can be read (bench 2026-07-02: Experiment 6 output was
+-- unreadable until this pause was added). io.getchar() blocks until a
+-- key is pressed; Experiment 3 established it works at loader stage.
+-- This is an observation adapter, so pausing is correct: it performs no
+-- redirect, and holding the boot for an operator keypress is the point.
+print("=== press a key to continue boot ===")
+io.getchar()
