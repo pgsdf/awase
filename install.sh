@@ -1130,7 +1130,12 @@ stop_service_if_running semasound semasound
 if [ "$UTF_SUPERVISOR_WAS_RUNNING" -eq 1 ]; then
     echo "  stopping  awase-supervisor (was running)"
     if [ -f "$PREFIX/etc/rc.d/awase-supervisor" ] || [ -f "/etc/rc.d/awase-supervisor" ]; then
-        service awase-supervisor stop >/dev/null 2>&1 || true
+        # AD-20.4: bound the stop. The rc.d stop_cmd now tears the tree
+        # down the s6-native way, but a wedged s6-svscan could still make
+        # the stop block; timeout(1) caps it so a stuck stop can never
+        # hang the whole install (bench 2026-07-02: install hung here,
+        # after the "stopping" line, with no bound on this call).
+        timeout "$RESTART_TIMEOUT" service awase-supervisor stop >/dev/null 2>&1 || true
     fi
     # Wait for the supervisor pid to exit, with timeout.
     waited=0
@@ -1138,8 +1143,12 @@ if [ "$UTF_SUPERVISOR_WAS_RUNNING" -eq 1 ]; then
           kill -0 "$(cat /var/run/awase-supervisor.pid 2>/dev/null)" 2>/dev/null; do
         if [ "$waited" -ge "$RESTART_TIMEOUT" ]; then
             echo "  WARNING: awase-supervisor did not exit within ${RESTART_TIMEOUT}s, sending SIGKILL" >&2
+            # The pidfile holds the daemon(8) PID; daemon establishes a
+            # process group, so signal the group (-pid) to reach s6-svscan
+            # and its s6-supervise children, not just daemon itself.
+            # Killing daemon alone would orphan the scan tree.
             pid=$(cat /var/run/awase-supervisor.pid 2>/dev/null)
-            [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
+            [ -n "$pid" ] && kill -9 -- "-$pid" 2>/dev/null || true
             sleep 1
             break
         fi
@@ -1515,6 +1524,38 @@ command_args="-P \${pidfile} -o /var/log/awase/svscan.log /usr/local/bin/s6-svsc
 
 start_precmd="awase_supervisor_precmd"
 status_cmd="awase_supervisor_status"
+stop_cmd="awase_supervisor_stop"
+
+# AD-20.4: stop s6-svscan the s6-native way, not by signalling daemon(8).
+#
+# The pidfile written by daemon -P holds the daemon(8) PID, not
+# s6-svscan's. rc.subr's default stop signals that PID; daemon(8) does
+# not reliably relay a teardown to s6-svscan, which treats SIGTERM as
+# a request to reap-and-continue, not to exit. The scan process (and
+# its s6-supervise children) can therefore survive the default stop,
+# leaving the scan directory held and any waiter blocked.
+#
+# s6-svscanctl -t \${scan_dir} is the defined shutdown: it tells
+# s6-svscan to bring the tree down and exit. daemon(8) then observes
+# its child exit and removes the pidfile on its own. We bound the wait
+# and fall back to signalling the whole process group (-\${pid}, the
+# group daemon -P established) so a wedged svscan cannot hang the stop.
+awase_supervisor_stop() {
+    if [ -x /usr/local/bin/s6-svscanctl ] && [ -d "\${scan_dir}" ]; then
+        /usr/local/bin/s6-svscanctl -t "\${scan_dir}" 2>/dev/null || true
+    fi
+    _w=0
+    while [ -r "\${pidfile}" ] && \\
+          kill -0 "\$(cat "\${pidfile}" 2>/dev/null)" 2>/dev/null; do
+        if [ "\$_w" -ge 10 ]; then
+            _p=\$(cat "\${pidfile}" 2>/dev/null)
+            [ -n "\$_p" ] && kill -TERM -- "-\${_p}" 2>/dev/null || true
+            break
+        fi
+        sleep 1
+        _w=\$((_w + 1))
+    done
+}
 
 awase_supervisor_precmd() {
     if [ ! -d "\${scan_dir}" ]; then
