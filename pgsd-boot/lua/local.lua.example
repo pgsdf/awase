@@ -56,7 +56,24 @@ if dest ~= nil then
 else
 	print("=== resolution FAILED           = " .. tostring(reason))
 end
-print("=== (Decide and resolve only: no transfer) ===")
+
+-- AD-59 Part 14: Transfer invocation, DRY RUN (Experiment 8a).
+-- Report whether the driver WOULD transfer, without executing the
+-- transfer primitive. transfer() runs only for a genuine transition: when
+-- the destination differs from the currently selected boot environment
+-- (Part 14 decision). This proves the driver's transition guard on real
+-- loader state with zero boot risk; the primitive is not invoked. Stage 8b
+-- exercises a live transfer under single-boot activation.
+print("=== AD-59 Transfer (Part 14) DRY RUN ===")
+if dest == nil then
+	print("=== would NOT transfer          = resolution failed")
+elseif dest == obs.selected_boot_environment then
+	print("=== would NOT transfer          = destination is selected BE")
+	print("=== driver would continue normal loader execution ===")
+else
+	print("=== WOULD transfer to           = " .. tostring(dest))
+	print("=== (dry run: transfer primitive NOT invoked) ===")
+end
 print("")
 
 -- Pause so the output stays on screen. Loader console output cannot be

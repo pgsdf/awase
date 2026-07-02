@@ -188,6 +188,96 @@ function M.resolve_destination(role, observations, binding)
 end
 
 --
+-- Transfer primitive (AD-59 Part 8, the Part 3 Experiment 4 sequence).
+--
+-- This is the ONLY loader-specific function below decide(). It performs the
+-- exact public primitive sequence Experiment 4 proved redirects the boot,
+-- targeting the given boot environment, once. A port to the Awase loader
+-- replaces this function and nothing else; transfer() and the driver above
+-- are loader-agnostic. It is separated from transfer() precisely so the
+-- narrow loader-specific interface (Part 8 acceptance) is this one function.
+--
+-- It returns true on success. It raises no policy and makes no decision; it
+-- is a pure mechanism. A loader-call failure is surfaced by the loader
+-- itself; transfer() does not retry or fall back (Part 8 N2, N4).
+--
+local function transfer_primitive(boot_environment)
+	loader.setenv("vfs.root.mountfrom", boot_environment)
+	loader.setenv("currdev", boot_environment .. ":")
+	require("config").reload()
+	if loader.getenv("kernelname") ~= nil then
+		loader.perform("unload")
+	end
+	return true
+end
+
+--
+-- Transfer (AD-59 Part 8): transfer control to the boot environment, once.
+--
+-- transfer() takes exactly one boot environment and transfers to it via the
+-- primitive above (P1, P2). It consults nothing about how the boot
+-- environment was chosen (N1), makes no decision and no resolution (N3),
+-- never retries (N2), and never falls back to a different environment (N4).
+-- It knows neither role, policy, nor binding (N5, N6): it receives a boot
+-- environment and transfers to it.
+--
+-- transfer() is invoked by the driver ONLY for a genuine transition (Part
+-- 14): the driver calls it only when the destination differs from the
+-- currently selected boot environment. transfer() itself does not compare
+-- or reconsider; the transition decision was the driver's, complete before
+-- transfer() runs. transfer() surfaces a failure rather than substituting
+-- or retrying (N4): a nil boot environment is a failure to transfer, not an
+-- invitation to choose one.
+--
+-- Returns: true on success; nil, reason on failure to transfer.
+--
+function M.transfer(boot_environment)
+	if boot_environment == nil then
+		return nil, "no boot environment to transfer to"
+	end
+	return transfer_primitive(boot_environment)
+end
+
+--
+-- Driver: run the bootstrap pipeline and act on the result (AD-59 Part 4
+-- composition, Parts 13 and 14).
+--
+-- This composes the responsibilities; it is not a responsibility itself
+-- (Part 13). Given the observations and the role, it resolves the
+-- destination, then dispatches on whether a transition is required (Part
+-- 14): if the destination differs from the currently selected boot
+-- environment, it transfers; otherwise it continues normal loader
+-- execution and does not call transfer(). The transition comparison lives
+-- here, in the driver, because only the driver holds both the current
+-- selection and the resolved destination; Transfer stays ignorant of
+-- selection state (Part 8 N1, N5).
+--
+-- The driver surfaces a resolution or transfer failure; it does not fall
+-- back or choose a boot environment of its own (that would be Transfer's
+-- forbidden N4 pushed into the driver).
+--
+-- Returns one of:
+--   "continue",  nil          -- no transition needed; boot proceeds as is
+--   "transferred", dest       -- transfer() invoked for dest
+--   nil, reason               -- resolution or transfer failure surfaced
+--
+function M.run(role, observations, binding)
+	local dest, reason = M.resolve_destination(role, observations, binding)
+	if dest == nil then
+		return nil, reason
+	end
+	if dest == observations.selected_boot_environment then
+		-- Destination is the already-selected BE: no transition (Part 14).
+		return "continue", nil
+	end
+	local ok, terr = M.transfer(dest)
+	if ok == nil then
+		return nil, terr
+	end
+	return "transferred", dest
+end
+
+--
 -- Observation producers.
 --
 -- These are the ONLY loader-specific functions in this module. A port to the
