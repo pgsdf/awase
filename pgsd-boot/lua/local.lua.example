@@ -42,7 +42,21 @@ local role = bootstrap.decide(obs, policy)
 print("=== AD-59 Decide: Selection Policy v" .. tostring(policy.policy_version)
     .. " over LOM v" .. tostring(policy.lom_version) .. " ===")
 print("=== selected role               = " .. tostring(role))
-print("=== (Decide only: no binding, no redirect) ===")
+
+-- AD-59 Part 13: driver dispatch. Resolve the role to a concrete boot
+-- environment: Operational carries the selected BE forward, a role
+-- requiring resolution goes through bind(). Reports the destination, or the
+-- resolution failure if the role's producer is not built yet. Still no
+-- transfer: the destination is observed, not acted on.
+local dest, reason = bootstrap.resolve_destination(role, obs,
+    bootstrap.ROLE_BINDING_V1)
+print("=== AD-59 Bind/dispatch (Part 13) ===")
+if dest ~= nil then
+	print("=== resolved destination        = " .. tostring(dest))
+else
+	print("=== resolution FAILED           = " .. tostring(reason))
+end
+print("=== (Decide and resolve only: no transfer) ===")
 print("")
 
 -- Pause so the output stays on screen. Loader console output cannot be

@@ -106,6 +106,88 @@ function M.decide(observations, policy)
 end
 
 --
+-- Role-to-implementation binding (AD-59 Part 7, refined by Part 13).
+--
+-- The binding names the implementation of each role REQUIRING RESOLUTION:
+-- a role whose implementation is not determined by discovered loader state
+-- (Part 13). The Operational Role is not here: its implementation is the
+-- already-selected boot environment Discover observed, so there is nothing
+-- to bind. The binding is therefore only as large as the set of roles that
+-- need resolving, of which the Recovery Role is the first.
+--
+-- Like the operator_recovery_request observation, the Recovery Role's
+-- implementation has no loader-stage producer yet: no ratified mechanism
+-- names the Recovery boot environment at loader stage. Its value is the
+-- unavailable sentinel until that producer is built. bind() surfaces that
+-- as a resolution failure (Part 7 N3), it does not invent a boot
+-- environment. When the producer arrives, this value becomes a concrete BE
+-- and bind() resolves it with no change to bind() itself: data arriving,
+-- not code changing, the same property as Policy v1.
+--
+-- The binding is data, and bind() is a generic resolver over it, so bind()
+-- knows no role or BE by name (Part 7 N3, N6). Per Part 2 the AD-58
+-- promotion authority owns this binding; Bind is only a reader (N6).
+--
+M.ROLE_BINDING_V1 = {
+	[M.ROLE_RECOVERY] = M.UNAVAILABLE,
+}
+
+--
+-- Bind (AD-59 Part 7, refined by Part 13): resolve a role requiring
+-- resolution to the boot environment that implements it.
+--
+-- bind() is a pure resolver: role and binding in, boot environment out. It
+-- consults only the binding (P1), never why the role was chosen (N1), never
+-- reconsiders the role (N2), and never invents an implementation (N3). It
+-- is invoked ONLY for roles requiring resolution; the driver does not call
+-- it for the Operational Role (Part 13). If the binding does not resolve
+-- the role to a concrete boot environment (absent, or the unavailable
+-- sentinel because no producer exists yet), bind() surfaces a failure
+-- rather than choosing: it returns nil plus a reason, and the driver acts
+-- on that. It reads no loader state and has no side effects, so it migrates
+-- to the Awase loader unchanged whatever the binding's future
+-- representation.
+--
+-- Returns: boot_environment on success; nil, reason on resolution failure.
+--
+function M.bind(role, binding)
+	local be = binding[role]
+	if be == nil then
+		return nil, "no binding for role"
+	end
+	if be == M.UNAVAILABLE then
+		return nil, "binding unavailable (no producer)"
+	end
+	return be
+end
+
+--
+-- Driver dispatch (AD-59 Part 13): given the role Decide produced and the
+-- observations Discover reported, produce the concrete boot environment
+-- Transfer will act on.
+--
+-- This is composition, not a responsibility (Part 13). It dispatches on the
+-- role: if the role's implementation is already determined by discovered
+-- loader state (the Operational Role), carry the selected boot environment
+-- forward; otherwise the role requires resolution, so call bind(). Either
+-- branch yields exactly one concrete boot environment, which is what
+-- Transfer receives, ignorant of which branch produced it (Part 8).
+--
+-- Returns: boot_environment on success; nil, reason on resolution failure
+-- (an unresolved role whose producer is not yet built). The driver surfaces
+-- the failure; it does not fall back or choose a boot environment of its
+-- own (that would be Transfer's forbidden N4 pushed up into the driver).
+--
+function M.resolve_destination(role, observations, binding)
+	if role == M.ROLE_OPERATIONAL then
+		-- Already determined by discovered state: no bind step.
+		return observations.selected_boot_environment
+	end
+	-- Role requiring resolution.
+	return M.bind(role, binding)
+end
+
+--
 -- Observation producers.
 --
 -- These are the ONLY loader-specific functions in this module. A port to the

@@ -1,6 +1,8 @@
 # AD-59 Part 7: Bind Contract
 
-Status: DRAFT CONTRACT.
+Status: DRAFT CONTRACT. The deferred binding representation is fixed by
+Part 13 (Bind Domain and Role Dispatch), which refines this contract's
+domain without changing its obligations.
 
 This document defines the contract for the Bind responsibility (Part 4). It
 is written before any code and is the acceptance criteria for the first
@@ -106,6 +108,17 @@ Bind's contract fixes that Bind is a READER of it. The representation is
 chosen at implementation, constrained by Part 4 (loader-readable, before
 kernel load) and unconstrained here beyond "Bind reads it to resolve a
 role."
+
+Part 13 (Bind Domain and Role Dispatch) refines this deferred question. It
+establishes that Bind resolves only roles whose implementation is not
+determined by discovered loader state (the Operational Role is already
+determined, so it is not bound), and that the bootstrap driver dispatches
+on the role, invoking bind() only for roles requiring resolution. The
+binding is therefore smaller than this section assumed: it names the
+implementation of each role requiring resolution, beginning with the
+Recovery Role. Part 13 changes none of the obligations above (P1, P2, N1
+through N6 all stand); it fixes the shape of what those obligations resolve
+over.
 
 Status: DRAFT CONTRACT; acceptance criteria for the first bind().
 

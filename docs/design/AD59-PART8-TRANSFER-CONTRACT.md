@@ -117,6 +117,15 @@ resolves the role to a boot environment, and transfer() transfers to it,
 each verified against its own contract and written to migrate into the
 future Awase loader.
 
+Part 13 (Bind Domain and Role Dispatch) refines the shape of this pipeline
+without changing any contract: bind() is invoked conditionally, only for
+roles whose implementation is not already determined by discovered loader
+state. On the Operational path the driver carries the selected boot
+environment forward and bind() does not run. Transfer's contract is
+unaffected: it still receives exactly one concrete boot environment (from
+the driver on the Operational path, or from bind() on the resolution path)
+and transfers to it, ignorant of which path produced it.
+
 Status: DRAFT CONTRACT; acceptance criteria for the first transfer(). The
 four responsibility contracts are complete.
 
