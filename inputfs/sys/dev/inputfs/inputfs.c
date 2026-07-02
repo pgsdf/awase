@@ -516,41 +516,6 @@ SYSCTL_INT(_hw_inputfs, OID_AUTO, debug_descriptor, CTLFLAG_RWTUN,
 #define INPUTFS_SYNTHETIC_DEVICE        0xFFFFu
 
 /*
- * Focus snapshot types (Stage D.1).
- *
- * inputfs_focus_snapshot is the kernel-side analogue of the Zig
- * FocusSnapshot in shared/src/input.zig. Populated from the
- * cached focus buffer by inputfs_focus_snapshot(); consumed in
- * Stage D.4 by the routing path to compute session_id stamping
- * and pointer.enter / pointer.leave synthesis.
- *
- * `valid` indicates whether the cache currently holds a snapshot
- * that satisfied focus_valid == 1 at the time of the last
- * refresh. Consumers must check this before using any other
- * field; an invalid snapshot means routing should fall back to
- * "no session" (event published with session_id = 0).
- *
- * `surfaces` always contains INPUTFS_FOCUS_SLOT_COUNT entries.
- * `surface_count` is the number of populated entries; entries
- * beyond surface_count are zeroed but should not be consulted.
- */
-struct inputfs_focus_surface {
-	uint32_t	session_id;
-	int32_t		x;
-	int32_t		y;
-	uint32_t	width;
-	uint32_t	height;
-};
-
-struct inputfs_focus_snapshot {
-	int		valid;
-	uint32_t	keyboard_focus;
-	uint32_t	pointer_grab;
-	uint16_t	surface_count;
-	struct inputfs_focus_surface surfaces[INPUTFS_FOCUS_SLOT_COUNT];
-};
-
-/*
  * struct inputfs_parser_state is declared in
  * inputfs_parser.h (included near the top of this file).
  * The four pure-parser functions
@@ -791,8 +756,8 @@ static int			 inputfs_kthread_done;
  * file maintained by the kthread. The kthread re-reads the file
  * once per refresh tick (~100 ms) under inputfs_focus_mtx and
  * copies the bytes verbatim, including the seqlock counter.
- * inputfs_focus_snapshot() then performs the seqlock retry on
- * the cache: this works because the cache is a snapshot of the
+ * The focus accessors then perform the seqlock check on the
+ * cache: this works because the cache is a snapshot of the
  * underlying file at a moment when no kernel writer was active
  * (the only writer is the userspace compositor). The seqlock
  * still provides correctness if the file was being updated
@@ -2175,7 +2140,7 @@ inputfs_clock_samples_now(void)
  * an unusual state).
  *
  * The kthread calls this once per refresh tick. The actual
- * seqlock retry is performed by inputfs_focus_snapshot when
+ * seqlock check is performed by the focus accessors when
  * consumers (Stage D.4 routing) read the cache; refresh just
  * captures whatever bytes are in the file at the moment of read.
  *
@@ -2241,100 +2206,6 @@ inputfs_focus_refresh(struct thread *td)
 	inputfs_focus_cache_valid =
 	    (scratch[FC_OFF_VALID] != 0) ? 1 : 0;
 	mtx_unlock_spin(&inputfs_focus_mtx);
-}
-
-/*
- * inputfs_focus_snapshot -- Stage D.1.
- *
- * Public entry point for consumers (Stage D.4 routing) to read
- * the cached focus state. Copies fields out of the cached buffer
- * into the caller's snapshot struct.
- *
- * The cached buffer is frozen under inputfs_focus_mtx for the
- * duration of this call: the kthread cannot update it
- * concurrently. The seqlock counter inside the cached buffer
- * reflects the userspace compositor's state at the time of the
- * last kthread refresh; if the compositor was mid-update during
- * that refresh, the buffer captured an inconsistent state with
- * an odd seqlock value.
- *
- * This function therefore performs a single seqlock-validity
- * check (counter must be even); no retry loop is needed because
- * the cache will not change while we hold the lock. If the
- * cached state was inconsistent at refresh time, we return with
- * out->valid = 0 and the consumer must skip routing for this
- * event. The next kthread refresh will re-read the file and may
- * capture a consistent state.
- *
- * Returns 1 if the snapshot was populated (out->valid indicates
- * whether the data is authoritative). Returns 0 only on a NULL
- * argument; the function does not fail otherwise.
- *
- * Safe to call from interrupt context: only spin-locks and
- * memory reads, no sleeping operations.
- */
-static int
-inputfs_focus_snapshot(struct inputfs_focus_snapshot *out)
-{
-	uint32_t seqlock;
-	uint16_t i;
-
-	if (out == NULL)
-		return (0);
-
-	mtx_lock_spin(&inputfs_focus_mtx);
-
-	if (!inputfs_focus_cache_valid) {
-		out->valid = 0;
-		out->keyboard_focus = 0;
-		out->pointer_grab = 0;
-		out->surface_count = 0;
-		memset(out->surfaces, 0, sizeof(out->surfaces));
-		mtx_unlock_spin(&inputfs_focus_mtx);
-		return (1);
-	}
-
-	seqlock = inputfs_get_u32le(inputfs_focus_buf, FC_OFF_SEQLOCK);
-	if ((seqlock & 1u) != 0) {
-		/* The cached buffer captured an inconsistent state
-		 * (compositor was mid-update during the kthread's
-		 * vn_rdwr). Fail this snapshot; the next kthread
-		 * refresh will likely capture a consistent state. */
-		out->valid = 0;
-		out->keyboard_focus = 0;
-		out->pointer_grab = 0;
-		out->surface_count = 0;
-		memset(out->surfaces, 0, sizeof(out->surfaces));
-		mtx_unlock_spin(&inputfs_focus_mtx);
-		return (1);
-	}
-
-	out->valid = 1;
-	out->keyboard_focus =
-	    inputfs_get_u32le(inputfs_focus_buf, FC_OFF_KB_FOCUS);
-	out->pointer_grab =
-	    inputfs_get_u32le(inputfs_focus_buf, FC_OFF_PTR_GRAB);
-	out->surface_count = (uint16_t)(
-	    inputfs_focus_buf[FC_OFF_SURFACE_COUNT] |
-	    ((uint32_t)inputfs_focus_buf[FC_OFF_SURFACE_COUNT + 1] << 8));
-
-	for (i = 0; i < INPUTFS_FOCUS_SLOT_COUNT; i++) {
-		size_t off = INPUTFS_FOCUS_HEADER_SIZE +
-		    i * INPUTFS_FOCUS_SLOT_SIZE;
-		out->surfaces[i].session_id = inputfs_get_u32le(
-		    inputfs_focus_buf, off + FC_SLOT_OFF_SESSION_ID);
-		out->surfaces[i].x = inputfs_get_i32le(
-		    inputfs_focus_buf, off + FC_SLOT_OFF_X);
-		out->surfaces[i].y = inputfs_get_i32le(
-		    inputfs_focus_buf, off + FC_SLOT_OFF_Y);
-		out->surfaces[i].width = inputfs_get_u32le(
-		    inputfs_focus_buf, off + FC_SLOT_OFF_WIDTH);
-		out->surfaces[i].height = inputfs_get_u32le(
-		    inputfs_focus_buf, off + FC_SLOT_OFF_HEIGHT);
-	}
-
-	mtx_unlock_spin(&inputfs_focus_mtx);
-	return (1);
 }
 
 /*
