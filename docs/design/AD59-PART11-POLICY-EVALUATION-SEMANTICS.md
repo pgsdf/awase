@@ -1,6 +1,6 @@
 # AD-59 Part 11: Policy Evaluation Semantics
 
-Status: DRAFT SPEC.
+Status: RATIFIED (operator, 2026-07-02); drafted 2026-07-02.
 
 This document defines the semantics by which decide() evaluates a selection
 policy over the Loader Observation Model. It is written before any decide()
@@ -178,8 +178,8 @@ These criteria, together with Part 12's policy, are the standard against
 which the first decide() implementation is reviewed, in the same rhythm
 that Experiment 5 applied to discover().
 
-Status: DRAFT SPEC; evaluation semantics for decide(), preceding its
-implementation. Companion to Part 12.
+Status: RATIFIED (operator, 2026-07-02); the evaluation semantics for
+decide(), preceding its implementation. Companion to Part 12.
 
 Bench: none (design specification). Validation arrives with the decide()
 implementation, exercised at loader stage in the instrumentation BE per the

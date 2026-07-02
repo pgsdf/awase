@@ -1,6 +1,6 @@
 # AD-59 Part 12: Initial Selection Policy (Selection Policy v1)
 
-Status: DRAFT POLICY.
+Status: RATIFIED (operator, 2026-07-02); drafted 2026-07-02.
 
 This document is the initial selection policy: the first policy artifact
 that decide() will evaluate, expressed in the Part 11 semantics over LOM v1
@@ -123,8 +123,8 @@ therefore: discover() (implemented, proven), Selection Policy v1 (this
 document), decide() (next, against Part 11), Bind and Transfer (their
 contracts, in turn).
 
-Status: DRAFT POLICY; Selection Policy v1, the first artifact decide() will
-evaluate. Companion to Part 11.
+Status: RATIFIED (operator, 2026-07-02); Selection Policy v1, the first
+artifact decide() will evaluate. Companion to Part 11.
 
 Bench: none (design artifact). First exercised when decide() is implemented
 and run at loader stage in the instrumentation BE per the Part 3 method,
