@@ -374,3 +374,89 @@ the adapter example. The general rule, alongside the audiofs lesson that
 hardware-shaped sub-stages need a register-level spec re-read: loader-
 stage sub-stages need a built-in pause and a plan to read the output
 before the boot continues.
+
+## Experiment 7: bind() and the driver dispatch at loader stage (DONE)
+
+### Question
+
+Does the driver dispatch (Part 13), run at loader stage over discover()'s
+live observations and decide()'s role, resolve the Operational Role to the
+selected boot environment by carrying it forward, without consulting the
+binding?
+
+The expected result is that resolve_destination() returns
+selected_boot_environment for the Operational Role. operator_recovery_request
+is unavailable (no producer), so decide() returns the Operational Role, and
+the Operational Role is not a role requiring resolution (Part 13): its
+implementation is the already-selected boot environment. The dispatch must
+therefore carry that boot environment forward and not call bind(). This
+exercises, in one boot, the dispatch's Operational branch on real loader
+state. The Recovery branch (which would call bind()) cannot be exercised
+until the recovery producer exists; it is covered off-loader.
+
+### Method
+
+Same deployment as Experiments 5 and 6: pgsd_bootstrap.lua (now containing
+bind() and resolve_destination()) and the extended pausing adapter
+(local.lua) into bootstrap-poc's /boot/lua. bootstrap-poc was the persistent
+default (NR), so the loader read this BE's /boot/lua. The adapter calls
+discover(), decide(), then resolve_destination(role, obs, ROLE_BINDING_V1),
+prints the resolved destination, and pauses (io.getchar). No transfer: the
+destination is observed, not acted on.
+
+Before the bench run, bind() and the dispatch were exercised off-loader as
+pure functions (10 checks): Operational carries the selected boot
+environment forward and ignores the binding (even an empty one); the
+Recovery Role surfaces a resolution failure today rather than inventing a
+boot environment (Part 7 N3); both bind() and the dispatch resolve
+correctly once a producer value is supplied. All passed. The off-loader
+exercise is supporting evidence; the bench run is the acceptance for the
+Operational branch.
+
+A deployment note, recorded because it cost two boot cycles: the loader
+adapter is not deployed by install.sh (it is loader-stage experiment
+scaffolding, not part of the installed product), so it must be copied into
+the target BE's /boot/lua by hand. Twice the copy was missed or half
+completed (a dropped newline left the module current and the adapter stale),
+producing a stale-code boot that was first misread as an execution failure.
+A deploy script now performs both copies and verifies them, retiring this
+failure mode.
+
+### Exit criterion
+
+The printed resolved destination equals selected_boot_environment (the
+Operational Role carried forward), with the observation object and role
+matching Experiment 6, and the system booting normally afterward.
+
+### Observation
+
+Run on bare-metal-test-bench 2026-07-02, bootstrap-poc as persistent
+default. The adapter ran at loader stage and printed, after the LOM block
+and selected role = operational-role:
+
+    AD-59 Bind/dispatch (Part 13)
+    resolved destination        = zfs:zroot/ROOT/bootstrap-poc
+    (Decide and resolve only: no transfer)
+
+The resolved destination equals selected_boot_environment
+(zfs:zroot/ROOT/bootstrap-poc). The system then continued the boot normally
+to a login.
+
+### Conclusion
+
+The driver dispatch resolved the Operational Role to the selected boot
+environment at loader stage, satisfying the exit criterion. The mechanism
+matches Part 13 exactly: decide() returned the Operational Role (the
+operator signal being unavailable), and because the Operational Role's
+implementation is already determined by discovered state, the dispatch
+carried selected_boot_environment forward and did not consult the binding.
+The destination equalling the selected boot environment is the observable
+proof of that: no Operational binding was looked up because none exists.
+
+This is the bench acceptance for the Operational branch of Bind and the
+dispatch, the third bootstrap responsibility. Discover (Experiment 5),
+Decide (Experiment 6), and the Operational dispatch (this experiment) are
+proven at loader stage. The Recovery branch, where the role requires
+resolution and bind() is invoked, awaits the recovery binding's producer
+and is covered off-loader until then. Only Transfer (Part 8) remains
+unimplemented.
