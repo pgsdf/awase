@@ -40,15 +40,17 @@ end
 local obs = bootstrap.discover()
 
 -- Step 2 and 3: copy the observation and modify ONLY
--- operator_recovery_request, standing in for the producer that does not
--- exist yet. Every other observed field is carried through unchanged, so the
+-- operator_recovery_request to "present" (the value Selection Policy v1
+-- tests for; see the R1 rule value domain in the module), standing in for
+-- the producer that does not exist yet. Every other observed field is
+-- carried through unchanged, so the
 -- pipeline (including the transition guard) sees the real selected boot
 -- environment.
 local synth = {}
 for k, v in pairs(obs) do
 	synth[k] = v
 end
-synth.operator_recovery_request = "requested"
+synth.operator_recovery_request = "present"
 
 -- Step 4: supply a temporary binding resolving the Recovery Role to
 -- known-good-generic, standing in for the binding producer that does not
