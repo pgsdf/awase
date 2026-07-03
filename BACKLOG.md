@@ -512,7 +512,7 @@ sum-of-areas coalescing (not true union), single event type
 (`EVT_SURFACE_PRESENTED_REGION`) regardless of collapse, no
 cross-request region-event coalescing.
 
-### `[ ]` B3.4–B3.5: Damage / partial-update: DRM path and semadraw emitter  *(Deferred, P2; depends: B3.3)*
+### `[ ]` B3.4-B3.5: Damage / partial-update: DRM path and semadraw emitter  *(Deferred, P2; depends: B3.3)*
 
 With the swap path complete (B3.3), the remaining implementation is:
 
@@ -742,7 +742,7 @@ in semadraw, not NDE-specific access paths; the repository boundary is
 not blurred. The conformant Surface Manager design and implementation
 live in the NDE repository, not in UTF.
 
-### `[ ]` NDE-2: System Bar  *(Open, Small–Medium)*
+### `[ ]` NDE-2: System Bar  *(Open, Small-Medium)*
 
 **Depends on**: NDE-1
 **Tracks**: NDE Milestone 2, daily driver core
@@ -1235,7 +1235,7 @@ C; their disposition is now:
   does not mmap the clock file. When the clock file is absent
   (semaaud not running), magic or version mismatch, or
   `clock_valid = 0`, `ts_sync` falls through to the documented
-  `0` sentinel — no regression for consumers that already
+  `0` sentinel; no regression for consumers that already
   handle the unavailable case. The failure path is verified
   end-to-end: clock byte 5 = 0 → events emit with
   `ts_sync = 0` → no log spam → fall-through is correct.
@@ -1357,8 +1357,8 @@ direction instead of the unrealised raw delta.
 ADR 0012 D.3 description amended to reflect the new behaviour.
 D_VERIFICATION.md D.3 manual checklist updated with a
 post-clamp-delta verification step. Compositor consumers
-that read absolute (x, y) — including the current production
-`semadrawd` — are unaffected; the bug only manifested for
+that read absolute (x, y), including the current production
+`semadrawd` are unaffected; the bug only manifested for
 consumers that integrated `(dx, dy)`. Effect on AD-2a Phase 1
 verification capture: the original `dy = -N while y = 0`
 sequence at the top wall now reports `dy = 0`.
@@ -1562,7 +1562,7 @@ work plus testing iterations):**
      proceeds, device stays in Mouse Mode. Verified
      bare-metal: dmesg attach line shows
      "Device Mode set to MT Touchpad (report_id=11
-     rlen=2)" — the SET_REPORT succeeded and the
+     rlen=2)" the SET_REPORT succeeded and the
      HAILUCK started emitting Report ID 7 immediately.
 
   6. **Verify scenarios 7-9 of the runbook end-to-end
@@ -1591,7 +1591,7 @@ work plus testing iterations):**
 design) plus its 2026-05-05 amendment captures the
 Mouse-Mode-vs-Touchpad-Mode subtlety, the Device Mode
 feature-report send at attach (Report ID 11, value
-0x03 — *not* Surface/Button Switch as the original
+0x03, *not* Surface/Button Switch as the original
 ADR draft mistakenly said; corrected after review of
 FreeBSD's wmt(4) and hmt(4) sources), the
 contact-ID lifecycle mapping to touch events, the
@@ -1876,6 +1876,105 @@ justification.
 definition without turning the repo into a FreeBSD source mirror. Full
 vendoring is rejected as the first move; whether any touched-file
 patch-base is vendored is a representation detail, not this decision.
+
+### `[~]` AD-59: Bootstrap recovery pipeline (loader-stage recovery reachability)  *(In progress, Large; design ratified through Part 14; pipeline validated end-to-end on hardware; producers remain)*
+
+**Tracks**: `docs/design/AD59-*` (the fourteen-part design chain and the
+experiment log in `AD59-PART3-BOOTSTRAP-EXPERIMENTS.md`) and
+`pgsd-boot/lua/` (the implementation).
+
+The recovery counterpart to the boot-path programs above. AD-56 owns the
+boot path and AD-58 owns the verified-system lifecycle; AD-59 addresses a
+narrower question those left open: a verified recovery boot environment can
+exist and still be unreachable, because reaching it required memorized
+loader syntax under stress. The recovery POINT existed; the recovery PATH
+did not. AD-59 builds the path as a loader-stage pipeline that selects and
+transfers to the correct boot environment without operator loader
+knowledge.
+
+**Mechanism (current) and portability.** Today the pipeline is a
+`local.lua` extension the stock FreeBSD loader runs pre-menu (the
+`try_include("local")` hook), so AD-59 owns POLICY, not loader mechanics.
+The implementation is written migration-portable: the responsibility
+structure is loader-agnostic and the loader-specific code is isolated to
+the observation producers, so a future port into the AD-56 Awase loader
+replaces only those. AD-59 and AD-56 are a layering, not a collision: one
+recovery architecture, two implementation mechanisms (local.lua today, the
+Awase loader later).
+
+**The design (Parts 1 through 14, all ratified).** Part 1 fixes the
+recovery contract (guarantees RG-1 through RG-6, "recovery precedes
+administration"). Part 2 fixes the architecture: roles, policy, bindings,
+selection, and the separation of the Operational and Recovery operating
+environments. Part 3 is the experiment log. Part 4 derives the four
+responsibilities. Parts 5 through 8 are the four responsibility contracts
+(Discover, Decide, Bind, Transfer), each with positive and negative
+obligations. Part 9 introduces the Loader Observation Model (LOM), the
+stable, versioned, loader-derived observation boundary; Part 10 makes it
+concrete (LOM v1 vocabulary plus a per-field producer table). Parts 11 and
+12 fix the policy-evaluation semantics and Selection Policy v1. Part 13
+fixes Bind's domain and dispatch (Bind resolves only unresolved roles;
+Operational is already resolved). Part 14 fixes Transfer invocation (the
+driver transfers only for a real transition) and the Experiment 8 safety
+staging.
+
+**Architectural separations (each corrects a specific coupling).** The
+four responsibilities are one transformation each, ignorant of the rest:
+Discover observes without interpreting, Decide interprets without
+executing, Bind resolves without deciding, Transfer executes without
+reasoning. The LOM is loader-derived (what the loader can observe), not
+policy-derived (what a policy needs), so policy evolves without changing
+Discover's interface. Policy is a separate artifact that `decide()`
+evaluates, not logic embedded in `decide()`, so `decide()` is stable
+generic infrastructure while policies evolve independently. The predicate
+semantics make a concrete-value predicate false against an unavailable
+observation, so the Operational default emerges by fallthrough rather than
+a special case.
+
+**The implementation (`pgsd-boot/lua/`).** `pgsd_bootstrap.lua` is the
+portable module: `discover()` returns a versioned LOM v1 observation
+object (unavailable fields explicit, never omitted); `decide()` is the
+generic policy evaluator; `bind()` and `resolve_destination()` dispatch on
+role; `transfer()` performs the redirect primitive once; `run()` is the
+driver carrying the transition guard. `local.lua.example` is the thin
+adapter; `local.8b.lua.example` is the Experiment 8b adapter; and
+`deploy-loader.sh` deploys and verifies the pair atomically.
+
+**Validation (Experiments 5 through 8b, all on bare-metal-test-bench).**
+Experiment 5: `discover()` produces the LOM object. Experiment 6:
+`decide()` evaluates Selection Policy v1 and selects a role. Experiment 7:
+`bind()` and dispatch resolve a role to a destination. Experiment 8a: the
+driver's transition guard correctly declines to transfer on the
+no-transition (Operational) case, with the transfer primitive not invoked
+(zero risk). Experiment 8b: `transfer()` performs a live boot redirect
+through the complete production pipeline, redirecting the bench from its
+selected environment to a known-good environment under single-boot
+activation. The full pipeline (observation, policy evaluation, role
+resolution, the transition guard, and the live transfer) is validated end
+to end on hardware.
+
+**What remains (the entry stays `[~]`, not `[x]`).** Experiment 8b
+simulated two producers that do not exist yet; making them real is the
+outstanding work, and it is additive (the validated pipeline selects and
+transfers unchanged once they arrive):
+
+  - `operator_recovery_request` producer: the AD-11 D4 loader-stage
+    mechanism (a loader-set variable or menu selection). Until it exists,
+    Selection Policy v1 can never naturally select the Recovery Role.
+  - The Recovery binding producer: the AD-58 promotion write path writing
+    a real, loader-readable role-to-environment binding. Part 2 fixes the
+    promotion authority as the owner; the write mechanism is unbuilt.
+  - `promotion_state` and `boot_generation` producers: the other two
+    unavailable LOM fields, each needing a source, enabling richer
+    policies (health inference, rollback) beyond Selection Policy v1.
+
+**Relationship to AD-11.** AD-11 is the recovery architecture at the
+session layer; AD-59 realizes recovery reachability at the loader stage,
+ahead of it. AD-11's D4 loader-stage trigger is precisely the
+`operator_recovery_request` producer AD-59 awaits. AD-11's entry predates
+the Operational/Recovery environment framing AD-59 established; a fuller
+reconciliation of AD-11's session-posture language with that framing is
+flagged as future documentation work, not a blocker.
 
 ### `[ ]` AD-11: Console and recovery: pgsd-sessiond as universal login surface  *(Open, Medium; reframed 2026-05-21)*
 
