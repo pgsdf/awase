@@ -1,0 +1,112 @@
+--
+-- local.8b.lua.example -- Experiment 8b adapter: live Transfer via the real
+-- pipeline (AD-59 Part 14, Stage 8b).
+--
+-- This adapter validates the last unvalidated responsibility, Transfer, by
+-- driving a live redirect through the PRODUCTION pipeline. It follows one
+-- principle: simulate only the missing producers; do not reimplement or
+-- modify the pipeline. Two producers do not exist yet at this stage:
+--   - operator_recovery_request has no producer, so Selection Policy v1
+--     cannot naturally select the Recovery Role;
+--   - the Recovery binding is UNAVAILABLE in ROLE_BINDING_V1, so there is no
+--     real destination to resolve.
+-- The adapter manufactures exactly those two inputs (an observation with
+-- operator_recovery_request = requested, and a temporary binding resolving
+-- the Recovery Role to known-good-generic), then invokes the production
+-- pipeline. After the synthetic inputs, no experiment-specific code runs:
+-- decide(), resolve_destination(), run(), and transfer() are the production
+-- implementations exactly as they will run once real producers exist.
+--
+-- The adapter acts as a PRODUCER (it supplies the inputs a real producer
+-- would supply), not as an orchestrator: it does not pass the role directly
+-- or make a policy decision; it supplies the observation and lets the real
+-- decide() derive the role.
+--
+-- Safety (unchanged from the Part 14 plan): deployed in bootstrap-poc only;
+-- bootstrap-poc activated for a SINGLE boot (bectl activate -t); the redirect
+-- target is known-good-generic, a known-good BE; if the redirect goes wrong
+-- or lands on a BE that does not boot, the next reboot reverts to the
+-- persistent default with no intervention.
+--
+
+local ok, bootstrap = pcall(require, "pgsd_bootstrap")
+if not ok then
+	print("pgsd bootstrap: module load failed: " .. tostring(bootstrap))
+	io.getchar()
+	return
+end
+
+-- Step 1: execute discover() normally (production).
+local obs = bootstrap.discover()
+
+-- Step 2 and 3: copy the observation and modify ONLY
+-- operator_recovery_request, standing in for the producer that does not
+-- exist yet. Every other observed field is carried through unchanged, so the
+-- pipeline (including the transition guard) sees the real selected boot
+-- environment.
+local synth = {}
+for k, v in pairs(obs) do
+	synth[k] = v
+end
+synth.operator_recovery_request = "requested"
+
+-- Step 4: supply a temporary binding resolving the Recovery Role to
+-- known-good-generic, standing in for the binding producer that does not
+-- exist yet. The production ROLE_BINDING_V1 is not modified.
+local test_binding = {
+	[bootstrap.ROLE_RECOVERY] = "zfs:zroot/ROOT/known-good-generic",
+}
+
+print("")
+print("========================================")
+print("=== AD-59 Experiment 8b: LIVE Transfer ===")
+print("=== (simulating only the two missing producers) ===")
+
+-- Step 5 (part 1): the production decide() derives the role from the
+-- synthetic observation. The adapter does not choose the role.
+local policy = bootstrap.SELECTION_POLICY_V1
+local role = bootstrap.decide(synth, policy)
+print("=== decide() -> role            = " .. tostring(role))
+
+-- Step 6: compute the destination for display using the production
+-- resolve_destination(). This is a pure resolve (no side effects, no
+-- transfer); it is used only to show the operator what run() will target.
+-- run() below re-resolves and performs the transfer; the redundant pure
+-- resolve keeps this pause strictly before any transfer without modifying
+-- the pipeline.
+local dest, reason = bootstrap.resolve_destination(role, synth, test_binding)
+if dest == nil then
+	print("=== resolution FAILED           = " .. tostring(reason))
+	print("=== no transfer will occur; press a key to continue ===")
+	print("========================================")
+	io.getchar()
+	return
+end
+print("=== resolve_destination() -> dest = " .. tostring(dest))
+print("=== selected_boot_environment   = " .. tostring(synth.selected_boot_environment))
+if dest == synth.selected_boot_environment then
+	print("=== destination equals selection: driver would NOT transfer ===")
+	print("=== (unexpected for 8b; press a key to continue) ===")
+	print("========================================")
+	io.getchar()
+	return
+end
+
+-- Step 7: pause for operator confirmation BEFORE the live transfer. After
+-- the keypress, run() invokes the production transfer() and the boot is
+-- redirected to the destination above.
+print("=== ABOUT TO TRANSFER LIVE to   = " .. tostring(dest))
+print("=== press a key to perform the redirect (or reset to abort) ===")
+print("========================================")
+io.getchar()
+
+-- Step 8: invoke the production entry point. From here there is NO
+-- experiment-specific code: run() resolves the destination and, because it
+-- differs from the selected boot environment, invokes the production
+-- transfer(), which performs the Experiment 4 primitive sequence once. The
+-- boot is redirected to known-good-generic.
+local result, rreason = bootstrap.run(role, synth, test_binding)
+-- If run() returns (rather than the boot proceeding under the redirect),
+-- report the outcome. On a successful transfer the loader continues into the
+-- redirected boot environment.
+print("=== run() -> " .. tostring(result) .. " " .. tostring(rreason))
