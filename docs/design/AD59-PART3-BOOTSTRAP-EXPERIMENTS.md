@@ -460,3 +460,93 @@ proven at loader stage. The Recovery branch, where the role requires
 resolution and bind() is invoked, awaits the recovery binding's producer
 and is covered off-loader until then. Only Transfer (Part 8) remains
 unimplemented.
+
+## Experiment 8a: Transfer dry-run and the transition guard at loader stage (DONE)
+
+### Question
+
+Does the complete pipeline, run at loader stage over discover()'s live
+observations, resolve a destination and then correctly apply the driver's
+transition guard (Part 14) to determine whether transfer() would be
+invoked, without invoking the transfer primitive?
+
+The expected result, on the current bench, is that the pipeline resolves to
+the Operational Role and the guard reports no transition. operator_recovery_
+request is unavailable (no producer), so decide() returns the Operational
+Role; the dispatch carries selected_boot_environment forward without
+bind() (Part 13); and the destination therefore equals the currently
+selected boot environment, so the driver would continue normal loader
+execution and would NOT call transfer() (Part 14, Option A). The transfer
+primitive is not invoked in the dry-run, so there is no boot risk: the boot
+continues as in Experiment 7. This exercises, on real loader state, the
+driver-to-Transfer hand-off and the transition guard's no-transition branch.
+The transition branch (would transfer) requires a resolution-path
+destination and is covered off-loader and by Stage 8b.
+
+### Method
+
+Same deployment path as Experiments 5 through 7, via the deploy-loader.sh
+script (which copies pgsd_bootstrap.lua and the adapter atomically and
+verifies them byte-identical, retiring the hand-copy staleness failure). A
+staleness note, recorded because it was caught before the run: the bench
+working tree was one commit behind (at the Part 14 ratification, bd6db07,
+before transfer() and the 8a adapter landed at ae77fa1), so the first deploy
+copied the Experiment 7 adapter. git fetch advanced the stale origin/master
+reference, git reset --hard moved to ae77fa1, the re-deploy copied the
+correct adapter, and grep -c 'DRY RUN' /boot/lua/local.lua returned 2,
+confirming the deployed file was the 8a adapter before rebooting. The grep on
+the deployed file is the decisive check, independent of git state.
+
+bootstrap-poc was the persistent default (NR), so the loader read this BE's
+/boot/lua. The adapter runs discover(), decide(), resolve_destination(), then
+reports the Transfer dry-run: whether the driver would transfer, without
+invoking the primitive. It pauses (io.getchar).
+
+Before the bench run, transfer() and the driver were exercised off-loader
+with a stubbed loader global (18 checks): transfer() transfers to a given
+boot environment once and surfaces a nil as a failure; the driver continues
+without transfer() when the destination equals the selection, and transfers
+only when it differs. The off-loader exercise is supporting evidence; the
+bench run is the acceptance for the no-transition branch on real state.
+
+### Exit criterion
+
+The dry-run reports "would NOT transfer, destination is selected BE" and
+"driver would continue normal loader execution," with the observation
+object, role, and resolved destination matching Experiments 5 through 7, the
+transfer primitive not invoked, and the system booting normally afterward.
+
+### Observation
+
+Run on bare-metal-test-bench 2026-07-02, bootstrap-poc as persistent
+default. The adapter ran at loader stage and printed, after the LOM block:
+
+    selected role               = operational-role
+    AD-59 Bind/dispatch (Part 13)
+    resolved destination        = zfs:zroot/ROOT/bootstrap-poc
+    AD-59 Transfer (Part 14) DRY RUN
+    would NOT transfer          = destination is selected BE
+    driver would continue normal loader execution
+
+selected_boot_environment, resolved destination, and the guard comparison
+all referenced the same boot environment (bootstrap-poc, the persistent
+default that zfs_be_active reflects), so the guard correctly concluded no
+transition. The transfer primitive was not invoked; the system booted
+normally after the keypress.
+
+### Conclusion
+
+The complete discover, decide, resolve-destination pipeline runs at loader
+stage over live observations, and the driver's transition guard (Part 14)
+correctly identifies the Operational no-transition case and would decline to
+call transfer(). The driver-to-Transfer hand-off and the guard are proven on
+hardware with zero boot risk (the primitive was not invoked).
+
+### What this does not establish
+
+The live transfer: the transfer primitive was not invoked, so control was
+not actually redirected. The transition branch (would transfer) was not
+exercised on the bench, because the current observations resolve to
+Operational (no transition); it is covered off-loader and is the subject of
+Stage 8b, which drives a resolution-path destination to a known-good boot
+environment under single-boot activation, invoking transfer() live.
