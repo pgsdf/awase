@@ -550,3 +550,98 @@ exercised on the bench, because the current observations resolve to
 Operational (no transition); it is covered off-loader and is the subject of
 Stage 8b, which drives a resolution-path destination to a known-good boot
 environment under single-boot activation, invoking transfer() live.
+
+## Experiment 8b: live Transfer through the production pipeline (DONE)
+
+### Question
+
+Does the production pipeline, driven with only the two missing producers
+simulated, invoke transfer() live and actually redirect the boot to the
+resolved destination?
+
+This validates Transfer, the last unvalidated responsibility. Because the
+Operational path performs no transition, the pipeline must produce the
+Recovery Role and resolve it to a destination differing from the selected
+boot environment. Two producers do not exist yet: operator_recovery_request
+has no producer, and the Recovery binding is UNAVAILABLE. The adapter
+simulates exactly those two (an observation with operator_recovery_request
+set to the value Selection Policy v1 tests for, and a temporary binding
+resolving the Recovery Role to known-good-generic), then invokes the
+production pipeline; after the synthetic inputs, decide(),
+resolve_destination(), run(), and transfer() are the production code.
+
+### Method
+
+Same deployment path as prior experiments, adapter local.8b.lua.example
+deployed as /boot/lua/local.lua in bootstrap-poc only. Safety: the persistent
+default was set to awase-verified-pgsd-clean (a clean, non-redirecting revert
+target), and bootstrap-poc was activated for a single boot (bectl activate
+-t), so any wrong or non-booting redirect reverts on the next reboot.
+known-good-generic was the redirect target, a known-good BE.
+
+Two failures were caught safely before the successful run, both recorded
+because they illustrate the guardrails working:
+
+  - Trigger value mismatch. The adapter first set operator_recovery_request
+    to "requested", but Selection Policy v1 tests the field against
+    "present". decide() therefore returned the Operational Role, the resolved
+    destination equalled the selection, and the adapter's own guard reported
+    the unexpected no-transfer case and declined to transfer. No wrong
+    redirect occurred; the bug surfaced as a readable stop. The value was
+    then corrected to "present", taken from the policy definition rather than
+    assumed.
+
+  - Stale deployment. After the fix was committed and the bench working tree
+    updated, the corrected adapter was not re-copied to /boot/lua, so the
+    loader read the old adapter and the mismatch recurred. grep on the
+    deployed file (not the source) showed the deployed /boot/lua/local.lua
+    still held "requested"; re-running the copy and re-checking the deployed
+    file showed "present". The check on the deployed artifact, independent of
+    the committed source, is what caught this.
+
+### Exit criterion
+
+decide() selects the Recovery Role, resolution yields known-good-generic
+(differing from the selected boot environment), the pre-transfer checkpoint
+displays the plan, and on the keypress the production transfer() redirects
+the boot so that the running boot environment after boot is
+known-good-generic rather than the activated bootstrap-poc.
+
+### Observation
+
+Run on bare-metal-test-bench 2026-07-02. At the checkpoint the adapter
+displayed:
+
+    decide() -> role                = recovery-role
+    resolve_destination() -> dest   = zfs:zroot/ROOT/known-good-generic
+    selected_boot_environment       = zfs:zroot/ROOT/awase-verified-pgsd-clean
+    ABOUT TO TRANSFER LIVE to       = zfs:zroot/ROOT/known-good-generic
+
+On the keypress, the production run() invoked transfer() and the boot was
+redirected. After boot, bectl list showed known-good-generic as the running
+(N) boot environment, not the activated bootstrap-poc. The persistent default
+had reverted to awase-verified-pgsd-clean (the single-boot activation
+expired).
+
+### Conclusion
+
+The production pipeline, driven with only the two missing producers
+simulated, invokes transfer() live and redirects the boot to the resolved
+destination. Transfer, the last unvalidated responsibility, is proven on
+hardware. With Experiments 5, 6, 7, 8a, and 8b, the full pipeline (discover,
+decide, resolve-destination, the driver transition guard, and transfer) is
+validated on hardware end to end: observation, policy evaluation, role
+resolution, the no-transition guard, and the live transition.
+
+### What this establishes and does not establish
+
+Establishes: the production transfer path performs a real boot redirect
+through the full pipeline, exactly as it will run once the two simulated
+producers become real.
+
+Does not establish: the two producers themselves (operator_recovery_request
+and the Recovery binding remain unimplemented; they were simulated).
+Implementing them is future work, after which the same pipeline selects and
+transfers with no code change to the responsibilities, only the arrival of
+the producers. The Operational-with-transition and other policy paths beyond
+the single Recovery redirect were not exercised live.
