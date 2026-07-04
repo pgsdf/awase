@@ -370,3 +370,140 @@ Recovery target designation rather than the operator's request.
 Status: ADDENDUM, DRAFT. Ratifying this fixes the Recovery authority's
 ownership and publication contract; the publication mechanism and the AD-59
 consuming producer follow separately, each within its owner's scope.
+
+## Addendum: promotion semantics and the Recovery designation
+
+Status: ADDENDUM, DRAFT (settles a lifecycle-semantics question left open by
+the state machine above; does not reopen the lifecycle model or the Promotion
+Rule, and does not define the Recovery establishment event, which is deferred).
+
+This addendum settles one question: what promotion means for the Recovery
+designation. It answers that promotion creates eligibility, not
+redesignation. It deliberately does not settle what event establishes a new
+Recovery designation; that is a separate lifecycle decision, deferred.
+
+### Why this addendum exists
+
+The state machine ends Recovery -> Installing -> Unverified -> Verified ->
+Released, and a Released state "becomes a candidate future Recovery point."
+The Recovery authority publication work (the first addendum and its design
+exploration) needs to know when the Recovery designation changes, because the
+publication requirements for stability, update, and staleness are
+parameterized by exactly that. That question turned on an ambiguity in the
+existing text: does committing a Verified state to Released change the current
+Recovery designation, or only create a candidate while the established
+Recovery remains in force? This addendum resolves that ambiguity.
+
+### The Recovery object and the Recovery designation are distinct
+
+The resolution rests on a distinction the original text does not draw
+explicitly:
+
+  - A Recovery OBJECT is a concrete captured state (on FreeBSD, a Boot
+    Environment). AD-58 already fixes that a Recovery object is immutable:
+    "nothing modifies it after creation." This is a property of the object's
+    contents.
+
+  - The Recovery DESIGNATION is the role "the current Recovery target": which
+    object currently serves as the escape hatch. This is a separate concept
+    from any particular object's immutability.
+
+The original text's "frozen: nothing modifies it after creation" establishes
+the immutability of the OBJECT. It does not, by itself, establish that the
+DESIGNATION can never later be reassigned to a different immutable object
+through a deliberate lifecycle event. Keeping these separate is what lets this
+addendum settle promotion semantics without overstating what AD-58 has
+decided: it can say what promotion does to the designation without ruling on
+whether any other event may reassign it.
+
+### Promotion creates eligibility, not redesignation
+
+Three statements in the existing text, read together, settle what promotion
+does:
+
+  - Recovery is "frozen: nothing modifies it after creation" (the object is
+    immutable).
+
+  - A Released state "becomes a candidate future Recovery point" (the word is
+    candidate: eligible to become a future Recovery, not the current one).
+
+  - awase be create --pre-install "is a no-op that reports the existing
+    Recovery BE" if one exists (establishment is singleton-oriented and does
+    not silently replace the current Recovery).
+
+Together these decide the question:
+
+  Promotion does not advance the Recovery designation. Committing a Verified
+  state to Released makes that state an eligible candidate to become a future
+  Recovery target. It does not, by that act, become the current Recovery
+  target, and the established Recovery designation is unchanged by promotion.
+
+Ordinary promotion therefore creates ELIGIBILITY (a candidate), never
+automatic REDESIGNATION. A system may accumulate many Released states, each an
+eligible candidate, while the Recovery designation continues to name the
+established Recovery target. This is consistent with AD-58's founding
+principle: recovery capability is established deliberately, not acquired as a
+side effect. If ordinary promotion silently advanced Recovery, the Recovery
+target would change as a side effect of releasing software, which is exactly
+the kind of unverified promotion the lifecycle exists to prevent.
+
+### Redesignation, if it occurs, is a distinct lifecycle event
+
+Promotion creating eligibility does not mean the Recovery designation can
+never change. It means that if the designation changes, the change is a
+DISTINCT lifecycle event, separate from promotion:
+
+  Any change of the Recovery designation from one object to another occurs
+  only through a deliberate Recovery establishment event, never as an effect
+  of promotion. Promotion supplies eligible candidates; a separate
+  establishment event, if defined, is what consumes a candidate to become the
+  designated Recovery.
+
+This addendum does not define that establishment event. Candidate forms exist
+(an explicit operator command, an operation performed at the next pre-change
+capture, an installer or administrative workflow, or an operation performed
+from a maintenance context), and they differ only in WHEN a candidate is
+consumed, not in what promotion means. Choosing among them is a separate
+lifecycle decision that this addendum deliberately leaves open, so that:
+
+  - promotion semantics (settled here) do not depend on it, and
+
+  - the establishment-event decision, when made, does not reopen promotion
+    semantics.
+
+This is the same discipline applied elsewhere in the project: define the
+contract, defer the policy that consumes it, keep unrelated lifecycle
+decisions independent. Promotion semantics are the contract; the establishment
+event is the policy that consumes candidates; they are settled separately.
+
+### A note on staleness (travels with the deferred decision)
+
+A Recovery designation that names an object established long ago, across many
+subsequent releases, raises a question: can a Recovery object captured under
+earlier conditions still boot and recover under current hardware, pool, or
+configuration state? This is a real consideration, but it is a property of HOW
+OFTEN the Recovery designation is re-established, which is governed by the
+establishment event, not by promotion semantics. It therefore travels with the
+deferred establishment-event decision, where "how fresh must Recovery be"
+is the natural question to weigh, and it is not resolved here. The Recovery
+authority publication work notes this as the staleness concern (its R3 and R7);
+this addendum records that the concern belongs to the establishment event and
+does not bear on what promotion means.
+
+### What this addendum settles and does not settle
+
+Settles: promotion creates eligible Recovery candidates and does not advance
+the Recovery designation; the Recovery object (immutable) and the Recovery
+designation (the current-target role) are distinct; any redesignation is a
+distinct deliberate establishment event, never an effect of promotion.
+
+Does not settle (deferred): what the Recovery establishment event is, whether
+it is operator-driven, and where it is performed; and the staleness question,
+which travels with that event. Does not reopen: the lifecycle model or the
+Promotion Rule, which are unchanged.
+
+Status: ADDENDUM, DRAFT. Ratifying this fixes promotion semantics (promotion
+creates candidates, not redesignation) and the object/designation distinction,
+completing the semantic foundation the Recovery authority publication work
+requires, while leaving the Recovery establishment event as a separate,
+bounded lifecycle decision.
