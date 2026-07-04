@@ -645,3 +645,106 @@ Implementing them is future work, after which the same pipeline selects and
 transfers with no code change to the responsibilities, only the arrival of
 the producers. The Operational-with-transition and other policy paths beyond
 the single Recovery redirect were not exercised live.
+
+## Experiment 9: operator_recovery_request producer, both mapping paths (DONE)
+
+### Question
+
+With the operator_recovery_request producer implemented (AD-59 Part 15),
+does an operator's real choice at loader stage produce the correct
+observation and drive the pipeline to the correct role: a recovery request
+yielding present and the Recovery Role, and no request yielding absent and
+the Operational Role?
+
+This validates the first of the two producers Experiment 8b simulated. In
+8b the trigger was synthetic (the adapter forced the value); here it is
+real, set by the operator through the minimal loader-menu affordance, read
+from loader state by discover().
+
+### Method
+
+The module (with the new producer) and the Part 15 validation adapter
+(local.p15.lua.example, deployed as local.lua) were deployed into the
+bootstrap-poc instrumentation BE only, via mount. The adapter offers a
+single prompted choice: "r" requests recovery (sets pgsd_recovery_request to
+"1"), any other key does not (leaves it unset). It then runs the production
+pipeline so the producer's effect is observable. Two single-boots (bectl
+activate -t) exercised the two paths; the persistent default was
+awase-verified-pgsd-clean, the clean revert target, throughout. The Recovery
+path supplied a temporary binding for the destination, because the Recovery
+binding producer does not exist yet (Part 15 validation note); only the
+trigger is real here.
+
+### Observation
+
+Path B, Recovery (operator pressed "r"):
+
+    recovery requested: pgsd_recovery_request=1
+    discover(): operator_recovery_request = present
+    decide(): role = recovery-role
+    resolve_destination(): dest = zfs:zroot/ROOT/known-good-generic
+    selected_boot_environment       = zfs:zroot/ROOT/awase-verified-pgsd-clean
+    ABOUT TO TRANSFER LIVE to       = zfs:zroot/ROOT/known-good-generic
+
+On the keypress the transfer ran and the machine booted known-good-generic
+(confirmed: known-good-generic was the running BE afterward). The trigger
+was real, set by the operator, not simulated.
+
+Path A, Operational (operator pressed "a", a non-"r" key):
+
+    normal boot: pgsd_recovery_request unset
+    discover(): operator_recovery_request = absent
+    decide(): role = operational-role
+    resolve_destination(): dest = zfs:zroot/ROOT/awase-verified-pgsd-clean
+    selected_boot_environment       = zfs:zroot/ROOT/awase-verified-pgsd-clean
+    would NOT transfer: destination is selected BE
+
+The system continued its normal boot. No transfer occurred.
+
+### Conclusion
+
+The operator_recovery_request producer works in both directions. A real
+operator recovery request sets pgsd_recovery_request to "1", which discover()
+reports as present, which Selection Policy v1 selects the Recovery Role for,
+which the pipeline resolves and transfers. No request leaves the variable
+unset, which discover() reports as absent, which the policy does not match,
+so it falls through to the Operational Role and does not transfer. The
+complete Part 15 mapping ("1" to present, unset to absent) is validated on
+hardware, and the trigger half of the Experiment 8b simulation gap is
+closed: recovery can now be invoked by a real operator choice, not only
+simulated.
+
+### Ancillary observation (not a defect): post-transfer hook re-entry
+
+On the Recovery path, after transfer() redirected to known-good-generic, the
+physical console showed "module 'pgsd_bootstrap' not found," and the
+affordance prompt did not appear on that screen. This is not a producer or
+pipeline defect. The transfer primitive calls config.reload(), which
+re-triggers the loader's try_include("local") hook in the destination boot
+environment's context (currdev now known-good-generic). known-good-generic
+does not have the module or adapter deployed (only bootstrap-poc does,
+confirmed by mount inspection: bootstrap-poc retained both files;
+known-good-generic had neither), so the adapter's pcall(require,
+"pgsd_bootstrap") failed, printed the load-failure message, and returned,
+and the boot continued into known-good-generic. The transfer had already
+succeeded; the message is a cosmetic artifact of the hook re-running in the
+post-transfer context.
+
+This surfaces a genuine property of the current mechanism worth recording
+for the migration into the AD-56 Awase loader: after a transfer, the loader
+hook re-runs, so a production hook must not blindly re-run the full pipeline
+post-transfer (it would re-observe and potentially re-select in the
+destination environment). With local.lua as the mechanism today the graceful
+pcall failure makes this harmless, because the destination lacks the module;
+it is an observation about transfer-and-hook interaction, not a fault in what
+Experiment 9 validated.
+
+### What this does not establish
+
+The Recovery binding producer: the destination binding was still supplied by
+the adapter (temporary binding), because the AD-58 promotion write path does
+not exist yet. Only the trigger is real. Making the binding real is the
+remaining producer work. The post-transfer hook re-entry behavior above is
+recorded as an observation; designing the production hook's post-transfer
+behavior is future work in the AD-56 loader context, not part of this
+producer.
