@@ -1877,7 +1877,7 @@ definition without turning the repo into a FreeBSD source mirror. Full
 vendoring is rejected as the first move; whether any touched-file
 patch-base is vendored is a representation detail, not this decision.
 
-### `[~]` AD-59: Bootstrap recovery pipeline (loader-stage recovery reachability)  *(In progress, Large; design ratified through Part 14; pipeline validated end-to-end on hardware; producers remain)*
+### `[~]` AD-59: Bootstrap recovery pipeline (loader-stage recovery reachability)  *(In progress, Large; design ratified through Part 15; pipeline validated end-to-end on hardware; the operator_recovery_request producer is done (Experiment 9); the Recovery binding producer remains)*
 
 **Tracks**: `docs/design/AD59-*` (the fourteen-part design chain and the
 experiment log in `AD59-PART3-BOOTSTRAP-EXPERIMENTS.md`) and
@@ -1953,20 +1953,39 @@ activation. The full pipeline (observation, policy evaluation, role
 resolution, the transition guard, and the live transfer) is validated end
 to end on hardware.
 
-**What remains (the entry stays `[~]`, not `[x]`).** Experiment 8b
-simulated two producers that do not exist yet; making them real is the
-outstanding work, and it is additive (the validated pipeline selects and
-transfers unchanged once they arrive):
+**The operator_recovery_request producer (done, Part 15, Experiment 9).**
+The first of the two producers Experiment 8b simulated is now real. Part 15
+fixed its contract (implementing ADR 0008 D4's loader-menu mechanism): the
+loader environment variable `pgsd_recovery_request`, set to "1" on operator
+request, read by `discover()` and mapped to `present` (unset maps to
+`absent`). `discover()` implements the producer, and a minimal loader-menu
+affordance sets the variable; comprehensive menu ownership remains AD-56's,
+which will set the same contract. Experiment 9 validated both mapping paths
+on hardware: a real operator recovery request produced `present` and the
+Recovery Role and a live transfer, and no request produced `absent` and the
+Operational Role and no transfer. The trigger is no longer simulated; an
+operator can now invoke recovery.
 
-  - `operator_recovery_request` producer: the AD-11 D4 loader-stage
-    mechanism (a loader-set variable or menu selection). Until it exists,
-    Selection Policy v1 can never naturally select the Recovery Role.
+**What remains (the entry stays `[~]`, not `[x]`).** Making the second
+producer real is the outstanding work, and it is additive (the validated
+pipeline selects and transfers unchanged once it arrives):
+
   - The Recovery binding producer: the AD-58 promotion write path writing
     a real, loader-readable role-to-environment binding. Part 2 fixes the
-    promotion authority as the owner; the write mechanism is unbuilt.
+    promotion authority as the owner; the write mechanism is unbuilt. Until
+    it exists, a bench exercise of the Recovery path still supplies a
+    temporary binding for the destination (as Experiments 8b and 9 did);
+    the trigger is real, the binding is not.
   - `promotion_state` and `boot_generation` producers: the other two
     unavailable LOM fields, each needing a source, enabling richer
     policies (health inference, rollback) beyond Selection Policy v1.
+
+  A recorded observation for the eventual AD-56 loader migration
+  (Experiment 9): the transfer primitive's `config.reload()` re-triggers the
+  loader's local.lua hook in the destination environment's context, so a
+  production hook must not blindly re-run the full pipeline after a transfer.
+  Harmless today (the destination lacks the module, so the re-run fails
+  gracefully); a design input when the pipeline moves into the Awase loader.
 
 **Relationship to AD-11.** AD-11 is the recovery architecture at the
 session layer; AD-59 realizes recovery reachability at the loader stage,
