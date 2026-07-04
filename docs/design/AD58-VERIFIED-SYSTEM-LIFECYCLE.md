@@ -276,3 +276,97 @@ integration mechanics, the naming scheme for committed stable points, and
 the interaction with the AD-57 kernel source pin. Implementation SHALL be
 done deliberately on a stable, verified system, where the first use of
 awase be commit fittingly certifies that stable system.
+
+## Addendum: the Recovery authority and its publication contract
+
+Status: ADDENDUM, DRAFT (extends the ratified lifecycle architecture; does
+not reopen the lifecycle model or the Promotion Rule).
+
+This addendum is architectural. It defines what must be true about the
+Recovery authority and its publication; it does not define how publication
+is achieved. It ratifies an interface contract at the same abstraction level
+as the rest of this ADR, without committing to any publication mechanism.
+
+Terminology, fixed for this addendum and its consumers: PGSD is the
+operating system. This ADR defines the PGSD lifecycle architecture. The
+awase be command is the implementation of that lifecycle's Boot Environment
+operations. AD-59 defines the bootloader architecture that consumes the
+Recovery authority published by the lifecycle.
+
+### Why this addendum exists
+
+The lifecycle above establishes a Recovery state and, on FreeBSD, a Recovery
+Boot Environment captured before change. It does not establish how the
+identity of the current Recovery target is made known to the bootloader.
+AD-59 (the bootloader) must, at loader stage, resolve the Recovery Role to a
+concrete destination. That resolution requires an authoritative answer to
+"what is the current Recovery target," and nothing in the lifecycle so far
+publishes that answer in a form the loader can observe.
+
+The naive path would be for the bootloader to recognize the Recovery target
+by a known Boot Environment name (today the canonical Recovery BE is a named
+singleton in this ADR's FreeBSD implementation). That path is rejected here,
+because it would make a Boot Environment name, an implementation detail of
+this lifecycle, into an interface between two architectures. The consumer
+would be inferring the authority from the owner's implementation rather than
+observing a published authority. This addendum forecloses that by defining
+an explicit contract.
+
+### The contract
+
+  Ownership. The PGSD lifecycle (this ADR) SHALL be the sole authority for
+  designating the Recovery target. No other component originates the
+  designation; components may publish or observe it, but the designation is
+  the lifecycle's.
+
+  Publication contract. The Recovery authority SHALL be published through an
+  interface that is observable at loader stage. That a loader-observable
+  publication exists is the architectural requirement; the bootloader
+  depends on its existence, not on its form.
+
+  Consumer contract. AD-59 SHALL consume the published Recovery authority.
+  AD-59 SHALL NOT infer the Recovery target from Boot Environment names,
+  naming conventions, or any other implementation detail of this lifecycle.
+  The published authority is the only interface AD-59 is permitted to
+  observe for this purpose.
+
+  Implementation ownership. The mechanism by which the lifecycle publishes
+  the Recovery authority (for example a loader variable, a pool or dataset
+  property, a metadata record, or another means) is an implementation
+  concern owned by this lifecycle. It is not part of this architectural
+  contract. The architecture requires that a loader-observable authority
+  exist; the implementation is free to satisfy that requirement however the
+  lifecycle later chooses, under the same scope boundary that governs this
+  ADR's other implementation concerns.
+
+### The resulting layering
+
+  - The lifecycle owns Recovery designation.
+  - The lifecycle requires that the designation be published in a
+    loader-observable form.
+  - AD-59 consumes that published designation.
+  - Neither ADR exposes Boot Environment names as an inter-ADR interface.
+
+This preserves the separation the project holds elsewhere: an authority is
+published explicitly by its owner and observed by its consumer, rather than
+inferred from implementation details. It is the same shape as the operator
+recovery-request signal (AD-59 Part 15), where an explicit published signal
+is observed rather than an intent inferred; here the published item is the
+Recovery target designation rather than the operator's request.
+
+### What this addendum does not do
+
+  - It does not choose or constrain the publication mechanism. That the
+    authority is loader-observable is required; which mechanism provides
+    that is outside this contract and owned by the lifecycle implementation.
+  - It does not define the AD-59 producer that observes the authority. That
+    producer is an AD-59 concern, specified separately as a bounded "observe
+    the published authority" contract once this authority is ratified,
+    parallel to the operator_recovery_request producer.
+  - It does not reopen the lifecycle model or the Promotion Rule. It adds an
+    interface contract consistent with this ADR's existing scope boundary,
+    under which implementation mechanisms are settled separately.
+
+Status: ADDENDUM, DRAFT. Ratifying this fixes the Recovery authority's
+ownership and publication contract; the publication mechanism and the AD-59
+consuming producer follow separately, each within its owner's scope.
