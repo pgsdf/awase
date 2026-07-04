@@ -36,6 +36,55 @@ that is the signal that the question has crossed into mechanism, and the
 document stops at the semantic requirement instead. Representation is the
 next decision's concern.
 
+## The principal unresolved lifecycle decision: what promotion does to the designation
+
+Before the four questions, one lifecycle decision must be named as principal,
+because the requirements derived below depend on it. AD-58's state machine
+ends Recovery -> Installing -> Unverified -> Verified -> Released, and a
+Released state becomes a candidate future Recovery point. The decision AD-58
+has not yet made is whether committing a Verified state to Released changes
+the current Recovery designation, or only creates a candidate while the
+designation in force remains the pre-change capture until Recovery is
+deliberately re-established.
+
+This is not one open item among several. It is the decision on which several
+of the derived requirements depend:
+
+  - It determines whether promotion is a designation-changing event, which
+    R4 (stability between lifecycle events) and R5 (atomic update) must then
+    cover. If promotion changes the designation, promotion joins the set of
+    events the mechanism must update atomically and stably; if it does not,
+    that set is smaller.
+
+  - It determines what "stale" means, which R7 (no silent staleness) rests
+    on. If promotion changes the designation, an old designation naming the
+    superseded target must not persist; if promotion only creates a
+    candidate, the pre-change capture remains the valid designation and is
+    not stale.
+
+Until AD-58 resolves this, the requirements below are derived against a
+lifecycle that is partially undefined at exactly this point. The requirements
+are written to hold under either resolution, and they name promotion where it
+bears on them, but the resolution is a prerequisite for a mechanism design,
+not a detail to settle afterward. It is an AD-58 lifecycle-semantics
+decision, not a mechanism decision, and it should be made first.
+
+The two candidate resolutions, stated so the decision is concrete:
+
+  - Promotion changes the designation. Committing a Verified state to
+    Released makes that state the current Recovery target, and the
+    designation updates to name it. Recovery then tracks the most recent
+    verified release.
+
+  - Promotion creates a candidate only. Committing to Released records a
+    candidate future Recovery point, but the designation continues to name
+    the pre-change capture until the lifecycle deliberately re-establishes
+    Recovery. Recovery then remains the frozen pre-change escape hatch until
+    an explicit re-establishment.
+
+This document does not choose between them; choosing is the AD-58 decision
+that must precede the mechanism comparison.
+
 ## Question 1: What does the published authority designate?
 
 The published authority designates the Recovery target: the destination the
@@ -204,11 +253,16 @@ update semantics are the owner's responsibility to provide, and the consumer
 can depend on them rather than defending against an unowned, racily written
 value.
 
-## Derived requirements for the publication mechanism
+## Derived requirements
 
-This is the deliverable. Any candidate publication mechanism must satisfy all
-of the following. This section lists the requirements; it does not evaluate
-candidates.
+This is the deliverable. The requirements divide into two kinds: publication
+requirements (R1 through R7), which the publication mechanism must satisfy and
+against which candidate mechanisms are later measured; and a consumer
+interface invariant (R8), which is upheld not by the mechanism alone but by
+the combination of AD-58's publication and AD-59's producer. This section
+lists the requirements; it does not evaluate candidates.
+
+### Publication requirements (R1 through R7): the publication mechanism must satisfy these
 
   R1. Authoritative single source. The mechanism carries a designation
       written only by the AD-58 lifecycle, with no other writer.
@@ -240,11 +294,22 @@ candidates.
       staleness detectable by the consumer, so a stale designation is never
       silently resolved to a vanished or superseded target.
 
+### Consumer interface invariant (R8): upheld by publication and producer together
+
+R8 differs in character from R1 through R7. Those constrain what the
+publication mechanism provides; R8 constrains how AD-59 consumes what is
+published, and it is satisfied by the combination of an explicit publication
+(AD-58) and a producer that observes rather than infers (AD-59), not by the
+mechanism alone. It is recorded here because it is a requirement on the
+end-to-end path, but it is not part of the mechanism comparison: no mechanism
+choice satisfies or fails R8 by itself.
+
   R8. Consumer resolves without inference. Once observed, the designation
       yields the Recovery destination without the consumer inferring it from
       Boot Environment names, naming conventions, or other implementation
       details; the consumer's knowledge comes only from the published
-      designation.
+      designation. The AD-59 producer contract is where this invariant is
+      upheld on the consuming side.
 
 ## What is next (and what is deliberately not in this document)
 
@@ -271,7 +336,9 @@ Next, in order:
      maps it into the LOM for bind(), as a bounded contract parallel to the
      operator_recovery_request producer (AD-59 Part 15).
 
-Status: Design exploration (non-ratified). It derives the semantic
-requirements (R1 through R8) for the Recovery authority publication
-mechanism, and defers mechanism choice, representation, and the AD-59
+Status: Design exploration (non-ratified). It derives the publication
+requirements (R1 through R7) that any candidate mechanism must satisfy and
+the consumer interface invariant (R8) upheld by publication and producer
+together, names the promotion lifecycle decision as the principal
+prerequisite, and defers mechanism choice, representation, and the AD-59
 producer to later steps.
