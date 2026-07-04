@@ -100,6 +100,30 @@ These are capabilities, not a mechanism. M1 through M6 are what any
 realization must provide; the next section evaluates realizations against
 them.
 
+## The architectural integration objective (separate from the capabilities)
+
+M1 through M6 state what the maintenance capability must provide. They do
+not state how a realization must FIT the architecture the project is
+building. That is a separate concern, and conflating the two would make the
+capability list impure: a realization can fully satisfy the maintenance
+capability yet not fit the architecture, or vice versa. The project has one
+architectural integration objective that bears on this decision, stated
+separately and explicitly so it is not mistaken for a capability:
+
+  A1. Unified destination selection. Supported boot destinations, including
+      any maintenance facility that is reached by booting it, should
+      participate in the same policy-driven boot-selection mechanism as the
+      Operational and Recovery Environments, rather than through a separate
+      selection path outside AD-59. This is the direction of replacing the
+      boot menu with a single destination-selection mechanism: one component
+      resolves what to boot, whatever its purpose.
+
+A1 is an architectural goal, not a maintenance requirement. A realization can
+satisfy every maintenance capability (M1 through M6) and still fail A1 by
+standing outside the unified selection mechanism. The evaluation below charges
+integration failures to A1 and capability failures to M1 through M6, keeping
+the two kinds of judgment distinct.
+
 ## Candidate realizations
 
 Each candidate is evaluated against M1 through M6. The question is which best
@@ -166,41 +190,50 @@ media.
   - Maintenance in OE fails M1 outright: the case needing maintenance is OE
     being unbootable, and maintenance hosted in OE is unavailable exactly
     then. This is the founding failure repeating.
-  - External or live media satisfies M1 through M5 (it is the traditional
-    rescue-media model) but fails the architecture's integration goals: it is
-    not resolvable through the boot-selection path, it is not always present
-    (it must be produced and kept on hand), and it stands entirely outside
-    the PGSD lifecycle and the AD-59 boot-selection mechanism. It is a
-    fallback, not an architectural element of the system.
+  - External or live media SATISFIES the maintenance capability (M1 through
+    M5): it is the traditional rescue-media model, independently bootable and
+    carrying the toolset. It fails A1, not the capability: it is not
+    resolvable through the unified boot-selection mechanism, it stands outside
+    the PGSD lifecycle and AD-59, and it is not always present (it must be
+    produced and kept on hand). This distinction matters: external media is
+    not rejected because it cannot perform maintenance, but because it does
+    not participate in the unified destination selection the architecture
+    seeks.
 
-  Cost: OE-hosting fails the core requirement; external media works but is
-  outside the architecture and not guaranteed present. Neither integrates with
-  the single boot-selection path the project is moving toward.
+  Cost: OE-hosting fails M1, the core capability. External media satisfies the
+  capability but fails A1 and is not guaranteed present. Neither participates
+  in the unified boot-selection mechanism the project is moving toward.
 
 ### Candidate D: another model
 
 Considered for completeness: maintenance as something other than a boot
 destination (for example a service within OE, or a network-booted
-environment). Service-within-OE fails M1 as in Candidate C. Network boot has
-the availability and independence problems of external media plus a network
-dependency. Neither is pursued further here; they are recorded so the option
-space is not artificially closed.
+environment). Service-within-OE fails M1 (independent bootability), as in
+Candidate C's OE case. Network boot may satisfy the capability but fails A1
+(it is outside the unified selection mechanism) and adds a network dependency
+and the same not-always-present concern as external media. Neither is pursued
+further here; they are recorded so the option space is not artificially
+closed. That this candidate exists is also why the assessment below does not
+claim uniqueness: the design space is not exhaustively closed.
 
 ## Assessment
 
-Measured against M1 through M6, a dedicated Maintenance Environment (Candidate
-A) is the only realization that satisfies all six capabilities while
-integrating with the architecture the project is building: it is
-independently bootable (M1), act-upon by construction (M2), non-destructive of
-data and evidence (M3, M4), carries the toolset (M5), and fits the
-eligible-but-not-automatic entry model (M6), all resolved through the single
-boot-selection path AD-59 provides.
+Measured against M1 through M6 and A1, a dedicated Maintenance Environment
+(Candidate A) is the strongest realization identified in this exploration. It
+satisfies all six capabilities (independently bootable, M1; act-upon by
+construction, M2; non-destructive of data and evidence, M3 and M4; carries the
+toolset, M5; eligible-but-not-automatic entry, M6) AND satisfies A1, being
+resolved through the same unified boot-selection mechanism as OE and RE.
 
-The alternatives each fail on architectural grounds rather than convenience:
-RE-hosting (B) re-conflates become and act-upon and amends AD-58's Recovery;
-OE-hosting (C) fails independent bootability, the core requirement;
-external or live media (C) works but stands outside the architecture and is
-not guaranteed present; other models (D) inherit these same failures.
+The alternatives each fail on architectural grounds rather than convenience,
+and the distinction between capability failure and integration failure is
+kept explicit: RE-hosting (B) re-conflates become and act-upon and would amend
+AD-58's Recovery; OE-hosting (C) fails M1, the core capability; external or
+live media (C) satisfies the capability but fails A1 and is not guaranteed
+present; other models (D) fail M1 or A1 similarly. This exploration does not
+claim to have exhausted the design space (Candidate D is open by
+construction), so the conclusion is that a dedicated ME is the strongest
+realization evaluated here, not that it is the only possible one.
 
 This assessment supports, but does not yet ratify, the three-environment
 model (OE, RE, ME). It earns the conclusion from the capabilities rather than
@@ -227,6 +260,9 @@ three-environment model, and designing its mechanics, are the next steps if
 the assessment is accepted.
 
 Status: Design exploration (non-ratified). It establishes the maintenance
-capabilities M1 through M6, evaluates candidate realizations against them, and
-assesses that a dedicated Maintenance Environment best satisfies them, without
-ratifying the three-environment model or designing its mechanics.
+capabilities M1 through M6 and the separate architectural integration
+objective A1, evaluates candidate realizations against both (keeping
+capability failures and integration failures distinct), and assesses that a
+dedicated Maintenance Environment is the strongest realization identified,
+without claiming uniqueness and without ratifying the three-environment model
+or designing its mechanics.
