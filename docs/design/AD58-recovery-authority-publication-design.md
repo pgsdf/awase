@@ -47,27 +47,34 @@ the current Recovery designation, or only creates a candidate while the
 designation in force remains the pre-change capture until Recovery is
 deliberately re-established.
 
-This is not one open item among several. It is the decision on which several
-of the derived requirements depend:
+This is not one open item among several. It is the lifecycle decision that
+PARAMETERIZES several of the derived requirements. The requirements
+themselves are stable and do not change with the decision; what the decision
+supplies is the set of lifecycle events to which those requirements apply:
 
-  - It determines whether promotion is a designation-changing event, which
-    R4 (stability between lifecycle events) and R5 (atomic update) must then
-    cover. If promotion changes the designation, promotion joins the set of
-    events the mechanism must update atomically and stably; if it does not,
-    that set is smaller.
+  - R4 (stability between lifecycle events) and R5 (atomic update) apply to
+    whatever set of designation-changing events AD-58 defines. The
+    requirements hold either way; the promotion decision determines whether
+    promotion is in that set. If promotion changes the designation, it joins
+    the events the mechanism must update atomically and stably; if it only
+    creates a candidate, that set is smaller. R4 and R5 are unchanged; their
+    domain of application specializes.
 
-  - It determines what "stale" means, which R7 (no silent staleness) rests
-    on. If promotion changes the designation, an old designation naming the
-    superseded target must not persist; if promotion only creates a
-    candidate, the pre-change capture remains the valid designation and is
-    not stale.
+  - R7 (no silent staleness) applies whatever "stale" turns out to mean, and
+    the promotion decision fixes that meaning. If promotion changes the
+    designation, an old designation naming the superseded target is stale and
+    must not persist; if promotion only creates a candidate, the pre-change
+    capture remains the valid designation and is not stale. R7 is unchanged;
+    what counts as stale under it specializes.
 
-Until AD-58 resolves this, the requirements below are derived against a
-lifecycle that is partially undefined at exactly this point. The requirements
-are written to hold under either resolution, and they name promotion where it
-bears on them, but the resolution is a prerequisite for a mechanism design,
-not a detail to settle afterward. It is an AD-58 lifecycle-semantics
-decision, not a mechanism decision, and it should be made first.
+Because the requirements are parameterized rather than contingent, this note
+does not need rewriting once AD-58 picks a promotion model: the requirement
+text stays fixed, and only the event set (for R4 and R5) and the meaning of
+stale (for R7) specialize to the chosen model. What the resolution is a
+prerequisite for is the mechanism design, which must know the event set and
+the staleness meaning to be evaluated. It is an AD-58 lifecycle-semantics
+decision, not a mechanism decision, and it should be made first, before the
+mechanism comparison, not as a detail settled afterward.
 
 The two candidate resolutions, stated so the decision is concrete:
 
