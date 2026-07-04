@@ -1,0 +1,92 @@
+--
+-- local.p15.lua.example -- validation adapter for the
+-- operator_recovery_request producer (AD-59 Part 15).
+--
+-- This adapter validates producer #1 end to end: it offers the minimal
+-- loader-menu affordance (a single prompted choice) that sets
+-- pgsd_recovery_request, then runs the production pipeline so the operator
+-- can observe discover() reporting operator_recovery_request as present or
+-- absent per the choice, and the policy selecting the Recovery or
+-- Operational Role accordingly.
+--
+-- Scope (AD-59 Part 15): this is the SMALLEST affordance sufficient to
+-- produce the observation, in the local.lua space AD-59 already occupies. It
+-- is NOT the loader menu's layout, presentation, or ownership, which remain
+-- AD-56's. It sets one variable to "1" on request and leaves it unset
+-- otherwise; it carries no recovery policy (decide() interprets the signal).
+--
+-- Validation note: the Recovery binding producer does not exist yet (the
+-- AD-58 promotion write path), so when the operator requests recovery this
+-- adapter supplies a temporary binding for the destination, exactly as
+-- Experiment 8b did. What this adapter makes REAL is the trigger
+-- (operator_recovery_request), not the binding. On the Operational path no
+-- binding is needed.
+--
+
+local ok, bootstrap = pcall(require, "pgsd_bootstrap")
+if not ok then
+	print("pgsd bootstrap: module load failed: " .. tostring(bootstrap))
+	io.getchar()
+	return
+end
+
+-- The minimal affordance: prompt the operator, and on the recovery choice
+-- set pgsd_recovery_request to "1" (Part 15 loader-state contract). Any other
+-- key leaves the variable unset.
+print("")
+print("========================================")
+print("=== AD-59 Part 15: recovery-request affordance ===")
+print("=== press 'r' to request recovery for this boot, ===")
+print("=== any other key for a normal boot ===")
+print("========================================")
+local key = io.getchar()
+-- io.getchar returns a character code; 'r' is 114, 'R' is 82.
+if key == 114 or key == 82 then
+	loader.setenv("pgsd_recovery_request", "1")
+	print("=== recovery requested: pgsd_recovery_request=1 ===")
+else
+	print("=== normal boot: pgsd_recovery_request unset ===")
+end
+
+-- Run the production pipeline so the producer's effect is visible. discover()
+-- now reads pgsd_recovery_request and reports present or absent.
+local obs = bootstrap.discover()
+print("=== discover(): operator_recovery_request = " .. tostring(obs.operator_recovery_request))
+
+local role = bootstrap.decide(obs, bootstrap.SELECTION_POLICY_V1)
+print("=== decide(): role = " .. tostring(role))
+
+-- For the Recovery path, supply a temporary binding (the binding producer is
+-- not built yet, Part 15 validation note). For the Operational path this is
+-- unused. This mirrors Experiment 8b's binding simulation; only the trigger
+-- is real here.
+local test_binding = {
+	[bootstrap.ROLE_RECOVERY] = "zfs:zroot/ROOT/known-good-generic",
+}
+
+local dest, reason = bootstrap.resolve_destination(role, obs, test_binding)
+if dest == nil then
+	print("=== resolve_destination(): FAILED = " .. tostring(reason))
+	print("=== press a key to continue boot ===")
+	print("========================================")
+	io.getchar()
+	return
+end
+print("=== resolve_destination(): dest = " .. tostring(dest))
+print("=== selected_boot_environment   = " .. tostring(obs.selected_boot_environment))
+
+if dest == obs.selected_boot_environment then
+	print("=== would NOT transfer: destination is selected BE ===")
+	print("=== (Operational path; press a key to continue) ===")
+	print("========================================")
+	io.getchar()
+	return
+end
+
+print("=== ABOUT TO TRANSFER LIVE to = " .. tostring(dest))
+print("=== press a key to perform the redirect (or reset to abort) ===")
+print("========================================")
+io.getchar()
+
+local result, rreason = bootstrap.run(role, obs, test_binding)
+print("=== run() -> " .. tostring(result) .. " " .. tostring(rreason))

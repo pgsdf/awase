@@ -311,6 +311,25 @@ local function observe_available_boot_environments()
 	return list
 end
 
+-- operator_recovery_request: whether the operator requested recovery at
+-- loader stage. Producer: loader environment (pgsd_recovery_request), per
+-- AD-59 Part 15, implementing the ADR 0008 D4 loader-menu mechanism.
+-- Mapping (Part 15): the variable set to "1" is observed as "present" (the
+-- value Selection Policy v1's R1 tests for); unset, or any other value, is
+-- observed as "absent" (discover() observes rather than validates, so a
+-- non-"1" value is reported not-requested, not an error). This is an
+-- observation, not a conclusion: it reports whether the signal is present,
+-- not whether recovery should occur. Once shipped the read always yields
+-- present or absent, so the unavailable sentinel is not returned here in a
+-- normal boot; it remains reachable only if the read itself cannot run.
+local function observe_operator_recovery_request()
+	local v = loader.getenv("pgsd_recovery_request")
+	if v == "1" then
+		return "present"
+	end
+	return "absent"
+end
+
 --
 -- Discover (AD-59 Part 5): observe the loader-stage state and return it as a
 -- versioned observation object implementing the LOM (AD-59 Part 10).
@@ -335,14 +354,19 @@ function M.discover()
 		selected_boot_environment   = observe_selected_boot_environment(),
 		available_boot_environments = observe_available_boot_environments(),
 
+		-- operator_recovery_request now has a producer (AD-59 Part 15): the
+		-- loader-environment read below maps pgsd_recovery_request to
+		-- present or absent. Its Part 10 producer entry moves from none to
+		-- loader environment; the field, its position, and its value domain
+		-- are unchanged.
+		operator_recovery_request   = observe_operator_recovery_request(),
+
 		-- Unavailable: no loader-stage producer implemented yet. Represented
 		-- explicitly (AD-59 Part 10). Producers, when built, replace these
 		-- sentinels without changing this object's shape or Discover's
 		-- interface:
-		--   operator_recovery_request <- AD-11 D4 loader-stage mechanism
 		--   promotion_state           <- AD-58 promotion write path
 		--   boot_generation           <- boot-completion tracking
-		operator_recovery_request   = M.UNAVAILABLE,
 		promotion_state             = M.UNAVAILABLE,
 		boot_generation             = M.UNAVAILABLE,
 	}
