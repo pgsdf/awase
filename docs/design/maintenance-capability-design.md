@@ -360,16 +360,21 @@ publication on a domain that survives the reinstall) would preserve a pointer
 to something that no longer exists, which is worse than the designation being
 absent.
 
-The consequence is a lifecycle policy, not a storage placement: the lifecycle
-event that creates a new operational installation is the event that must either
-establish a new Recovery designation for it or explicitly leave the new
-installation without one until establishment occurs. Both are establishment-event
-policies. This is why the question belongs to the establishment-event design
-(where the establishment contract's authority and verification precondition
-already live) and not to the choice of publication mechanism or its storage
-location. This note records the question and routes it there; it does not decide
-where the publication property lives, which follows only after the identity
-question is answered.
+The consequence is a lifecycle matter, not a storage placement: installation
+replacement introduces a lifecycle event whose Recovery-designation semantics
+must be defined. The identity discussion establishes WHY the event matters (it
+destroys the installation to which any existing designation belongs), and
+therefore that the event requires designation semantics; it does not settle
+what those semantics are. The candidate outcomes (establish a new designation,
+explicitly leave none until establishment, or another lifecycle-defined
+outcome) remain policy, deferred to the establishment-event design. This is why
+the question belongs to the establishment-event design (where the establishment
+contract's authority and verification precondition already live) and not to the
+choice of publication mechanism or its storage location. This note records that
+installation replacement introduces such an event and routes the definition of
+its semantics there; it neither settles those semantics nor decides where the
+publication property lives, which follows only after the identity question is
+answered.
 
 ### Status of this observation
 

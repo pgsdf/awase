@@ -12,8 +12,8 @@ establishment event depends on the eventual three-environment model
 (Operational, Recovery, Maintenance) is settled here not by argument but by
 attempt: the contract below is written deliberately WITHOUT naming any
 invocation environment. If it can be stated completely without doing so,
-independence from the three-environment model is demonstrated, and the
-Maintenance thread is a consumer of this contract rather than a prerequisite
+independence from invocation location is demonstrated by the drafting test, and
+the Maintenance thread is a consumer of this contract rather than a prerequisite
 for it. If any clause cannot be stated without naming an invocation
 environment, that clause has found a genuine architectural dependency, which
 the document surfaces rather than works around. The result of the test is
@@ -187,12 +187,16 @@ contract. These are examples of realizations, removable without weakening the
 contract, not part of it.
 
 The test therefore passes: the complete establishment-event contract is
-expressible without naming an invocation environment. This demonstrates that
-the establishment event is architecturally independent of the three-environment
-model. The Maintenance thread, if ratified, is a CONSUMER of this contract (one
-context from which establishment may be invoked), not a prerequisite for
-defining it. The two threads may proceed independently, meeting only where a
-Maintenance Environment, if it exists, invokes this already-complete contract.
+expressible without naming an invocation environment. What this demonstrates is
+precise and bounded: independence from invocation location, shown by the
+drafting test. It is strong evidence that the contract does not depend on where
+establishment is invoked; it is not a proof that no possible formulation could
+ever couple. Stated at the level the test supports: the establishment-event
+contract demonstrates independence from invocation location. The Maintenance
+thread, if ratified, is a CONSUMER of this contract (one context from which
+establishment may be invoked), not a prerequisite for defining it, and the two
+threads may proceed independently, meeting only where a Maintenance
+Environment, if it exists, invokes this contract.
 
 ## What is next (and what is deliberately not concluded here)
 
@@ -224,6 +228,6 @@ Status: Design exploration (non-ratified). It specifies the Recovery
 establishment event as a location-independent contract (E1 through E7),
 completes R7's policy layer as far as the event defines it, records the
 implementation obligations on the working mechanism, and demonstrates by
-successful drafting that the establishment event is architecturally
-independent of the three-environment model. It defers the verification policy,
-the concrete mechanism details, and ratification.
+successful drafting that the establishment-event contract is independent of
+invocation location. It defers the verification policy, the concrete mechanism
+details, and ratification.
