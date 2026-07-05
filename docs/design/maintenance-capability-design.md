@@ -259,6 +259,129 @@ and assesses that a dedicated ME best realizes them; ratifying the
 three-environment model, and designing its mechanics, are the next steps if
 the assessment is accepted.
 
+## Emerging observation: durability domains (a working hypothesis)
+
+The following is recorded as an EMERGING OBSERVATION, not a ratified
+conclusion or a new architectural foundation. It arose while considering
+where a Maintenance Environment must live, and it may be a foundational
+principle or may be an over-generalization; it is treated here as a working
+hypothesis to be tested by whether subsequent design decisions continue to
+reinforce it. It is not a decision, and nothing is implemented on its basis.
+
+### The sharpened durability requirement
+
+The maintenance capability requires independent bootability (M1) and
+non-destruction of evidence (M4). Considering the installer, which is part of
+the maintenance toolset (M5), sharpens these: a Maintenance Environment must
+survive the destructive operations it is itself responsible for performing. If
+the supported reinstall model destroys and recreates the operational storage,
+then a Maintenance Environment stored in that same storage cannot survive the
+reinstall it performs. This is not an implementation preference; it is a direct
+consequence of M1 and M4 once the maintenance toolset includes an installer
+that can destroy the operational storage. A maintenance capability that reaches
+into the operational storage to reinstall it must not itself reside in what it
+destroys.
+
+### The observation: three durability domains
+
+The sharpened requirement, together with the pre-existing need for persistent
+user state to survive operational-system replacement, suggests that a PGSD
+system may separate three durability domains, defined not by where data is
+stored but by its destruction semantics and the responsibility it serves:
+
+  - Operational execution. Intentionally disposable: the lifecycle is
+    permitted to destroy and recreate it during reinstall or replacement. Its
+    defining property is that it is replaceable.
+
+  - Lifecycle management. Survives destructive operations on the operational
+    domain precisely because it performs them. It holds the maintenance
+    capability and the lifecycle tooling. Its defining property is that it
+    survives operational-domain destruction because it is the agent of that
+    destruction.
+
+  - Persistent user state. Survives destructive operations on the operational
+    domain because it must persist across them. Its defining property is
+    continuity of user data across replacement of the operational system.
+
+The observation of interest is that the lifecycle-management domain and the
+user-state domain both survive operational-domain destruction, but for
+different reasons (one is the agent of destruction, one is the data that must
+outlive it). Independent requirements converging on the same durability
+boundary is the kind of evidence that suggests the boundary is real rather than
+imposed. The storage boundaries would then align with responsibility
+boundaries: operational execution, lifecycle management, and user state.
+
+On a workstation this decomposition would be realized as three ZFS pools (for
+example zroot for operational, maintenance for lifecycle, and zhome for user
+state), but the pools are a REALIZATION of the durability-domain separation,
+not the observation itself. Whether the same separation holds across other form
+factors (servers, appliances, virtual machines), and how it is realized on
+each, is open; the observation is stated at the level of the separation, with
+the three-pool workstation form as one realization.
+
+### What this clarifies about Recovery and Maintenance
+
+If the durability-domain separation holds, Recovery and Maintenance are
+complementary rather than competing, addressing different scopes of failure:
+
+  - Recovery is the designated fallback WITHIN the operational durability
+    domain: the response to an operational installation that has broken but
+    whose storage is intact, handled by booting a known-good boot environment
+    within that domain.
+
+  - Maintenance is the durable capability OUTSIDE the operational durability
+    domain: the response to needing to repair or replace the operational
+    storage itself, performed from a domain that survives that replacement.
+
+This resolves the earlier become-versus-act-upon distinction into a
+storage-grounded one: Recovery becomes the running system from within the
+disposable domain; Maintenance acts upon the system from the durable domain.
+
+### The Recovery identity question (routed to the establishment event)
+
+The decomposition raises a question about the Recovery designation, which this
+note deliberately does NOT answer here, because it is an establishment-event
+and lifecycle-identity question, not a publication-mechanism or
+storage-placement one.
+
+The precise framing: replacing the operational storage does not change the
+identity of the operational DOMAIN (the domain persists as an architectural
+role, before and after). What changes is the identity of the operational
+INSTALLATION occupying that domain. The previous operational installation, and
+the Recovery Boot Environments belonging to it, cease to exist.
+
+Therefore Recovery is not "whatever the designation points at." Recovery is the
+designated Recovery Boot Environment BELONGING TO a particular operational
+installation. When that installation is destroyed, Recovery ceases to exist
+with it, and the designation cannot remain valid, not because the publication
+mechanism failed, but because its referent has ceased to exist. Persisting the
+designation beyond destruction of its referent (for example by placing the
+publication on a domain that survives the reinstall) would preserve a pointer
+to something that no longer exists, which is worse than the designation being
+absent.
+
+The consequence is a lifecycle policy, not a storage placement: the lifecycle
+event that creates a new operational installation is the event that must either
+establish a new Recovery designation for it or explicitly leave the new
+installation without one until establishment occurs. Both are establishment-event
+policies. This is why the question belongs to the establishment-event design
+(where the establishment contract's authority and verification precondition
+already live) and not to the choice of publication mechanism or its storage
+location. This note records the question and routes it there; it does not decide
+where the publication property lives, which follows only after the identity
+question is answered.
+
+### Status of this observation
+
+This is a working hypothesis, not a ratified principle and not a new
+architectural document. The intended test is whether subsequent Maintenance
+and Recovery design decisions continue to be explained by the durability-domain
+separation. If they do, the separation will have earned promotion into its own
+storage-architecture document as a ratifiable principle. Until then it is
+recorded here as an emerging observation that is increasingly explaining
+multiple independent design decisions, and nothing (installer changes, pool
+creation, import policy, boot flow) is implemented on its basis.
+
 Status: Design exploration (non-ratified). It establishes the maintenance
 capabilities M1 through M6 and the separate architectural integration
 objective A1, evaluates candidate realizations against both (keeping
