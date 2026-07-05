@@ -38,6 +38,25 @@ claim:
   the establishment policy is defined." R1 through R6 are evaluated fully; R7
   is evaluated only as intrinsic mechanism capability.
 
+This note is a comparative exploration, not a proof. It does not claim to have
+exhausted the space of possible mechanisms, and it selects none as ratified;
+it narrows the candidate space and identifies the strongest candidate for the
+next step to build on. Several of the advantages it attributes to the leading
+candidate are properties the mechanism's model naturally supports rather than
+behaviors this note empirically establishes; where that is so, the note says
+so, and the concrete read and update semantics are confirmed in the
+establishment-event design that follows.
+
+A word on sequencing, since this note assumes the publication mechanism is
+chosen before the establishment event is designed. That ordering is
+deliberate: choosing the mechanism first lets the establishment event be
+designed against concrete update semantics (the actual operation that changes
+the chosen representation) rather than against an abstract publication
+interface. A policy designed to consume a concrete mechanism is cleaner than
+one that must constrain an unspecified mechanism abstractly. The mechanism is
+the contract; the establishment event is the policy that consumes it; the
+contract is settled first.
+
 Terminology follows the addenda: PGSD is the operating system, AD-58 is the
 PGSD lifecycle, awase be is the lifecycle's Boot Environment implementation,
 AD-59 is the bootloader.
@@ -152,28 +171,39 @@ Each is evaluated against R1 through R6 fully, and R7 as capability.
     which awase be already uses; a single-owner discipline is natural and
     consistent with awase be being the lifecycle's implementation.
   - R2 (loader-observable): the loader already reads ZFS boot configuration and
-    enumerates BEs; ZFS is the store the loader is closest to at loader stage.
-    (Whether a specific user property is readable by the loader as-is versus
-    requiring a defined loader-stage read is a concrete point for the
-    establishment design and any reconnaissance, but ZFS is squarely within
-    the loader's ZFS-aware world.)
+    enumerates BEs, so ZFS is the store the loader is closest to at loader
+    stage. This candidate's R2 standing is therefore conditional: it is
+    strongest ASSUMING the selected property is readable by the loader at
+    loader stage. Whether a specific user property is readable as-is or
+    requires a defined loader-stage read is not established here; it is a
+    concrete point the establishment-event design confirms (and may require
+    reconnaissance). The claim is that ZFS is plausibly strongest given
+    straightforward loader access to the selected property, not that such
+    access is already demonstrated.
   - R3 (durability): high and, importantly, IN THE SAME STORE as the objects
     designated. A pool-level property survives OE reinstallation (it is on the
     pool, not in the OE dataset), and it is carried with the pool through the
     system's own ZFS replication and backup.
   - R4 (stability): acceptable; a property changes only when written.
-  - R5 (atomic update): a single property set is atomic at the ZFS interface.
+  - R5 (atomic update): the ZFS property model naturally supports atomic
+    property updates; the concrete atomicity of the specific update operation
+    is confirmed in the establishment-event design.
   - R6 (defined absence): natural; an unset property is a detectable absent
     state.
-  - R7 (capability): strongest of the candidates. A ZFS property lives in the
-    same store as the Boot Environments it designates, so the designation and
-    the objects are coupled in one consistent store rather than split across
-    two. A property can carry a version or generation, and because pool
-    operations (including cloning and replication) carry properties with the
-    data, the designation travels with the objects it refers to. This coupling
-    is what makes silent divergence between "the designation" and "the objects"
-    least likely, and it is precisely the property a file, an EFI variable, or
-    a partition attribute lacks. This provides the capabilities required to
+  - R7 (capability): strongest of the candidates on architectural grounds. A
+    ZFS property lives in the same store as the Boot Environments it
+    designates, so the designation and the objects are coupled in one store
+    rather than split across two. A property can carry a version or generation
+    for staleness detection, and the ZFS property model is designed so that
+    properties travel with the data under pool operations, which means the
+    designation is positioned to travel with the objects it refers to rather
+    than diverging from them. (That properties are carried under specific
+    operations such as cloning and replication is an implementation behavior
+    this note does not establish; it is noted as a model property the
+    establishment-event design confirms.) This coupling in one store is what
+    makes silent divergence between the designation and the objects least
+    likely, and it is precisely the coupling a file, an EFI variable, or a
+    partition attribute lacks. This provides the capabilities required to
     satisfy R7 once the establishment policy is defined.
 
 ### E. Boot Environment metadata (designation in the BE metadata)
@@ -204,8 +234,10 @@ exploration:
   - It is durable in the same store as the objects it designates (R3), so it
     survives OE reinstallation and travels with the pool through replication,
     which is the durability the founding failure demands.
-  - It is within the loader's ZFS-aware world at loader stage (R2), where the
-    loader already reads ZFS boot configuration.
+  - It naturally fits within the loader's existing ZFS-aware world at loader
+    stage (R2), where the loader already reads ZFS boot configuration, subject
+    to confirming loader access to the selected property in the
+    establishment-event design.
   - It has a natural single-writer story through zfs and awase be (R1),
     single-property atomic update (R5), detectable absence (R6), and stability
     between writes (R4).
@@ -221,8 +253,19 @@ expressively too narrow and raises partition-table-write hazards; the EFI
 variable (C) is loader-observable and durable but sits outside the ZFS store
 the designation refers to, in a constrained firmware NVRAM, so it splits the
 designation from the objects; BE metadata (E) is natural for ownership but
-risks loader-stage unreadability, and where it is strong it converges toward
-being a ZFS property.
+risks loader-stage unreadability.
+
+There is an architectural insight in Candidate E worth stating beyond a
+criticism of it: where BE metadata is strong (durable, coupled to the objects,
+single-writer), it is strong precisely by being stored as a ZFS property, and
+so it converges toward Candidate D. This is not only a weakness of E; it is an
+explanation of why the candidate space collapses. The properties that make a
+publication mechanism strong for this purpose, durability in the same store as
+the designated objects and coupling that resists silent divergence, are the
+properties a ZFS property has intrinsically, so candidates that approach those
+properties approach being a ZFS property. The convergence is evidence for the
+ZFS property being the natural attractor in this space, not merely the
+highest-scored entry in a list.
 
 This assessment does not claim to have exhausted the mechanism space, and it
 selects no mechanism as ratified. It concludes that a ZFS property is the
