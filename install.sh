@@ -15,6 +15,7 @@
 #   $PREFIX/bin/chrono_dump   : chronofs diagnostic tool
 #   $PREFIX/bin/semasound     : audio mixing broker (AD-3)
 #   $PREFIX/bin/semasound-tone : semasound test tone client
+#   $PREFIX/bin/semasound-cat  : semasound stdin PCM client
 #   $PREFIX/bin/semasound-dump : semasound state surface inspector
 
 set -eu
@@ -35,7 +36,7 @@ ALLOW_SEMADRAW_TERM=0
 . "$SCRIPT_DIR/scripts/detect-os.sh"
 echo "Host OS: $UTF_OS $UTF_OS_VERSION"
 
-BINARIES="semadrawd chrono_dump semadraw-term inputdump awase-log-cleanup pgsd-sessiond semasound semasound-tone semasound-dump"
+BINARIES="semadrawd chrono_dump semadraw-term inputdump awase-log-cleanup pgsd-sessiond semasound semasound-tone semasound-cat semasound-dump"
 
 # ============================================================================
 # Argument parsing
@@ -1233,6 +1234,7 @@ install_bin_required "$SCRIPT_DIR/inputfs/zig-out/bin/inputdump"
 install_bin_required "$SCRIPT_DIR/pgsd-sessiond/zig-out/bin/pgsd-sessiond"
 install_bin_required "$SCRIPT_DIR/semasound/zig-out/bin/semasound"
 install_bin_required "$SCRIPT_DIR/semasound/zig-out/bin/semasound-tone"
+install_bin_required "$SCRIPT_DIR/semasound/zig-out/bin/semasound-cat"
 install_bin_required "$SCRIPT_DIR/semasound/zig-out/bin/semasound-dump"
 
 # AD-32 / AD-25 Round 1 follow-up: operator helper for compacting
