@@ -3124,23 +3124,25 @@ static void
 audiofs_power_up_codec_paths(struct audiofs_softc *sc, int cad)
 {
 	struct audiofs_codec *codec = &sc->codecs[cad];
-	uint32_t fg_wcap;
 	int i;
 
 	if (codec->fg_nid == 0)
 		return;
 
 	/*
-	 * Power up the function group itself. FG nid's wcap was
-	 * not stored on the codec (FG is not a regular widget);
-	 * query its widget cap directly to check POWER_CTRL.
+	 * Power up the function group itself, unconditionally.
+	 * The AUDIO_WIDGET_CAP parameter is defined for widgets,
+	 * not for function-group nodes, so its POWER_CTRL bit
+	 * cannot be used to decide whether the FG supports power
+	 * states; per HDA 1.0a section 7.3.4.4 every function
+	 * group supports D0/D3. (Previously the FG was gated on
+	 * that undefined parameter and could be silently skipped,
+	 * leaving the FG in its reset power state while path
+	 * widgets individually reported D0.) Pass a wcap with
+	 * POWER_CTRL set so audiofs_power_up_widget proceeds.
 	 */
-	fg_wcap = audiofs_send_command(sc, cad,
-	    HDA_CMD_GET_PARAMETER(0, codec->fg_nid,
-	        HDA_PARAM_AUDIO_WIDGET_CAP));
-	if (fg_wcap != HDA_INVALID) {
-		audiofs_power_up_widget(sc, cad, codec->fg_nid, fg_wcap);
-	}
+	audiofs_power_up_widget(sc, cad, codec->fg_nid,
+	    HDA_PARAM_AUDIO_WIDGET_CAP_POWER_CTRL_MASK);
 
 	/*
 	 * Power up every widget on every discovered output path.
@@ -3343,105 +3345,32 @@ audiofs_inspect_platform_caps(struct audiofs_softc *sc, int cad)
 	/*
 	 * If this codec advertises any GPIO lines and we have not
 	 * yet claimed a "platform codec" for runtime GPIO control,
-	 * adopt this one. Configure all lines as enabled outputs
-	 * with data=0 (a safe default; if a downstream amp's
-	 * enable is active-high, this leaves it powered down).
-	 * Runtime sysctl writes can then sweep different values
-	 * without rebooting.
-	 *
-	 * All three writes use standard HDA verbs:
-	 *   Enable    Mask  -> SET_GPIO_ENABLE_MASK (verb 0x716)
-	 *   Direction       -> SET_GPIO_DIRECTION   (verb 0x717)
-	 *   Data            -> SET_GPIO_DATA        (verb 0x715)
-	 *
-	 * Per HDA spec 7.3.3.22-24 these verbs are addressed to
-	 * the audio function group node, not to any widget.
+	 * adopt this one.
 	 */
 	if (num_gpio > 0 && sc->gpio_cad < 0) {
-		uint8_t mask = (num_gpio >= 8) ?
-		    0xff : (uint8_t)((1U << num_gpio) - 1);
-
 		sc->gpio_cad = cad;
 		sc->gpio_fg_nid = codec->fg_nid;
 		sc->gpio_num_lines = num_gpio;
 		sc->gpio_data = 0;
 
-		/* Enable all advertised GPIO lines. */
-		(void)audiofs_send_command(sc, cad,
-		    HDA_CMD_SET_GPIO_ENABLE_MASK(0, codec->fg_nid, mask));
-		audiofs_log(sc, "gpio_enable_mask_set", mask);
-
-		/* Direction = output for all enabled lines. */
-		(void)audiofs_send_command(sc, cad,
-		    HDA_CMD_SET_GPIO_DIRECTION(0, codec->fg_nid, mask));
-		audiofs_log(sc, "gpio_direction_set", mask);
-
-		/* Data = 0 to start (safe default). */
-		(void)audiofs_send_command(sc, cad,
-		    HDA_CMD_SET_GPIO_DATA(0, codec->fg_nid, 0));
-		audiofs_log(sc, "gpio_data_init", 0);
-
+		/*
+		 * Adoption only: record where the GPIO surface
+		 * lives. Configuration (enable mask, direction,
+		 * data, platform-policy value) is deliberately
+		 * NOT done here. This pass runs before the
+		 * power-up pass, and GPIO state written while
+		 * the function group is still in D3 is not
+		 * trustworthy across the D3->D0 transition. The
+		 * writes happen in audiofs_apply_gpio_policy,
+		 * called after power-up. This also restores the
+		 * property this pass's header promises: pure
+		 * inspection, no writes.
+		 */
 		device_printf(sc->dev,
 		    "  cad=%d adopted as platform codec for "
-		    "runtime GPIO control: %d lines enabled, "
-		    "configured as outputs, data=0x00\n",
+		    "GPIO control: %d lines (configuration "
+		    "deferred until after power-up)\n",
 		    cad, num_gpio);
-
-		/*
-		 * Apply platform-policy table override, if any.
-		 *
-		 * The table is keyed on the codec's audio-function-
-		 * group subsystem ID, not the controller's PCI
-		 * subsystem ID. Rationale: the GPIO-to-amp wiring is
-		 * a board property, not a controller property. On
-		 * boards where the integrator programs a meaningful
-		 * codec FG subsystem ID (Apple Macs being the
-		 * canonical example), it identifies the specific
-		 * board layout, which is exactly the granularity at
-		 * which GPIO wiring varies. The controller's PCI
-		 * subsystem ID on the same iMac reads as a generic
-		 * Intel value and would not discriminate the board.
-		 *
-		 * We parse the codec FG subsystem ID as two 16-bit
-		 * halves: high 16 = subvendor, low 16 = subdevice.
-		 * For the bench iMac the codec FG subsys is
-		 * 0x106b8200 -> subvendor=0x106b (Apple),
-		 * subdevice=0x8200, matching the table entry.
-		 *
-		 * (Earlier code keyed the lookup on the controller
-		 * PCI subsystem, which silently never matched the
-		 * Apple iMac entry; the platform policy never fired,
-		 * the speaker amp gate stayed off, and stream
-		 * playback was audibly silent despite LPIB advancing
-		 * normally. F.3.a bench surfaced this; the fix is
-		 * here.)
-		 */
-		{
-			uint16_t fg_subv = (uint16_t)
-			    ((codec->fg_subsystem >> 16) & 0xffff);
-			uint16_t fg_subd = (uint16_t)
-			    (codec->fg_subsystem & 0xffff);
-			const struct audiofs_platform_policy *p =
-			    audiofs_platform_policy_lookup(
-				fg_subv, fg_subd);
-
-			if (p != NULL && p->initial_gpio_data != 0) {
-				sc->gpio_data = p->initial_gpio_data;
-				(void)audiofs_send_command(sc, cad,
-				    HDA_CMD_SET_GPIO_DATA(0,
-				        codec->fg_nid, sc->gpio_data));
-				audiofs_log(sc, "gpio_data_policy",
-				    ((uintmax_t)fg_subv << 48) |
-				    ((uintmax_t)fg_subd << 32) |
-				    sc->gpio_data);
-				device_printf(sc->dev,
-				    "  cad=%d platform policy "
-				    "matched (codec FG subsys=0x%04x%04x): "
-				    "%s, gpio_data=0x%02x\n",
-				    cad, fg_subv, fg_subd,
-				    p->comment, sc->gpio_data);
-			}
-		}
 	}
 
 	/*
@@ -3469,6 +3398,118 @@ audiofs_inspect_platform_caps(struct audiofs_softc *sc, int cad)
 		    cad, w->nid, w->pin_cap);
 		audiofs_log(sc, "pin_eapd_cap",
 		    ((uintmax_t)w->nid << 32) | w->pin_cap);
+	}
+}
+
+/* ---------------------------------------------------------
+ * GPIO platform-policy application.
+ *
+ * Configures the adopted platform codec's GPIO lines
+ * (enable mask, direction=output, data) and applies the
+ * platform-policy table's initial gpio_data value, then
+ * reads the data register back so the eventlog records
+ * effect, not just intent.
+ *
+ * MUST run after the power-up pass. The HDA spec does not
+ * guarantee that GPIO state written while the function
+ * group is in D3 survives the D3->D0 transition, and the
+ * commit-6f empirical sweep that discovered the Apple
+ * iMac's gpio_data=0x08 was performed at runtime via
+ * sysctl - i.e. with the codec already in D0. Writing the
+ * same value pre-power-up was not the experiment that was
+ * validated.
+ *
+ * Caller holds hw_lock.
+ * --------------------------------------------------------- */
+
+static void
+audiofs_apply_gpio_policy(struct audiofs_softc *sc)
+{
+	struct audiofs_codec *codec;
+	uint8_t mask;
+	uint32_t got;
+	int cad;
+
+	if (sc->gpio_cad < 0)
+		return;
+
+	cad = sc->gpio_cad;
+	codec = &sc->codecs[cad];
+	mask = (sc->gpio_num_lines >= 8) ?
+	    0xff : (uint8_t)((1U << sc->gpio_num_lines) - 1);
+
+	/* Enable all advertised GPIO lines. */
+	(void)audiofs_send_command(sc, cad,
+	    HDA_CMD_SET_GPIO_ENABLE_MASK(0, sc->gpio_fg_nid, mask));
+	audiofs_log(sc, "gpio_enable_mask_set", mask);
+
+	/* Direction = output for all enabled lines. */
+	(void)audiofs_send_command(sc, cad,
+	    HDA_CMD_SET_GPIO_DIRECTION(0, sc->gpio_fg_nid, mask));
+	audiofs_log(sc, "gpio_direction_set", mask);
+
+	/* Data = 0 to start (safe default). */
+	sc->gpio_data = 0;
+	(void)audiofs_send_command(sc, cad,
+	    HDA_CMD_SET_GPIO_DATA(0, sc->gpio_fg_nid, 0));
+	audiofs_log(sc, "gpio_data_init", 0);
+
+	/*
+	 * Apply platform-policy table override, if any. Keyed
+	 * on the codec FG subsystem ID; see the table comment
+	 * for why not the controller PCI subsystem ID. (Earlier
+	 * code keyed the lookup on the controller PCI subsystem,
+	 * which silently never matched the Apple iMac entry; the
+	 * platform policy never fired, the speaker amp gate
+	 * stayed off, and playback was audibly silent despite
+	 * LPIB advancing normally. F.3.a bench surfaced this.)
+	 */
+	{
+		uint16_t fg_subv = (uint16_t)
+		    ((codec->fg_subsystem >> 16) & 0xffff);
+		uint16_t fg_subd = (uint16_t)
+		    (codec->fg_subsystem & 0xffff);
+		const struct audiofs_platform_policy *p =
+		    audiofs_platform_policy_lookup(fg_subv, fg_subd);
+
+		if (p != NULL && p->initial_gpio_data != 0) {
+			sc->gpio_data = p->initial_gpio_data;
+			(void)audiofs_send_command(sc, cad,
+			    HDA_CMD_SET_GPIO_DATA(0,
+			        sc->gpio_fg_nid, sc->gpio_data));
+			audiofs_log(sc, "gpio_data_policy",
+			    ((uintmax_t)fg_subv << 48) |
+			    ((uintmax_t)fg_subd << 32) |
+			    sc->gpio_data);
+			device_printf(sc->dev,
+			    "  cad=%d platform policy matched "
+			    "(codec FG subsys=0x%04x%04x): %s, "
+			    "gpio_data=0x%02x\n",
+			    cad, fg_subv, fg_subd,
+			    p->comment, sc->gpio_data);
+		}
+	}
+
+	/*
+	 * Read the data register back: the eventlog should
+	 * record what the codec now reports, not what we
+	 * intended. A silent no-op here is exactly the class
+	 * of failure this pass exists to catch. Encode
+	 * HDA_INVALID readback as 0x1ff so it is
+	 * distinguishable from a legitimate 0xff.
+	 */
+	got = audiofs_send_command(sc, cad,
+	    HDA_CMD_GET_GPIO_DATA(0, sc->gpio_fg_nid));
+	audiofs_log(sc, "gpio_data_readback",
+	    ((uintmax_t)sc->gpio_data << 32) |
+	    ((got == HDA_INVALID) ? 0x1ff : (got & 0xff)));
+	if (got == HDA_INVALID || (got & 0xff) != sc->gpio_data) {
+		device_printf(sc->dev,
+		    "  gpio_data write=0x%02x readback=0x%02x "
+		    "(did not stick)\n",
+		    sc->gpio_data,
+		    (got == HDA_INVALID) ?
+		        0xffU : (uint32_t)(got & 0xff));
 	}
 }
 
@@ -6029,6 +6070,18 @@ audiofs_walk_topology(struct audiofs_softc *sc)
 		if (sc->codecs[cad].populated)
 			audiofs_power_up_codec_paths(sc, cad);
 	}
+
+	/*
+	 * GPIO platform-policy pass: configure the adopted
+	 * platform codec's GPIO lines and drive the policy
+	 * table's initial gpio_data, with readback. Runs after
+	 * the power-up pass because GPIO state written while
+	 * the function group is in D3 is not trustworthy
+	 * across the D3->D0 transition (the commit-6f sweep
+	 * that validated gpio_data=0x08 ran with the codec
+	 * already in D0).
+	 */
+	audiofs_apply_gpio_policy(sc);
 
 	/*
 	 * Third pass: enable each connected output pin's output
