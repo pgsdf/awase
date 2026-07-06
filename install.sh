@@ -12,6 +12,7 @@
 #
 # Installed binaries:
 #   $PREFIX/bin/semadrawd     : semantic rendering compositor
+#   $PREFIX/bin/semadraw-ctl  : ADR 0021 control-socket prober
 #   $PREFIX/bin/chrono_dump   : chronofs diagnostic tool
 #   $PREFIX/bin/semasound     : audio mixing broker (AD-3)
 #   $PREFIX/bin/semasound-tone : semasound test tone client
@@ -36,7 +37,7 @@ ALLOW_SEMADRAW_TERM=0
 . "$SCRIPT_DIR/scripts/detect-os.sh"
 echo "Host OS: $UTF_OS $UTF_OS_VERSION"
 
-BINARIES="semadrawd chrono_dump semadraw-term inputdump awase-log-cleanup pgsd-sessiond semasound semasound-tone semasound-cat semasound-dump"
+BINARIES="semadrawd semadraw-ctl chrono_dump semadraw-term inputdump awase-log-cleanup pgsd-sessiond semasound semasound-tone semasound-cat semasound-dump"
 
 # ============================================================================
 # Argument parsing
@@ -1223,6 +1224,7 @@ install_bin_required() {
 }
 
 install_bin_required "$SCRIPT_DIR/semadraw/zig-out/bin/semadrawd"
+install_bin_required "$SCRIPT_DIR/semadraw/zig-out/bin/semadraw-ctl"
 install_bin_required "$SCRIPT_DIR/chronofs/zig-out/bin/chrono_dump"
 install_bin_required "$SCRIPT_DIR/semadraw/zig-out/bin/semadraw-term"
 install_bin_required "$SCRIPT_DIR/inputfs/zig-out/bin/inputdump"
