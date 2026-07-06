@@ -213,6 +213,15 @@ pub const Backend = struct {
         /// fallback path (full-frame clear via clear_color on the first
         /// surface render of the cycle).
         clearRegion: ?*const fn (ctx: *anyopaque, request: ClearRegionRequest) anyerror!void = null,
+        /// ADR 0021 Section 7: push buffered pixel writes to the
+        /// panel without rendering a surface. Exists because
+        /// clearRegion writes are carried to the screen by the next
+        /// render's blit in some backends (drawfs: blitToEfifb runs
+        /// only in renderImpl); the blank root clears and then
+        /// suspends, so it must flush explicitly. Optional; backends
+        /// whose clearRegion writes the visible framebuffer directly
+        /// leave it null.
+        flush: ?*const fn (ctx: *anyopaque) void = null,
         /// Get pointer to framebuffer pixels (for composition/output)
         getPixels: *const fn (ctx: *anyopaque) ?[]u8,
         /// Resize framebuffer
@@ -311,6 +320,14 @@ pub const Backend = struct {
     /// rather than per-rect.
     pub fn supportsClearRegion(self: Backend) bool {
         return self.vtable.clearRegion != null;
+    }
+
+    /// ADR 0021: flush buffered writes to the panel. No-op when the
+    /// backend needs none.
+    pub fn flush(self: Backend) void {
+        if (self.vtable.flush) |func| {
+            func(self.ptr);
+        }
     }
 
     pub fn getPixels(self: Backend) ?[]u8 {

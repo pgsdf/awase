@@ -849,6 +849,15 @@ pub const DrawfsBackend = struct {
     /// start of each composite cycle to wipe pixels that no surface
     /// will repaint (e.g. the cursor's old position when no underlying
     /// client surface covers the area).
+    /// ADR 0021 Section 7: carry buffered writes (clearRegion's,
+    /// accumulated in the AD-43.3b damage rect) to the EFI
+    /// framebuffer without a render. The blank root is the caller:
+    /// it clears and suspends, so no renderImpl blit follows.
+    fn flushImpl(ctx: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        self.blitToEfifb();
+    }
+
     fn clearRegionImpl(ctx: *anyopaque, request: backend.ClearRegionRequest) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         const buffer = self.surface_map orelse return error.NoSurfaceMapped;
@@ -1723,6 +1732,7 @@ pub const DrawfsBackend = struct {
         .initFramebuffer = initFramebufferImpl,
         .render = renderImpl,
         .clearRegion = clearRegionImpl,
+        .flush = flushImpl,
         .getPixels = getPixelsImpl,
         .resize = resizeImpl,
         .pollEvents = pollEventsImpl,

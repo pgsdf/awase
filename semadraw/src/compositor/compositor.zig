@@ -457,6 +457,12 @@ pub const Compositor = struct {
                     .target_audio_samples = null,
                 };
             };
+            // The fill is in the surface buffer; carry it to the
+            // panel. Without this the blank root's writes wait for a
+            // render blit that never comes (the pipeline suspends),
+            // which was exactly the first bench symptom: transitions
+            // and notifications firing, screen unchanged.
+            output.be.flush();
         } else if (!self.blank_unsupported_warned) {
             self.blank_unsupported_warned = true;
             log.warn("backend lacks clearRegion: blank fill unavailable, panel keeps last frame (B4 violated on this backend)", .{});
