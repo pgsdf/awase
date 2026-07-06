@@ -294,6 +294,22 @@ pub fn main() !void {
     if (protocol.SOCKET_PATH.len >= addr.path.len) return error.SocketPathTooLong;
     @memcpy(addr.path[0..protocol.SOCKET_PATH.len], protocol.SOCKET_PATH);
     try compat.posix.bind(lfd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un));
+
+    // Make the socket connectable by unprivileged clients before the
+    // listener opens. connect(2) on a Unix socket requires write
+    // permission on the socket inode, and bind(2) creates it under the
+    // daemon's umask - root-only under supervision - so every broker
+    // restart silently locked all clients out until a manual chmod.
+    // Doing it between bind and listen is race-free: no client can
+    // connect before the mode is set. 0666 matches the current trust
+    // model: client identity is declaration-based (ADR 0026 Decision 1)
+    // and credential binding is recorded future hardening; a dedicated
+    // group mode belongs with that work. Socket-path lifecycle uses raw
+    // posix per the ratified tri-part filesystem boundary, as with the
+    // unlink above.
+    if (posix.system.chmod(protocol.SOCKET_PATH, 0o666) != 0)
+        return error.SocketChmodFailed;
+
     try compat.posix.listen(lfd, 8);
 
     std.debug.print("semasound F.5.a: listening on {s}\n", .{protocol.SOCKET_PATH});
