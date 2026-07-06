@@ -10,6 +10,11 @@ const events = @import("events");
 
 const log = std.log.scoped(.compositor);
 
+/// ADR 0021 Section 7: presentation roots. lock is deliberately not
+/// yet a member; it joins with the ADR 0012 implementation so no
+/// dead selector arm exists before its machinery does.
+pub const PresentationRoot = enum { scene, blank };
+
 /// Compositor output configuration
 pub const OutputConfig = struct {
     /// Output width in pixels
@@ -43,6 +48,22 @@ pub const Compositor = struct {
     allocator: std.mem.Allocator,
     /// Surface registry reference
     surfaces: *surface_registry.SurfaceRegistry,
+
+    /// ADR 0021 Section 7: the presentation-root selector. The
+    /// composed output is chosen from a small set of roots by this
+    /// value; the Section 3 (security, display) matrix is its truth
+    /// table. Today: scene (normal client scene graph) and blank
+    /// (compositor-owned fill, invariant B4). compose(lock) joins as
+    /// a third root with the ADR 0012 machinery; Tier B display-off
+    /// becomes a fourth outcome, not new renderer state.
+    presentation_root: PresentationRoot = .scene,
+    /// The blank root composes exactly one fill frame and then
+    /// suspends: true once that frame has been presented. Reset on
+    /// every entry to the blank root.
+    blank_presented: bool = false,
+    /// Warn-once latch for backends without clearRegion, where the
+    /// blank fill cannot be painted (see blankComposite).
+    blank_unsupported_warned: bool = false,
     /// Damage tracker
     damage_tracker: damage.DamageTracker,
     /// Wall clock source, owns the memory the ClockSource points into
@@ -264,6 +285,33 @@ pub const Compositor = struct {
         self.scheduler.stop();
     }
 
+    /// ADR 0021 Section 7: select the presentation root. Entering
+    /// blank arms one fill frame; returning to scene marks a full
+    /// repaint so the first woken frame rebuilds the whole scene
+    /// (stale per-surface damage accumulated while blanked was
+    /// discarded, see discardPendingDamage).
+    pub fn setPresentationRoot(self: *Self, root: PresentationRoot) void {
+        if (self.presentation_root == root) return;
+        self.presentation_root = root;
+        switch (root) {
+            .blank => self.blank_presented = false,
+            .scene => self.damage_tracker.markFullRepaint(),
+        }
+    }
+
+    pub fn getPresentationRoot(self: *Self) PresentationRoot {
+        return self.presentation_root;
+    }
+
+    /// ADR 0021 Section 7: while the blank root is presented, clients
+    /// keep executing and may keep committing damage that will never
+    /// be composited (the wake path full-repaints instead). Discard
+    /// it so the damage tracker does not grow without bound across a
+    /// long blank. Called by the daemon on blanked loop passes.
+    pub fn discardPendingDamage(self: *Self) void {
+        self.damage_tracker.clearAll();
+    }
+
     /// Check if composition is needed
     pub fn needsComposite(self: *Self) bool {
         // AD-25 Round 2: the early-return paths represent
@@ -298,6 +346,15 @@ pub const Compositor = struct {
             if (self.chronofs_clock) |*cc| cc.samplePosition() else null,
             monotonicNowNs(),
         );
+
+        // ADR 0021 Section 7: the blank root composes exactly one
+        // fill frame and then suspends the frame pipeline. Placed
+        // after updatePacingLiveness so the ADR 0020 pacing-clock
+        // machinery keeps running while blanked and wake resumes on
+        // a live clock.
+        if (self.presentation_root == .blank) {
+            return !self.blank_presented;
+        }
 
         if (has_damage and should_composite) {
             log.debug("needsComposite: damage={} scheduler={}", .{ has_damage, should_composite });
@@ -371,12 +428,73 @@ pub const Compositor = struct {
         }
     }
 
+    /// ADR 0021 Section 7: compose the blank root. clearRegion is
+    /// the fill mechanism; on a backend without it the fill cannot
+    /// be painted and the pipeline still suspends with the last
+    /// scene frame on the panel, which violates B4 on that backend
+    /// and is warned loudly once. The platform backend (drawfs)
+    /// implements clearRegion, so the bench never takes that arm.
+    fn blankComposite(self: *Self, output: anytype, frame: anytype) !CompositeResult {
+        if (output.be.supportsClearRegion()) {
+            output.be.clearRegion(.{
+                .framebuffer = .{
+                    .width = output.config.width,
+                    .height = output.config.height,
+                    .format = output.config.format,
+                },
+                .x = 0,
+                .y = 0,
+                .width = output.config.width,
+                .height = output.config.height,
+                .color = output.config.background_color,
+            }) catch |err| {
+                log.warn("blank fill failed: {}; retrying next pass", .{err});
+                return .{
+                    .frame_number = frame.frame_number,
+                    .surfaces_rendered = 0,
+                    .total_render_time_ns = 0,
+                    .frame_time_ns = frame.getElapsed(),
+                    .target_audio_samples = null,
+                };
+            };
+        } else if (!self.blank_unsupported_warned) {
+            self.blank_unsupported_warned = true;
+            log.warn("backend lacks clearRegion: blank fill unavailable, panel keeps last frame (B4 violated on this backend)", .{});
+        }
+
+        self.blank_presented = true;
+        self.damage_tracker.clearAll();
+        self.total_composites += 1;
+        output.last_frame = frame.frame_number;
+
+        const target_samples: ?u64 = if (self.chronofs_clock) |*cc|
+            cc.samplePosition()
+        else
+            null;
+
+        return .{
+            .frame_number = frame.frame_number,
+            .surfaces_rendered = 0,
+            .total_render_time_ns = 0,
+            .frame_time_ns = frame.getElapsed(),
+            .target_audio_samples = target_samples,
+        };
+    }
+
     /// Perform composition
     pub fn composite(self: *Self) !CompositeResult {
         const output = &(self.output orelse return error.NoOutput);
 
         var frame = self.scheduler.beginFrame();
         defer frame.end();
+
+        // ADR 0021 Section 7: the blank root. One full-frame fill in
+        // the background colour (invariant B4: a compositor-owned
+        // fill, not a surface), then the pipeline suspends via the
+        // needsComposite gate until the root changes.
+        if (self.presentation_root == .blank) {
+            return self.blankComposite(output, &frame);
+        }
 
         self.damage_tracker.beginFrame();
 

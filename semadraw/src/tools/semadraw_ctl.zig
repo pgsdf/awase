@@ -4,7 +4,10 @@
 // status round-trip as the session authority; rejection of an
 // unauthorized peer) are driven with this tool.
 //
-// Usage: semadraw-ctl [--socket PATH] status|blank|unblank
+// Usage: semadraw-ctl [--socket PATH] status|blank|unblank|watch
+// watch: hold the connection open and print every display_state
+// notification as it arrives (ADR 0021 Section 8; the Section 10
+// notification bench check), until EOF or interrupt.
 // Exit codes: 0 reply received, 1 usage, 2 connect failed (also the
 // unauthorized-peer outcome: the daemon closes without a reply),
 // 3 daemon replied ctl_error (code printed).
@@ -22,6 +25,7 @@ fn fail(comptime fmt: []const u8, args: anytype, code: u8) noreturn {
 pub fn main(init: std.process.Init.Minimal) !void {
     var path: []const u8 = control.DEFAULT_CTL_SOCKET_PATH;
     var verb: ?control.CtlMsgType = null;
+    var watch = false;
 
     const args_owned = try compat.args.alloc(std.heap.page_allocator, init.args);
     defer args_owned.deinit(std.heap.page_allocator);
@@ -38,11 +42,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
             verb = .blank;
         } else if (std.mem.eql(u8, a, "unblank")) {
             verb = .unblank;
+        } else if (std.mem.eql(u8, a, "watch")) {
+            watch = true;
         } else {
             fail("semadraw-ctl: unknown argument '{s}'", .{a}, 1);
         }
     }
-    const v = verb orelse fail("usage: semadraw-ctl [--socket PATH] status|blank|unblank", .{}, 1);
+    if (watch and verb != null) fail("semadraw-ctl: watch takes no verb", .{}, 1);
+    if (!watch and verb == null) fail("usage: semadraw-ctl [--socket PATH] status|blank|unblank|watch", .{}, 1);
 
     const fd = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch
         fail("semadraw-ctl: socket() failed", .{}, 2);
@@ -53,6 +60,38 @@ pub fn main(init: std.process.Init.Minimal) !void {
     compat.posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch
         fail("semadraw-ctl: cannot connect to {s} (daemon down, or peer not authorized)", .{path}, 2);
 
+    if (watch) {
+        std.debug.print("watching {s} for display_state notifications...\n", .{path});
+        while (true) {
+            var win: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8 = undefined;
+            var wgot: usize = 0;
+            while (wgot < control.CtlHeader.SIZE) {
+                const rn = posix.read(fd, win[wgot..]) catch fail("semadraw-ctl: read failed", .{}, 2);
+                if (rn == 0) return; // daemon closed; clean exit
+                wgot += rn;
+            }
+            const whdr = control.CtlHeader.deserialize(win[0..control.CtlHeader.SIZE]) catch
+                fail("semadraw-ctl: malformed notification header", .{}, 2);
+            if (whdr.length > control.MAX_CTL_PAYLOAD) fail("semadraw-ctl: oversize notification", .{}, 2);
+            const wtotal = control.CtlHeader.SIZE + whdr.length;
+            while (wgot < wtotal) {
+                const rn = posix.read(fd, win[wgot..]) catch fail("semadraw-ctl: read failed", .{}, 2);
+                if (rn == 0) fail("semadraw-ctl: connection closed mid-notification", .{}, 2);
+                wgot += rn;
+            }
+            if (whdr.msg_type == .display_state) {
+                const st = control.DisplayStatePayload.deserialize(win[control.CtlHeader.SIZE..wtotal]) catch
+                    fail("semadraw-ctl: malformed display_state", .{}, 2);
+                const name = if (std.enums.fromInt(control.DisplayAxis, st.axis)) |axis|
+                    @tagName(axis)
+                else
+                    "unknown";
+                std.debug.print("display: {s}\n", .{name});
+            }
+        }
+    }
+
+    const v = verb.?;
     var out: [control.CtlHeader.SIZE]u8 = undefined;
     (control.CtlHeader{ .msg_type = v, .flags = 0, .length = 0 }).serialize(&out);
     var off: usize = 0;

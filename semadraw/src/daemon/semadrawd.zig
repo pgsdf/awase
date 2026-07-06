@@ -221,11 +221,22 @@ pub const Daemon = struct {
     /// before the per-accept credential check.
     ctl_server: socket_server.SocketServer,
     ctl_clients: std.ArrayListUnmanaged(CtlClient),
-    /// ADR 0021 Section 3: the display axis. Step 1 (control
-    /// transport) carries it for status_query; transitions land with
-    /// the presentation-root work, until which blank/unblank reply
-    /// not_implemented.
+    /// ADR 0021 Section 3: the display axis. Requests arrive on the
+    /// control interface; input-driven wake is evaluated locally in
+    /// the input paths below (no policy round-trip, ADR 0021 §4).
     display_axis: control.DisplayAxis,
+    /// B5 wake-swallow state (ADR 0021 §6). Initial mechanism, per
+    /// the ADR explicitly one acceptable strategy and not the
+    /// normative contract: the loop pass that wakes the display has
+    /// all its input batches swallowed, and key/button presses seen
+    /// in that pass have their paired releases swallowed later. The
+    /// bench invariant (no wake-responsible input observed by any
+    /// client) is the contract; this mechanism may be replaced.
+    wake_swallow_pass: bool,
+    wake_swallow_keys: [8]u32,
+    wake_swallow_keys_len: usize,
+    wake_swallow_buttons: [8]u8,
+    wake_swallow_buttons_len: usize,
     tcp: ?tcp_server.TcpServer,
     /// D-7 (ADR 0011): the focus region writer. The compositor is the
     /// sole writer and owner of /var/run/sema/input/focus (INPUT_FOCUS.md);
@@ -472,6 +483,11 @@ pub const Daemon = struct {
             .ctl_server = ctl_server,
             .ctl_clients = .empty,
             .display_axis = .on,
+            .wake_swallow_pass = false,
+            .wake_swallow_keys = undefined,
+            .wake_swallow_keys_len = 0,
+            .wake_swallow_buttons = undefined,
+            .wake_swallow_buttons_len = 0,
             .tcp = tcp,
             .focus_writer = focus_writer,
             .focused_surface = input.NO_FOCUS,
@@ -1208,16 +1224,88 @@ pub const Daemon = struct {
                 break;
             }
 
-            // Forward keyboard events to focused surface's client
+            // Forward keyboard events to focused surface's client.
+            // ADR 0021 §6 (B5): a batch arriving while blanked wakes
+            // the display and is swallowed whole, its presses
+            // recorded so their paired releases are swallowed later;
+            // otherwise the batch is filtered against the pending
+            // release set before delivery.
             const key_events = self.comp.getKeyEvents();
             if (key_events.len > 0) {
-                self.forwardKeyEvents(key_events);
+                if (self.display_axis == .blanked) self.wakeDisplay();
+                if (self.wake_swallow_pass) {
+                    for (key_events) |ev| {
+                        if (ev.pressed and self.wake_swallow_keys_len < self.wake_swallow_keys.len) {
+                            self.wake_swallow_keys[self.wake_swallow_keys_len] = ev.key_code;
+                            self.wake_swallow_keys_len += 1;
+                        }
+                    }
+                } else if (self.wake_swallow_keys_len > 0) {
+                    var filtered: [backend.MAX_KEY_EVENTS]backend.KeyEvent = undefined;
+                    var fl: usize = 0;
+                    for (key_events) |ev| {
+                        if (!ev.pressed) {
+                            var matched = false;
+                            for (0..self.wake_swallow_keys_len) |ki| {
+                                if (self.wake_swallow_keys[ki] == ev.key_code) {
+                                    // Swallow the paired release and
+                                    // retire its entry.
+                                    self.wake_swallow_keys[ki] =
+                                        self.wake_swallow_keys[self.wake_swallow_keys_len - 1];
+                                    self.wake_swallow_keys_len -= 1;
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if (matched) continue;
+                        }
+                        filtered[fl] = ev;
+                        fl += 1;
+                    }
+                    if (fl > 0) self.forwardKeyEvents(filtered[0..fl]);
+                } else {
+                    self.forwardKeyEvents(key_events);
+                }
             }
 
-            // Forward mouse events to focused surface's client
+            // Forward mouse events to focused surface's client. Same
+            // B5 treatment as the key path: a waking batch is
+            // swallowed whole (motion and all), presses recorded for
+            // paired-release swallowing.
             const mouse_events = self.comp.getMouseEvents();
             if (mouse_events.len > 0) {
-                self.forwardMouseEvents(mouse_events);
+                if (self.display_axis == .blanked) self.wakeDisplay();
+                if (self.wake_swallow_pass) {
+                    for (mouse_events) |ev| {
+                        if (ev.event_type == .press and self.wake_swallow_buttons_len < self.wake_swallow_buttons.len) {
+                            self.wake_swallow_buttons[self.wake_swallow_buttons_len] = @intFromEnum(ev.button);
+                            self.wake_swallow_buttons_len += 1;
+                        }
+                    }
+                } else if (self.wake_swallow_buttons_len > 0) {
+                    var filtered: [backend.MAX_MOUSE_EVENTS]backend.MouseEvent = undefined;
+                    var fl: usize = 0;
+                    for (mouse_events) |ev| {
+                        if (ev.event_type == .release) {
+                            var matched = false;
+                            for (0..self.wake_swallow_buttons_len) |bi| {
+                                if (self.wake_swallow_buttons[bi] == @intFromEnum(ev.button)) {
+                                    self.wake_swallow_buttons[bi] =
+                                        self.wake_swallow_buttons[self.wake_swallow_buttons_len - 1];
+                                    self.wake_swallow_buttons_len -= 1;
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if (matched) continue;
+                        }
+                        filtered[fl] = ev;
+                        fl += 1;
+                    }
+                    if (fl > 0) self.forwardMouseEvents(filtered[0..fl]);
+                } else {
+                    self.forwardMouseEvents(mouse_events);
+                }
             }
 
             // AD-2a Phase 2.4.4: feed raw inputfs events into the
@@ -1240,6 +1328,17 @@ pub const Daemon = struct {
             // body lands in Phase 2.4.5.
             const inputfs_events = self.comp.getInputfsEvents();
             if (inputfs_events.len > 0) {
+                // ADR 0021 §6 (B5): raw events arriving while blanked
+                // wake the display; the waking batch is not fed to
+                // the gesture recogniser, so no gesture derived from
+                // wake-responsible input can reach a client. A touch
+                // sequence begun in the waking batch therefore reaches
+                // the recogniser truncated; it must already tolerate
+                // streams that begin mid-gesture (any daemon restart
+                // produces one), which bounds the harm. Timestamp and
+                // cursor-position harvesting continue regardless:
+                // they are compositor state, not client delivery.
+                if (self.display_axis == .blanked) self.wakeDisplay();
                 for (inputfs_events) |ev| {
                     self.last_input_ts_ns = ev.ts_ordering;
 
@@ -1262,6 +1361,8 @@ pub const Daemon = struct {
                         self.last_motion_y = std.mem.readInt(i32, ev.payload[4..8], .little);
                         self.last_motion_seen = true;
                     }
+
+                    if (self.wake_swallow_pass) continue;
 
                     if (translateInputfsEvent(ev)) |lib_in| {
                         self.gesture_recognizer.handleEvent(lib_in) catch |err| {
@@ -1382,6 +1483,19 @@ pub const Daemon = struct {
             // Cheap on the no-change path: one list walk inside
             // getTopVisibleSurface plus an optional compare.
             self.pumpCursorFocus();
+
+            // ADR 0021 §6: the wake swallow covers exactly the loop
+            // pass that woke the display; delivery resumes next pass
+            // (paired releases excepted, handled at the harvests).
+            self.wake_swallow_pass = false;
+
+            // ADR 0021 §7: while blanked, discard damage committed by
+            // still-executing clients; the wake path full-repaints,
+            // so this damage would never be composited and would only
+            // grow the tracker across a long blank.
+            if (self.display_axis == .blanked) {
+                self.comp.discardPendingDamage();
+            }
 
             // Perform composition if needed (always check, regardless of socket events)
             if (self.comp.needsComposite()) {
@@ -2069,6 +2183,40 @@ pub const Daemon = struct {
         }
     }
 
+    /// ADR 0021: display-axis transition. Applies the presentation
+    /// root, emits the display_state notification to every control
+    /// connection (Section 8: on every transition, including
+    /// input-driven wake), and returns whether the state changed
+    /// (idempotent requests are acknowledged without a duplicate
+    /// notification, Section 4).
+    fn setDisplayAxis(self: *Daemon, axis: control.DisplayAxis) bool {
+        if (self.display_axis == axis) return false;
+        self.display_axis = axis;
+        self.comp.setPresentationRoot(switch (axis) {
+            .on => .scene,
+            .blanked => .blank,
+        });
+        log.info("display axis: {s}", .{@tagName(axis)});
+        self.broadcastDisplayState();
+        return true;
+    }
+
+    fn broadcastDisplayState(self: *Daemon) void {
+        var pl: [control.DisplayStatePayload.SIZE]u8 = undefined;
+        (control.DisplayStatePayload{ .axis = @intFromEnum(self.display_axis) }).serialize(&pl);
+        for (self.ctl_clients.items, 0..) |_, i| {
+            self.sendCtl(i, .display_state, &pl);
+        }
+    }
+
+    /// ADR 0021 §4: input-driven wake, compositor-local and
+    /// immediate. Arms the B5 swallow for the remainder of this loop
+    /// pass; paired-release recording happens at the harvest sites.
+    fn wakeDisplay(self: *Daemon) void {
+        if (!self.setDisplayAxis(.on)) return;
+        self.wake_swallow_pass = true;
+    }
+
     fn findCtlByFd(self: *Daemon, fd: posix.fd_t) ?usize {
         for (self.ctl_clients.items, 0..) |*cc, i| {
             if (cc.fd == fd) return i;
@@ -2175,10 +2323,17 @@ pub const Daemon = struct {
     fn dispatchCtl(self: *Daemon, idx: usize, msg_type: control.CtlMsgType) void {
         switch (msg_type) {
             .status_query => self.sendCtlDisplayState(idx),
-            // ADR 0021 display-axis transitions land with the
-            // presentation-root selector; the transport reports the
-            // verbs as assigned-but-not-landed until then.
-            .blank, .unblank => self.sendCtlError(idx, .not_implemented),
+            // ADR 0021 §4: idempotent transitions, acknowledged
+            // either way; the display_state notification fires only
+            // on an actual change (inside setDisplayAxis).
+            .blank => {
+                _ = self.setDisplayAxis(.blanked);
+                self.sendCtl(idx, .ctl_ack, &.{});
+            },
+            .unblank => {
+                _ = self.setDisplayAxis(.on);
+                self.sendCtl(idx, .ctl_ack, &.{});
+            },
             // ADR 0012 verbs relocate here (Section 10 amendment) and
             // are implemented with the lock machinery.
             .session_lock, .session_unlock => self.sendCtlError(idx, .not_implemented),
