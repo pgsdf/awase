@@ -69,6 +69,13 @@ pub const Encoder = @import("encoder.zig").Encoder;
 /// queried via queryOutputInfo). For most apps, prefer App.
 pub const client = @import("semadraw_client");
 
+/// ADR 0021 Section 8: the control-interface wire contract, exported
+/// for the session authority (pgsd-sessiond) which is the only
+/// legitimate client of the control socket. A file import within the
+/// module, deliberately not a named build module here: the contract
+/// travels with the semadraw dependency sessiond already has.
+pub const control = @import("ipc/control.zig");
+
 /// High-level application framework. Wraps connection, surface, encoder,
 /// and event loop. See src/app.zig for usage.
 pub const App     = @import("app.zig").App;

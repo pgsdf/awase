@@ -29,6 +29,8 @@
 const std = @import("std");
 const pam = @import("pam.zig");
 const user_enum = @import("user_enum.zig");
+const idle = @import("idle.zig");
+const compat = @import("compat");
 
 const c = @cImport({
     @cInclude("sys/types.h");
@@ -332,14 +334,35 @@ pub fn launch(
         c._exit(127);
     }
 
-    // PARENT. Wait for the child to exit.
+    // PARENT. Wait for the child to exit, running the SM-2 T0 idle
+    // policy alongside (ADR 0021 Section 9(a); see idle.zig for the
+    // folded-into-sessiond structural rationale). The blocking
+    // waitpid becomes WNOHANG on a 1-second cadence so session exit
+    // is still observed promptly, with the policy evaluated every
+    // POLICY_EVERY passes (policy needs seconds-granularity at most:
+    // T0 is minutes). The idle policy's connections are established
+    // here in the parent AFTER the fork, so the session leader never
+    // inherits them. A kqueue EVFILT_PROC + timer shape can replace
+    // the cadence loop if the 1-second exit-detection latency ever
+    // matters.
     var status: c_int = 0;
+    var idle_policy = idle.IdlePolicy.init(allocator);
+    defer idle_policy.deinit();
+    const WAIT_TICK_NS: u64 = 1 * std.time.ns_per_s;
+    const POLICY_EVERY: u32 = 10;
+    var passes: u32 = 0;
     while (true) {
-        const w = c.waitpid(pid, &status, 0);
+        const w = c.waitpid(pid, &status, c.WNOHANG);
         if (w == pid) break;
-        if (w < 0 and errno() == c.EINTR) continue;
-        // waitpid failed for some other reason; treat as exec failed.
-        break;
+        if (w < 0) {
+            if (errno() == c.EINTR) continue;
+            // waitpid failed for some other reason; treat as exec failed.
+            break;
+        }
+        // w == 0: session leader still running.
+        if (passes % POLICY_EVERY == 0) idle_policy.tick();
+        passes +%= 1;
+        compat.time.sleep(compat.time.Duration.fromNanoseconds(WAIT_TICK_NS));
     }
 
     // Tear down PAM session. The errdefer chain will not fire on the

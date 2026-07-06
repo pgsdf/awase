@@ -1,0 +1,178 @@
+// SM-2 T0 stage (ADR 0021 Section 9, ratified option (a)): the idle
+// blank policy, the first tenant of the SM-2 agent's permanent home.
+//
+// Structural note. Sessiond ADR 0010 D6 left open whether the
+// per-session policy agent is a thin separate daemon or is folded
+// into pgsd-sessiond's own wait loop; ADR 0021 Section 9(a) was
+// worded against the thin-daemon shape ("signal pgsd-sessiond").
+// This implementation takes the folded shape: pgsd-sessiond is the
+// process that blocks for the whole session anyway (launch.zig's
+// waitpid), it is already the ADR 0010 session authority holding
+// the control-socket privilege, and folding removes an entire
+// agent-to-sessiond signaling channel that the T0-only stage does
+// not need. The later SM-2 stages (lock trigger, SM-3 suspend) slot
+// into the same tick. If a separate agent is ever wanted, this
+// module lifts out unchanged and the "signal" becomes its IPC.
+//
+// The policy per tick (ADR 0021 Section 9(a) and ADR 0013 D2):
+//
+//   - query semadrawd's published last_input_ts_ns over the client
+//     socket (idle_query, ADR 0013);
+//   - compute idle = monotonic-now - last_input_ts_ns. The timestamp
+//     domain is inputfs's nanouptime, which userland reads as
+//     CLOCK_MONOTONIC (compat.time.nowMonotonic);
+//   - at idle >= T0, send blank on the control socket, once per
+//     idle period (the compositor acknowledges idempotently, but a
+//     request per tick would be noise);
+//   - idle below T0 re-arms: the compositor woke itself on input
+//     (ADR 0021 Section 4), which is visible here purely as the
+//     idle measure collapsing.
+//
+// A published value of 0 is the ADR 0013 D3 sentinel (no input seen
+// since the daemon started) and is skipped rather than treated as
+// infinite idle: blanking a display nobody has touched since a
+// compositor restart, possibly seconds after boot, is not the
+// operator's intent; the first real input starts the clock.
+//
+// Failure posture: fail-open to ON, recorded as intended in
+// ADR 0021 Section 12. Every connection here is optional and
+// retried on the next tick; a compositor restart mid-session shows
+// up as query failure, both connections are dropped and re-dialed,
+// and in the meantime the display simply does not blank.
+
+const std = @import("std");
+const posix = std.posix;
+const compat = @import("compat");
+const semadraw = @import("semadraw");
+
+const control = semadraw.control;
+
+/// Environment knob: blank timeout in seconds. 0 disables. The
+/// default is the operator-requested 15 minutes (ADR 0021 Section 1);
+/// the ADR 0009 timeline gains this as the optional T0 stage.
+pub const ENV_BLANK_TIMEOUT = "PGSD_BLANK_TIMEOUT_S";
+pub const DEFAULT_T0_S: u64 = 900;
+
+pub const IdlePolicy = struct {
+    allocator: std.mem.Allocator,
+    t0_ns: u64,
+    conn: ?semadraw.client.Connection = null,
+    ctl_fd: ?posix.fd_t = null,
+    blank_requested: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator) IdlePolicy {
+        var t0_s: u64 = DEFAULT_T0_S;
+        if (posix.getenv(ENV_BLANK_TIMEOUT)) |v| {
+            t0_s = std.fmt.parseInt(u64, v, 10) catch DEFAULT_T0_S;
+        }
+        return .{
+            .allocator = allocator,
+            .t0_ns = t0_s * std.time.ns_per_s,
+        };
+    }
+
+    pub fn deinit(self: *IdlePolicy) void {
+        if (self.conn) |*conn| conn.disconnect();
+        self.conn = null;
+        if (self.ctl_fd) |fd| _ = posix.system.close(fd);
+        self.ctl_fd = null;
+    }
+
+    /// One policy evaluation. Called from the session wait loop at
+    /// policy rate (seconds); every failure path returns quietly and
+    /// the next tick retries.
+    pub fn tick(self: *IdlePolicy) void {
+        if (self.t0_ns == 0) return;
+
+        // Keep the control connection's inbound side drained: the
+        // compositor sends display_state notifications on every
+        // transition (ADR 0021 Section 8) and acks our requests;
+        // this stage acts on none of them (idle collapsing on wake
+        // is the signal it uses), but leaving them unread would
+        // grow the socket buffer across a long session.
+        self.drainCtl();
+
+        if (self.conn == null) {
+            self.conn = semadraw.client.Connection.connect(self.allocator) catch null;
+            if (self.conn == null) return;
+        }
+
+        const last_input = self.conn.?.queryIdle() catch {
+            // Compositor gone (restart, crash): drop both channels
+            // and re-dial next tick. Fail-open.
+            self.conn.?.disconnect();
+            self.conn = null;
+            if (self.ctl_fd) |fd| {
+                _ = posix.system.close(fd);
+                self.ctl_fd = null;
+            }
+            return;
+        };
+        if (last_input == 0) return; // ADR 0013 D3 sentinel
+
+        const now: u64 = @intCast(compat.time.nowMonotonic());
+        if (now <= last_input) return; // clock skew guard
+        const idle = now - last_input;
+
+        if (idle >= self.t0_ns) {
+            if (!self.blank_requested) {
+                self.sendBlank();
+            }
+        } else {
+            self.blank_requested = false;
+        }
+    }
+
+    fn ensureCtl(self: *IdlePolicy) ?posix.fd_t {
+        if (self.ctl_fd) |fd| return fd;
+        const fd = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
+        var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = [_]u8{0} ** 104 };
+        const path = control.DEFAULT_CTL_SOCKET_PATH;
+        @memcpy(addr.path[0..path.len], path);
+        compat.posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch {
+            _ = posix.system.close(fd);
+            return null;
+        };
+        self.ctl_fd = fd;
+        return fd;
+    }
+
+    fn sendBlank(self: *IdlePolicy) void {
+        const fd = self.ensureCtl() orelse return;
+        var out: [control.CtlHeader.SIZE]u8 = undefined;
+        (control.CtlHeader{ .msg_type = .blank, .flags = 0, .length = 0 }).serialize(&out);
+        var off: usize = 0;
+        while (off < out.len) {
+            const wn = posix.system.write(fd, out[off..].ptr, out.len - off);
+            if (wn < 0) {
+                // Peer gone; drop and re-dial next tick. blank stays
+                // unrequested so the retry actually retries.
+                _ = posix.system.close(fd);
+                self.ctl_fd = null;
+                return;
+            }
+            off += @intCast(wn);
+        }
+        self.blank_requested = true;
+        // The ack (and the transition notification) arrive on this
+        // socket and are consumed by drainCtl on subsequent ticks;
+        // the request is fire-and-forget at this layer, matching the
+        // secret-free trigger shape of sessiond ADR 0010 D6.
+    }
+
+    fn drainCtl(self: *IdlePolicy) void {
+        const fd = self.ctl_fd orelse return;
+        var scratch: [256]u8 = undefined;
+        while (true) {
+            const rc = posix.system.recv(fd, &scratch, scratch.len, posix.MSG.DONTWAIT);
+            if (rc <= 0) {
+                if (rc == 0) {
+                    // Orderly close by the compositor.
+                    _ = posix.system.close(fd);
+                    self.ctl_fd = null;
+                }
+                return;
+            }
+        }
+    }
+};
