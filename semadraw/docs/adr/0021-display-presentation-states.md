@@ -2,8 +2,13 @@
 
 ## Status
 
-Draft 2026-07-06, revised same day on operator review, pending
-ratification. Companion to ADR 0012 (session-lock mode, D-10) and
+Accepted 2026-07-06 (operator-ratified in session; drafted and revised
+same day on operator review). Ratified decisions: the two-axis state
+model (Section 3); invariants B1-B5; the dedicated control socket,
+Section 8 option (a), as the permanent control-interface architecture;
+the Section 9 policy vehicle (a), the SM-2 agent beginning with the T0
+stage; and the consequential relocation of ADR 0012's lock verbs to
+the control socket (amendment note added to ADR 0012 Section 10). Companion to ADR 0012 (session-lock mode, D-10) and
 ADR 0013 (idle publication, D-11); refines sessiond ADR 0009 D3
 (two-tier blanking) by making the Tier A compositor blank an
 independently requestable state rather than a facet of the T1 lock
@@ -19,9 +24,7 @@ ADR 0010 session authority rather than a concrete credential
 two-axis model, the presentation-only invariant, and frame-callback
 suspension are affirmed unchanged.
 
-Decisions flagged for ratification: the two-axis state model
-(Section 3), the control-interface shape (Section 8, two options),
-and the interim policy vehicle (Section 9).
+No decisions remain open.
 
 ## 1. Context
 
@@ -185,7 +188,7 @@ Tier A remains a content-hiding and compute-saving measure, not a
 power measure (sessiond ADR 0009 D3): the panel and GPU stay on until
 Tier B.
 
-## 8. Control interface, not client protocol (flagged for ratification)
+## 8. Control interface, not client protocol
 
 Blank control is session policy, not a compositor service offered to
 clients, and therefore does not extend the public client protocol.
@@ -196,30 +199,28 @@ input-driven wake, so the policy agent can restart its idle timeline
 without polling races). No display_blank opcode enters the client
 protocol; a display-off verb is not defined, Tier B defines it.
 
-Two shapes are offered for ratification:
+Ratified shape (operator, 2026-07-06): a dedicated control socket, a
+second unix listener (e.g. /var/run/sema/drawctl), root-owned and
+mode-restricted, with its own small message set. The ownership
+boundary is physical, filesystem permissions pre-filter before any
+credential check, and the client protocol contract stays pure. Cost:
+one more listener in the daemon's poll loop (already multi-fd).
 
-  - (a) Dedicated control socket: a second unix listener
-    (e.g. /var/run/sema/drawctl), root-owned and mode-restricted, with
-    its own small message set. The ownership boundary is physical,
-    filesystem permissions pre-filter before any credential check, and
-    the client protocol contract stays pure. Cost: one more listener
-    in the daemon's poll loop (already multi-fd). Recommended.
-  - (b) Control-plane opcode range on the existing socket: a reserved
-    range partitioned out of the client contract, documented
-    separately, rejected for non-authorized peers. Cheaper, but the
-    policy verbs still live in the client protocol's numeric space and
-    the boundary is documentary rather than physical.
+Rejected alternative, recorded: a control-plane opcode range
+partitioned out of the existing client socket. Cheaper, but the
+policy verbs would still live in the client protocol's numeric space
+and the boundary would be documentary rather than physical.
 
 Consequential amendment to ADR 0012: session_lock (0x0035) and
 session_unlock (0x0036) were assigned in the client protocol
 (ADR 0012 Section 10) but are unimplemented, so nothing is lost by
 migrating them to the same control interface. The same argument that
 excludes blank from the client protocol applies to lock with more
-force, since lock is the security-critical verb. On ratification of
-(a) or (b), ADR 0012 Section 10 receives an amendment note relocating
-its verbs accordingly and releasing 0x0035/0x0036 back to the client
-range (or retiring them as permanently reserved, implementer's
-choice).
+force, since lock is the security-critical verb. With the control
+socket ratified, ADR 0012 Section 10 carries an amendment note
+relocating its verbs there; 0x0035/0x0036 remain permanently reserved
+in the client range rather than being reused, so no stale document or
+client can ever collide with a reassigned meaning.
 
 ## 9. Policy vehicle and sequencing (flagged for ratification)
 

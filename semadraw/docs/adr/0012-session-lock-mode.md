@@ -11,6 +11,11 @@ lock-client authorization model (Section 4, uid 0 as the bootstrap
 instantiation of a lock capability) and the deferred opcode assignments
 (Section 10) are ratified.
 
+Amended 2026-07-06 by ADR 0021: the session_lock and session_unlock
+verbs relocate from the public client protocol to the dedicated
+privileged control socket ratified in ADR 0021 Section 8; see the
+amendment note in Section 10. No other decision of this ADR changes.
+
 ## 1. Context
 
 A secure session lock must enforce the following properties:
@@ -203,6 +208,19 @@ Numeric assignments are generated via the protocol pipeline
 (`shared/protocol_constants.json`, regenerated into `protocol.zig`), in
 the established ranges and after the D-7 reservations (`set_focus`,
 `focus_changed`).
+
+Amendment (2026-07-06, ADR 0021): blanking is session policy and its
+control verbs do not enter the client protocol; the same argument
+applies with more force to the lock verbs, which are security-critical
+and unimplemented. session_lock and session_unlock therefore relocate
+to the dedicated privileged control socket ratified in ADR 0021
+Section 8, alongside blank/unblank and display-state notifications.
+The client-protocol assignments 0x0035/0x0036 remain permanently
+reserved and are never reused; the protocol pipeline entries are
+updated when the control socket is implemented, not by this
+documentation change. Sections 5, 6, 7, and 9 of this ADR are
+unaffected: the operations, invariants, and fail-closed semantics are
+carried unchanged onto the new transport.
 
 ## 11. Implementation requirements
 
