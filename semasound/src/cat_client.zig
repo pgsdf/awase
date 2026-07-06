@@ -13,8 +13,10 @@
 // blocking: the broker drains the socket at the hardware rate and
 // backpressure holds the pipeline (and ffmpeg behind it) to real time.
 //
-// Usage: semasound-cat [--rate N] [--mono] [--target NAME]
+// Usage: semasound-cat [--rate N] [--mono] [--gain G] [--target NAME]
 //        [--label NAME] [--class TOKEN]
+// --gain G scales samples client-side by G in [0.0, 1.0] (default 1.0),
+// saturating-safe since attenuation cannot overflow i16.
 // Exit codes: 0 clean EOF, 2 rejected at hello, 3 preempted mid-stream
 // by policy (ADR 0026 Decision 6).
 
@@ -36,6 +38,7 @@ fn writeAll(fd: posix.fd_t, bytes: []const u8) !void {
 pub fn main(init: std.process.Init.Minimal) !void {
     var rate: u32 = protocol.CANON_RATE; // --rate N: declared stdin rate
     var mono: bool = false; // --mono: stdin is 16-bit mono
+    var gain_milli: u32 = 1000; // --gain G: client-side attenuation, unity = 1000
     var target_name: []const u8 = "";
     var label_name: []const u8 = "";
     var class_name: []const u8 = "";
@@ -51,6 +54,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (i < args.len) rate = std.fmt.parseInt(u32, args[i], 10) catch rate;
         } else if (std.mem.eql(u8, a, "--mono")) {
             mono = true;
+        } else if (std.mem.eql(u8, a, "--gain")) {
+            i += 1;
+            if (i < args.len) {
+                const g = std.fmt.parseFloat(f64, args[i]) catch 1.0;
+                if (g >= 0.0 and g <= 1.0) gain_milli = @intFromFloat(@round(g * 1000.0));
+            }
         } else if (std.mem.eql(u8, a, "--target")) {
             i += 1;
             if (i < args.len) target_name = args[i];
@@ -114,6 +123,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
             std.process.exit(1);
         };
         if (rn == 0) break; // EOF: decoder finished
+        if (gain_milli != 1000) {
+            // Attenuate in place. Samples are interleaved s16le; scale
+            // each in i32 (mirrors the broker's milli-gain convention,
+            // mixer.mixGains). rn may be odd only at a truncated final
+            // read; the trailing byte passes through unscaled.
+            var off: usize = 0;
+            while (off + 2 <= rn) : (off += 2) {
+                const lo: u16 = chunk[off];
+                const hi: u16 = @as(u16, chunk[off + 1]) << 8;
+                const v: i16 = @bitCast(lo | hi);
+                const scaled: i32 = @divTrunc(@as(i32, v) * @as(i32, @intCast(gain_milli)), 1000);
+                const u: u16 = @bitCast(@as(i16, @intCast(scaled)));
+                chunk[off] = @truncate(u);
+                chunk[off + 1] = @truncate(u >> 8);
+            }
+        }
         writeAll(fd, chunk[0..rn]) catch |e| {
             // A mid-stream write failure may be a group preemption; the
             // broker queues STATUS_PREEMPTED before shutting the socket
