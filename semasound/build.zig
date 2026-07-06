@@ -36,6 +36,19 @@ pub fn build(b: *std.Build) void {
     tone.root_module.addImport("compat", compat_mod);
     b.installArtifact(tone);
 
+    // semasound-cat: generic stdin PCM client. Pairs with any external
+    // decoder (ffmpeg et al.) to make arbitrary media a semasound source.
+    const cat = b.addExecutable(.{
+        .name = "semasound-cat",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cat_client.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    cat.root_module.addImport("compat", compat_mod);
+    b.installArtifact(cat);
+
     // F.5.e (ADR 0027 Decision 5): the read-only surface inspector.
     const dump = b.addExecutable(.{
         .name = "semasound-dump",
