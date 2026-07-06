@@ -56,13 +56,13 @@ pub const DEFAULT_T0_S: u64 = 900;
 pub const IdlePolicy = struct {
     allocator: std.mem.Allocator,
     t0_ns: u64,
-    conn: ?semadraw.client.Connection = null,
+    conn: ?*semadraw.client.Connection = null,
     ctl_fd: ?posix.fd_t = null,
     blank_requested: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) IdlePolicy {
         var t0_s: u64 = DEFAULT_T0_S;
-        if (posix.getenv(ENV_BLANK_TIMEOUT)) |v| {
+        if (compat.args.getenv(ENV_BLANK_TIMEOUT)) |v| {
             t0_s = std.fmt.parseInt(u64, v, 10) catch DEFAULT_T0_S;
         }
         return .{
@@ -72,7 +72,9 @@ pub const IdlePolicy = struct {
     }
 
     pub fn deinit(self: *IdlePolicy) void {
-        if (self.conn) |*conn| conn.disconnect();
+        // disconnect() destroys the heap Connection (it owns itself
+        // via its allocator); just drop the pointer after.
+        if (self.conn) |conn| conn.disconnect();
         self.conn = null;
         if (self.ctl_fd) |fd| _ = posix.system.close(fd);
         self.ctl_fd = null;
@@ -99,7 +101,8 @@ pub const IdlePolicy = struct {
 
         const last_input = self.conn.?.queryIdle() catch {
             // Compositor gone (restart, crash): drop both channels
-            // and re-dial next tick. Fail-open.
+            // and re-dial next tick. Fail-open. disconnect() also
+            // destroys the Connection.
             self.conn.?.disconnect();
             self.conn = null;
             if (self.ctl_fd) |fd| {
