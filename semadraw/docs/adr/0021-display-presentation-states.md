@@ -2,14 +2,26 @@
 
 ## Status
 
-Draft 2026-07-06, pending operator ratification. Companion to ADR 0012
-(session-lock mode, D-10) and ADR 0013 (idle publication, D-11); refines
-sessiond ADR 0009 D3 (two-tier blanking) by making the Tier A compositor
-blank an independently requestable state rather than a facet of the T1
-lock engagement. Decisions flagged for ratification: the two-axis state
-model (Section 3), blank authorization (Section 5), wake-event
-swallowing including key-release pairing (Section 6), and the interim
-policy vehicle (Section 9).
+Draft 2026-07-06, revised same day on operator review, pending
+ratification. Companion to ADR 0012 (session-lock mode, D-10) and
+ADR 0013 (idle publication, D-11); refines sessiond ADR 0009 D3
+(two-tier blanking) by making the Tier A compositor blank an
+independently requestable state rather than a facet of the T1 lock
+engagement.
+
+Revision (operator review, 2026-07-06): blank control moved off the
+public client protocol onto a privileged control interface (Section 8),
+with a consequential amendment to ADR 0012's opcode placement; the
+wake rule restated as a delivery invariant with the mechanism left to
+implementation (Section 6); authorization stated in terms of the
+ADR 0010 session authority rather than a concrete credential
+(Section 5); presentation-root selection added (Section 7). The
+two-axis model, the presentation-only invariant, and frame-callback
+suspension are affirmed unchanged.
+
+Decisions flagged for ratification: the two-axis state model
+(Section 3), the control-interface shape (Section 8, two options),
+and the interim policy vehicle (Section 9).
 
 ## 1. Context
 
@@ -104,38 +116,64 @@ display_unblank exists for policy-driven wake (e.g. an alarm or an
 incoming-call surface in some future) and for symmetry; it is not on
 the interactive path.
 
-## 5. Authorization (flagged for ratification)
+## 5. Authorization
 
-display_blank and display_unblank are accepted only from lock-authorized
-principals per ADR 0012 Section 4 (bootstrap: peer uid 0). Rationale:
-the ratified policy owner is the SM-2 per-session agent whose privileged
-actions are routed through pgsd-sessiond (sessiond ADR 0010 D6), so the
-requester of blank is the same principal as the requester of lock, and
-no new authority class is introduced. A hostile ordinary client can
-therefore neither blank the display (nuisance) nor unblank it
-(content-hiding bypass when the operator expects a dark screen).
+Blank and unblank requests originate from the session authority
+defined by sessiond ADR 0010: the principal that authenticates the
+session and requests the lock. Rationale: the ratified policy owner is
+the SM-2 per-session agent whose privileged actions are routed through
+pgsd-sessiond (sessiond ADR 0010 D6), so the requester of blank is the
+same principal as the requester of lock, and no new authority class is
+introduced. A hostile ordinary client can therefore neither blank the
+display (nuisance) nor unblank it (content-hiding bypass when the
+operator expects a dark screen).
+
+The concrete credential mechanism (peer uid, capability, socket
+ownership, IPC credential) is an implementation matter and is not
+specified here; ADR 0012 Section 4 records the current bootstrap
+instantiation and its planned evolution, and this ADR inherits
+whatever that instantiation is at any given time.
 
 Input-driven wake requires no authorization; it is the point.
 
-## 6. Wake-event semantics (flagged for ratification)
+## 6. Wake-event semantics
 
-The event that wakes the display is consumed by the compositor and not
-delivered to any client, in every security state: a keystroke that
-wakes must not type into the focused editor, must not press a button
-under the pointer, and must not become the first character of a
-password in the lock prompt. Delivery resumes with the next event.
+Normative invariant, B5: input responsible for leaving the BLANKED
+state is never delivered to clients, in every security state. A
+keystroke that wakes must not type into the focused editor, must not
+press a button under the pointer, and must not become the first
+character of a password in the lock prompt.
 
-Key-release pairing: the wake key's release arrives after the wake and
-would be delivered as an orphan key-up. The compositor records the
-waking key's identity and swallows its matching release; all other
-events after the wake are delivered normally. If the waking event is
-pointer motion or a button, only that event is swallowed (a button-down
-wake also swallows its paired button-up, by the same rule). This costs
-one small piece of state and buys clean client-visible semantics.
+The mechanism that satisfies B5 is deliberately not standardized: the
+space of waking inputs includes chords, held modifiers, touch
+sequences, stylus proximity, and accessibility devices, and freezing
+one strategy (e.g. record-the-waking-key, swallow-its-release) into
+the ADR would standardize an implementation detail that better
+input-state synchronization can later replace. An initial
+implementation MAY use waking-event-plus-paired-release swallowing;
+whatever the strategy, the bench requirement is stated against the
+invariant (no wake-responsible input observed by any client), not
+against the strategy.
 
-## 7. Presentation and scheduling
+## 7. Presentation roots and scheduling
 
-While BLANKED the compositor presents the blank fill (B4) and suspends
+The composed output is selected from a small set of presentation
+roots by a single selector evaluated from the (security, display)
+pair:
+
+  - compose(scene): the normal client scene graph;
+  - compose(lock): the lock surface, or the ADR 0012 Section 7.2
+    fallback fill;
+  - compose(blank): the blank fill (B4).
+
+The Section 3 matrix is exactly this selector's truth table. Blank is
+therefore an ordinary presentation mode chosen at the root, not a
+special case threaded through the renderer; the lock, when
+implemented, is another root under the same selector, and Tier B
+display-off becomes a fourth selector outcome (present nothing, power
+down) rather than new renderer state.
+
+While BLANKED the compositor presents the blank root and suspends
 the frame scheduler: no scene composition, no frame callbacks to
 clients whose surfaces are unpresented. Clients keep executing; their
 rendering throttles on the absent frame callbacks, which is the
@@ -147,15 +185,41 @@ Tier A remains a content-hiding and compute-saving measure, not a
 power measure (sessiond ADR 0009 D3): the panel and GPU stay on until
 Tier B.
 
-## 8. Protocol additions
+## 8. Control interface, not client protocol (flagged for ratification)
 
-New client messages: display_blank, display_unblank. New events:
-display_blanked, display_unblanked (emitted on every display-axis
-transition, including input-driven wake, so the policy agent can
-restart its idle timeline without polling races). Numeric assignments
-via the protocol pipeline (shared/protocol_constants.json), in the
-established ranges, after the ADR 0012 and ADR 0013 assignments.
-A display_off opcode is not assigned; Tier B assigns it.
+Blank control is session policy, not a compositor service offered to
+clients, and therefore does not extend the public client protocol.
+The compositor exposes a privileged control interface to the session
+authority, carrying: blank, unblank, and display-state change
+notifications (emitted on every display-axis transition, including
+input-driven wake, so the policy agent can restart its idle timeline
+without polling races). No display_blank opcode enters the client
+protocol; a display-off verb is not defined, Tier B defines it.
+
+Two shapes are offered for ratification:
+
+  - (a) Dedicated control socket: a second unix listener
+    (e.g. /var/run/sema/drawctl), root-owned and mode-restricted, with
+    its own small message set. The ownership boundary is physical,
+    filesystem permissions pre-filter before any credential check, and
+    the client protocol contract stays pure. Cost: one more listener
+    in the daemon's poll loop (already multi-fd). Recommended.
+  - (b) Control-plane opcode range on the existing socket: a reserved
+    range partitioned out of the client contract, documented
+    separately, rejected for non-authorized peers. Cheaper, but the
+    policy verbs still live in the client protocol's numeric space and
+    the boundary is documentary rather than physical.
+
+Consequential amendment to ADR 0012: session_lock (0x0035) and
+session_unlock (0x0036) were assigned in the client protocol
+(ADR 0012 Section 10) but are unimplemented, so nothing is lost by
+migrating them to the same control interface. The same argument that
+excludes blank from the client protocol applies to lock with more
+force, since lock is the security-critical verb. On ratification of
+(a) or (b), ADR 0012 Section 10 receives an amendment note relocating
+its verbs accordingly and releasing 0x0035/0x0036 back to the client
+range (or retiring them as permanently reserved, implementer's
+choice).
 
 ## 9. Policy vehicle and sequencing (flagged for ratification)
 
@@ -164,8 +228,8 @@ The blank timeline is policy and lives with the SM-2 per-session agent
 for shipping the standalone blanker first:
 
   - (a) Begin the SM-2 daemon now with only the T0 stage: poll
-    idle_query (ADR 0013), request display_blank via pgsd-sessiond at
-    T0, do nothing else. The lock and suspend stages land in the same
+    idle_query (ADR 0013), signal pgsd-sessiond at T0, which issues blank over the
+    control interface (Section 8), do nothing else. The lock and suspend stages land in the same
     agent later. Recommended: the agent skeleton is small, and the
     blanker becomes the first tenant of its permanent home.
   - (b) A compositor-internal timeout as an interim (semadrawd blanks
@@ -183,12 +247,14 @@ the same axis model without rework.
 
 On pgsd-bare-metal:
 
-  - display_blank from an authorized principal darkens the display; an
-    unauthorized client's display_blank and display_unblank are
-    rejected with error_reply and no state change;
+  - a blank request from the session authority over the control
+    interface darkens the display; the same request from an ordinary
+    client (or over a channel it can reach) is rejected with no state
+    change;
   - each input class (keyboard, pointer motion, pointer button, touch)
-    wakes the display; the waking event and its paired release are not
-    delivered to any client (verify against a client that logs events);
+    wakes the display; no input responsible for the wake is observed
+    by any client (B5; verify against a client that logs events),
+    regardless of the swallowing strategy in use;
   - events after the wake are delivered normally;
   - while UNLOCKED and BLANKED, client input routing is otherwise
     unchanged (B1): a client-visible event stream across a
@@ -198,8 +264,8 @@ On pgsd-bare-metal:
     does not appear in the password field, and unlock still requires
     session_unlock (B2);
   - frame callbacks stop while BLANKED and resume on wake;
-  - display_blanked / display_unblanked events are observed for every
-    transition, including input-driven wake.
+  - display-state notifications are observed on the control interface
+    for every transition, including input-driven wake.
 
 ## 11. Consequences
 
@@ -216,12 +282,13 @@ On pgsd-bare-metal:
 
   - The wake check sits on the input hot path; it must be a branch on
     a local enum, not a lock acquisition or cross-thread query.
-  - Swallow-with-release-pairing has modal edge cases (e.g. wake by a
-    modifier held through the wake; wake by the second key of a chord).
-    The rule "swallow the waking event and its own paired release,
-    deliver everything else" is simple and predictable; clients must
-    already tolerate modifier state established before they gained
-    focus, which is the analogous situation.
+  - B5 is easy to state and subtle to satisfy across chords, held
+    modifiers, touch, stylus, and accessibility devices; the mechanism
+    is deliberately unstandardized (Section 6) so it can evolve, which
+    means the bench invariant test, not the ADR, is the guardrail
+    against a regressing strategy. Clients must already tolerate
+    modifier state established before they gained focus, which bounds
+    the harm of imperfect early strategies.
   - If the policy agent dies, the display stops blanking (fails open,
     to ON). This is correct for a presentation feature and the
     mirror-image of the lock's fail-closed rule; stated here so the
