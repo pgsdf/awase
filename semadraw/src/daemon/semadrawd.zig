@@ -15,6 +15,7 @@ const libsemainput = @import("libsemainput");
 const input = @import("input");
 const damage = @import("damage");
 const privilege = @import("privilege");
+const control = @import("control");
 
 const log = std.log.scoped(.semadrawd);
 
@@ -148,6 +149,8 @@ fn translateInputfsEvent(ev: input.Event) ?libsemainput.LibsemainputInput {
 /// Daemon configuration
 pub const Config = struct {
     socket_path: []const u8 = protocol.DEFAULT_SOCKET_PATH,
+    /// ADR 0021 Section 8: the privileged control socket.
+    ctl_socket_path: []const u8 = control.DEFAULT_CTL_SOCKET_PATH,
     tcp_port: ?u16 = null, // TCP port for remote connections (null = disabled)
     tcp_addr: [4]u8 = .{ 0, 0, 0, 0 }, // TCP bind address
     max_clients: u32 = 256,
@@ -191,11 +194,38 @@ const RemoteSession = struct {
     }
 };
 
+/// ADR 0021 Section 8: one accepted control-interface connection.
+/// The peer is credential-checked at accept; by the time messages are
+/// parsed the peer is the session authority. Control messages are
+/// tiny and arrive rarely (policy-rate, not event-rate), so a small
+/// fixed buffer with close-on-violation framing is sufficient: no
+/// large-message path, no per-connection allocation.
+const CtlClient = struct {
+    fd: posix.fd_t,
+    buf: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8,
+    len: usize,
+};
+
+/// Control connections are the session authority plus headroom for a
+/// bench prober; there is no fan-out use case (ADR 0021 Section 5).
+const CTL_MAX_CLIENTS: usize = 8;
+
 /// Daemon state
 pub const Daemon = struct {
     allocator: std.mem.Allocator,
     config: Config,
     server: socket_server.SocketServer,
+    /// ADR 0021 Section 8: the dedicated control listener. Root-owned,
+    /// mode 0600, bound in init while the daemon still runs as root
+    /// (before dropPrivileges), so the filesystem itself pre-filters
+    /// before the per-accept credential check.
+    ctl_server: socket_server.SocketServer,
+    ctl_clients: std.ArrayListUnmanaged(CtlClient),
+    /// ADR 0021 Section 3: the display axis. Step 1 (control
+    /// transport) carries it for status_query; transitions land with
+    /// the presentation-root work, until which blank/unblank reply
+    /// not_implemented.
+    display_axis: control.DisplayAxis,
     tcp: ?tcp_server.TcpServer,
     /// D-7 (ADR 0011): the focus region writer. The compositor is the
     /// sole writer and owner of /var/run/sema/input/focus (INPUT_FOCUS.md);
@@ -355,6 +385,15 @@ pub const Daemon = struct {
         var server = try socket_server.SocketServer.bind(config.socket_path);
         errdefer server.deinit();
 
+        // ADR 0021 Section 8: bind the privileged control socket now,
+        // while the daemon still runs as root, so the socket file is
+        // root-owned mode 0600 and the filesystem pre-filters peers
+        // before the per-accept credential check (ADR 0012 Section 4
+        // bootstrap: peer uid 0).
+        var ctl_server = try socket_server.SocketServer.bindWithMode(
+            config.ctl_socket_path, 0o600);
+        errdefer ctl_server.deinit();
+
         // Initialize TCP server if port is configured
         var tcp: ?tcp_server.TcpServer = null;
         if (config.tcp_port) |port| {
@@ -430,6 +469,9 @@ pub const Daemon = struct {
             .allocator = allocator,
             .config = config,
             .server = server,
+            .ctl_server = ctl_server,
+            .ctl_clients = .empty,
+            .display_axis = .on,
             .tcp = tcp,
             .focus_writer = focus_writer,
             .focused_surface = input.NO_FOCUS,
@@ -1003,6 +1045,11 @@ pub const Daemon = struct {
     }
 
     pub fn deinit(self: *Daemon) void {
+        // ADR 0021: close control connections and the control listener.
+        for (self.ctl_clients.items) |*cc| closeFd(cc.fd);
+        self.ctl_clients.deinit(self.allocator);
+        self.ctl_server.deinit();
+
         // Clean up remote clients
         var iter = self.remote_clients.valueIterator();
         while (iter.next()) |session_ptr| {
@@ -1050,6 +1097,20 @@ pub const Daemon = struct {
                 .events = std.posix.POLL.IN,
                 .revents = 0,
             });
+
+            // ADR 0021: the control listener and its connections.
+            try poll_fds.append(self.allocator, .{
+                .fd = self.ctl_server.getFd(),
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            });
+            for (self.ctl_clients.items) |*cc| {
+                try poll_fds.append(self.allocator, .{
+                    .fd = cc.fd,
+                    .events = std.posix.POLL.IN,
+                    .revents = 0,
+                });
+            }
 
             // Add TCP server if enabled
             const tcp_fd: ?posix.fd_t = if (self.tcp) |tcp| tcp.getFd() else null;
@@ -1231,6 +1292,25 @@ pub const Daemon = struct {
                         self.handleNewConnection() catch |err| {
                             log.warn("failed to accept local connection: {}", .{err});
                         };
+                    } else if (pfd.fd == self.ctl_server.getFd()) {
+                        // ADR 0021: control-interface connection.
+                        self.handleCtlConnection() catch |err| {
+                            log.warn("control accept failed: {}", .{err});
+                        };
+                    } else if (self.findCtlByFd(pfd.fd)) |idx| {
+                        // Control-interface message or hangup. Message
+                        // first (POLL.IN and HUP can coincide); any
+                        // framing error closes the connection.
+                        var dropped = false;
+                        if (pfd.revents & std.posix.POLL.IN != 0) {
+                            self.handleCtlMessage(idx) catch {
+                                self.dropCtlClient(idx);
+                                dropped = true;
+                            };
+                        }
+                        if (!dropped and pfd.revents & (std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) {
+                            self.dropCtlClient(idx);
+                        }
                     } else if (tcp_fd != null and pfd.fd == tcp_fd.?) {
                         // New remote client connection
                         self.handleNewRemoteConnection() catch |err| {
@@ -1986,6 +2066,125 @@ pub const Daemon = struct {
             if (session.sdcs_buffer) |buf| self.allocator.free(buf);
             session.client.close();
             self.allocator.destroy(session);
+        }
+    }
+
+    fn findCtlByFd(self: *Daemon, fd: posix.fd_t) ?usize {
+        for (self.ctl_clients.items, 0..) |*cc, i| {
+            if (cc.fd == fd) return i;
+        }
+        return null;
+    }
+
+    fn dropCtlClient(self: *Daemon, idx: usize) void {
+        closeFd(self.ctl_clients.items[idx].fd);
+        _ = self.ctl_clients.swapRemove(idx);
+    }
+
+    /// ADR 0021 Section 8 accept path. The socket file's 0600 mode is
+    /// the first filter; this is the second: the peer must be the
+    /// session authority (ADR 0012 Section 4 bootstrap: uid 0). An
+    /// unauthorized peer that somehow reaches accept is closed with
+    /// no reply and one log line.
+    fn handleCtlConnection(self: *Daemon) !void {
+        const fd = try self.ctl_server.accept();
+
+        if (self.ctl_clients.items.len >= CTL_MAX_CLIENTS) {
+            log.warn("control: connection limit reached, rejecting", .{});
+            closeFd(fd);
+            return;
+        }
+
+        const creds = privilege.getPeerCredentials(fd) catch {
+            closeFd(fd);
+            log.warn("control: getpeereid failed; connection closed", .{});
+            return;
+        };
+        if (creds.uid != 0) {
+            closeFd(fd);
+            log.warn("control: rejected peer uid={d} (session authority required)", .{creds.uid});
+            return;
+        }
+
+        try self.ctl_clients.append(self.allocator, .{
+            .fd = fd,
+            .buf = undefined,
+            .len = 0,
+        });
+        log.info("control: session authority connected (uid={d})", .{creds.uid});
+    }
+
+    fn sendCtl(self: *Daemon, idx: usize, msg_type: control.CtlMsgType, payload: []const u8) void {
+        var out: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8 = undefined;
+        const hdr = control.CtlHeader{
+            .msg_type = msg_type,
+            .flags = 0,
+            .length = @intCast(payload.len),
+        };
+        hdr.serialize(out[0..control.CtlHeader.SIZE]);
+        @memcpy(out[control.CtlHeader.SIZE..][0..payload.len], payload);
+        const total = control.CtlHeader.SIZE + payload.len;
+        // Control replies are tiny and the peer is a cooperating
+        // daemon; a short or failed write means the peer is gone and
+        // the HUP path will reap it. Best-effort, no retry loop.
+        _ = posix.system.write(self.ctl_clients.items[idx].fd, &out, total);
+    }
+
+    fn sendCtlError(self: *Daemon, idx: usize, code: control.CtlError) void {
+        var pl: [control.CtlErrorPayload.SIZE]u8 = undefined;
+        (control.CtlErrorPayload{ .code = @intFromEnum(code) }).serialize(&pl);
+        self.sendCtl(idx, .ctl_error, &pl);
+    }
+
+    fn sendCtlDisplayState(self: *Daemon, idx: usize) void {
+        var pl: [control.DisplayStatePayload.SIZE]u8 = undefined;
+        (control.DisplayStatePayload{ .axis = @intFromEnum(self.display_axis) }).serialize(&pl);
+        self.sendCtl(idx, .display_state, &pl);
+    }
+
+    /// Read and dispatch on a control connection. Any framing
+    /// violation (unknown opcode, oversize payload, EOF mid-frame)
+    /// is an error to the caller, which drops the connection: the
+    /// peer is a trusted daemon speaking a tiny protocol, so a
+    /// malformed frame means a broken peer, not a client to tolerate.
+    fn handleCtlMessage(self: *Daemon, idx: usize) !void {
+        const cc = &self.ctl_clients.items[idx];
+
+        const n = posix.read(cc.fd, cc.buf[cc.len..]) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return err,
+        };
+        if (n == 0 and cc.len == 0) return error.ConnectionClosed;
+        cc.len += n;
+
+        while (cc.len >= control.CtlHeader.SIZE) {
+            const hdr = try control.CtlHeader.deserialize(cc.buf[0..control.CtlHeader.SIZE]);
+            if (hdr.length > control.MAX_CTL_PAYLOAD) return error.PayloadTooLarge;
+            const total = control.CtlHeader.SIZE + hdr.length;
+            if (cc.len < total) break; // incomplete; wait for more
+
+            self.dispatchCtl(idx, hdr.msg_type);
+
+            // Shift any pipelined bytes down. Control traffic is
+            // policy-rate; the copy is trivial.
+            std.mem.copyForwards(u8, cc.buf[0 .. cc.len - total], cc.buf[total..cc.len]);
+            cc.len -= total;
+        }
+    }
+
+    fn dispatchCtl(self: *Daemon, idx: usize, msg_type: control.CtlMsgType) void {
+        switch (msg_type) {
+            .status_query => self.sendCtlDisplayState(idx),
+            // ADR 0021 display-axis transitions land with the
+            // presentation-root selector; the transport reports the
+            // verbs as assigned-but-not-landed until then.
+            .blank, .unblank => self.sendCtlError(idx, .not_implemented),
+            // ADR 0012 verbs relocate here (Section 10 amendment) and
+            // are implemented with the lock machinery.
+            .session_lock, .session_unlock => self.sendCtlError(idx, .not_implemented),
+            // Reply/notification opcodes arriving as requests: a
+            // broken peer.
+            .ctl_ack, .ctl_error, .display_state => self.sendCtlError(idx, .protocol_error),
         }
     }
 
@@ -3219,6 +3418,9 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 break :blk args[i];
             };
             config.socket_path = socket_path;
+        } else if (std.mem.startsWith(u8, arg, "--ctl-socket=")) {
+            // ADR 0021 Section 8: override the control-socket path.
+            config.ctl_socket_path = arg["--ctl-socket=".len..];
         } else if (std.mem.eql(u8, arg, "-b") or std.mem.eql(u8, arg, "--backend") or std.mem.startsWith(u8, arg, "--backend=")) {
             const backend_name = if (std.mem.startsWith(u8, arg, "--backend="))
                 arg["--backend=".len..]

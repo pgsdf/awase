@@ -42,6 +42,13 @@ pub const SocketServer = struct {
     ///     from a previous instance that exited without unlinking. Safe
     ///     to delete and rebind.
     pub fn bind(path: []const u8) !SocketServer {
+        return bindWithMode(path, 0o660);
+    }
+
+    /// bind() with an explicit socket-file mode. The control socket
+    /// (ADR 0021 Section 8) uses 0600: root-owned, filesystem
+    /// pre-filter before any credential check.
+    pub fn bindWithMode(path: []const u8, mode: posix.mode_t) !SocketServer {
         // Build the sockaddr once; both the probe connect and the real
         // bind use it.
         var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = undefined };
@@ -91,10 +98,10 @@ pub const SocketServer = struct {
 
         try compat.posix.bind(fd, @ptrCast(&addr), addr_len);
 
-        // Set socket permissions (owner+group read/write)
-        // Mode 0660 = rw-rw----
+        // Set socket permissions before listen (mode per caller;
+        // client socket 0660, control socket 0600 per ADR 0021 §8).
         if (posix.toPosixPath(path)) |pathz| {
-            _ = posix.system.fchmodat(posix.AT.FDCWD, &pathz, 0o660, 0);
+            _ = posix.system.fchmodat(posix.AT.FDCWD, &pathz, mode, 0);
         } else |_| {}
 
         // Listen with reasonable backlog

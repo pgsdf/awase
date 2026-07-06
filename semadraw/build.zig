@@ -465,6 +465,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // ADR 0021 Section 8: the privileged control-interface wire
+    // contract. Deliberately a separate module from the client
+    // protocol; the physical socket boundary is the contract boundary.
+    const ipc_control_mod = b.createModule(.{
+        .root_source_file = b.path("src/ipc/control.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // shared/src/session.zig — session identity for unified event log.
     const session_mod = b.createModule(.{
         .root_source_file = b.path("../shared/src/session.zig"),
@@ -810,11 +819,28 @@ pub fn build(b: *std.Build) void {
                 // RemoteSession construction; future AD-31.3 will use
                 // more of this module's surface.
                 .{ .name = "privilege", .module = privilege_mod },
+                // ADR 0021 Section 8: the control interface.
+                .{ .name = "control", .module = ipc_control_mod },
             },
         }),
     });
     semadrawd.root_module.addImport("compat", compat_mod);
     b.installArtifact(semadrawd);
+
+    // semadraw-ctl: ADR 0021 bench prober for the control socket.
+    const semadraw_ctl = b.addExecutable(.{
+        .name = "semadraw-ctl",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/semadraw_ctl.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "control", .module = ipc_control_mod },
+            },
+        }),
+    });
+    semadraw_ctl.root_module.addImport("compat", compat_mod);
+    b.installArtifact(semadraw_ctl);
 
     // Client library modules
     const client_connection_mod = b.createModule(.{
