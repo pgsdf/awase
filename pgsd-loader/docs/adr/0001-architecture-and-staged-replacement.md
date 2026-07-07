@@ -22,8 +22,11 @@ component with enough context to make the decision. Today that
 component is stock loader.efi driven by lua shims: the policy the
 project cares most about is implemented in a layer it does not
 control, in a language and config surface it inherited rather than
-chose. Owning the loader keeps environment selection explicit and
-keeps the policy outside the kernel.
+chose. The recovery policy itself belongs to AD-59 and stays
+there; the loader is the platform, the earliest trustworthy
+execution environment capable of carrying that policy out. Owning
+the platform makes the selection explicit and keeps the policy
+outside the kernel without relocating its authority.
 
 Second, capability. Per-environment audio cues (deferred from
 audiofs ADR 0032 Decision 5) are only implementable where the
@@ -94,36 +97,42 @@ bind design.
   without it; removing the shim's boot entry recovers via the
   fallback entry.
 
-- L1, environment selection. The shim owns the OE/RE/ME decision
-  per the AD-59 establishment-event design and communicates the
-  choice to the still-stock loader through a small ESP file or
-  UEFI variable, which a minimal lua shim turns into kenv. The
-  policy the project cares most about moves into owned code first,
-  while kernel handoff stays on proven code. AD-59 producer #2
-  architecture should assume L1 exists so the authority contract
-  is designed once, at its final home.
+- L1, environment selection. The shim performs the OE/RE/ME
+  selection defined by the AD-59 establishment-event architecture
+  and communicates the choice to the still-stock loader through a
+  small ESP file or UEFI variable, which a minimal lua shim turns
+  into kenv. Authority over the policy remains with AD-59; L1
+  moves only its execution site into owned code, while kernel
+  handoff stays on proven code. AD-59 producer #2 architecture
+  should assume L1 exists so the authority contract is designed
+  once against the platform that will carry it out.
 
-- L2, loader audio. A boot-services HDA path: controller via
-  EFI_PCI_IO_PROTOCOL, immediate commands or minimal CORB/RIRB,
-  the CS4206 initialization the bench work already established,
-  one output stream, clean teardown before handoff. Environment
-  cues (ADR 0032 Decision 5 deferral) land here, assets embedded
-  from gen-boot-tone output at build time. L2 depends only on boot
-  services and PCI access, blocks nothing downstream, and remains
-  optional on hardware where it proves difficult. Its ADR must
-  also rule on the interaction with the ADR 0032 substrate probe:
-  a loader that warms the codec changes the cold-boot initial
-  conditions the D0/GPIO bench baselines assumed, so those
+- L2, loader-provided audio capability. The loader can play a
+  sound before handoff, cleanly releasing the hardware it touched.
+  Environment cues (ADR 0032 Decision 5 deferral) land here,
+  sourced from the existing gen-boot-tone generator. L2 depends
+  only on boot services, blocks nothing downstream, and remains
+  optional on hardware where it proves difficult; the stage ADR
+  names the first implementation target and the driver approach.
+  That ADR must also rule on the interaction with the ADR 0032
+  substrate probe: loader audio changes the cold-boot initial
+  conditions the existing driver baselines assume, so those
   baselines are re-established with loader audio on and off.
 
-- L3, kernel handoff. The cliff: kernel and module loading, the
-  MODINFO metadata chain and kenv the FreeBSD kernel expects,
-  memory map handoff through ExitBootServices, entry trampoline.
-  L3 is subdivided by its own ADRs and is where design effort
-  concentrates before code; the kernel-source decision (Decision
-  5) gates it. One dependency is recorded now so no stage strands
-  it: drawfs is preloaded via loader.conf today, so L3 either
-  preloads it or an ADR moves drawfs to early rc before L3 lands.
+- L3, kernel handoff. The cliff: reproducing the contract stock
+  loader.efi implements toward the kernel, loading the kernel and
+  its modules, presenting the boot metadata and environment the
+  kernel expects, and transferring control. L3 is an escalation,
+  not simply the next milestone: it is the point where a mature
+  FreeBSD component begins to be replaced, and it begins only
+  after the preceding stages have accumulated sufficient
+  operational confidence that deployment, rollback, and recovery
+  are routine. L3 is subdivided by its own ADRs and is where
+  design effort concentrates before code; the kernel-source
+  decision (Decision 6) gates it. One dependency is recorded now
+  so no stage strands it: drawfs is preloaded via loader.conf
+  today, so L3 either preloads it or an ADR moves drawfs to early
+  rc before L3 lands.
 
 - L4, cutover. pgsd-loader boots the kernel directly by default;
   stock loader.efi is demoted to the fallback entry.
@@ -146,12 +155,28 @@ are discovered at the worst possible time. The invariant converts
 "the machine no longer boots" from a possible experiment outcome
 into a bounded inconvenience.
 
-### 5. Kernel-source architecture is a gated, deferred decision
+### 5. The behavioral invariant
+
+Every stage preserves the externally observable behavior of the
+responsibilities it has not yet absorbed. L0 changes deployment
+only. L1 changes environment selection only. L2 adds optional
+audio only. Everything else remains behaviorally identical to the
+boot that preceded the stage.
+
+This is a review rule as much as an architectural one: a patch
+that changes behavior outside its stage's absorbed responsibility
+prompts one question, which milestone absorbs that responsibility;
+if the answer is none, the patch violates the staged architecture
+and is rejected regardless of its merits.
+
+### 6. Kernel-source architecture is a gated, deferred decision
 
 Where L3 reads the kernel from is a long-term architecture choice,
 not an implementation shortcut, and is deferred to a dedicated
-evaluation ADR that must be ratified before L3 design begins. That
-ADR evaluates at minimum:
+evaluation ADR that must be ratified before L3 design begins. No
+L3 implementation work of any kind starts before that
+ratification, so implementation momentum cannot decide the
+question accidentally. That ADR evaluates at minimum:
 
 1. Kernel on the ESP (UEFI-native FAT reads; no filesystem driver
    in the loader; deterministic reads; simplest implementation).
@@ -167,7 +192,7 @@ ADR evaluates at minimum:
 The outcome of that ADR determines whether L3 is one stage or
 several.
 
-### 6. Bench as sole authority, per stage
+### 7. Bench as sole authority, per stage
 
 Stage ADRs carry the closure criteria; cold-boot counts and
 recovery demonstrations are bench-verified on bare metal before a
@@ -222,3 +247,13 @@ rather than being absorbed silently.
   and the reversed drafting order (parent architecture before L0)
   per operator direction; kernel-source evaluation criteria
   per operator input.
+- Revision 2, 2026-07-07: operator review applied. Platform and
+  policy distinguished (L1 performs the selection AD-59 defines;
+  authority does not migrate); L2 restated architecturally as
+  loader-provided audio capability with hardware and driver
+  specifics moved to its stage ADR; L3 marked an escalation gated
+  on routine operational confidence from the preceding stages;
+  the Decision 6 gate strengthened to bar all L3 implementation
+  work before ratification; the behavioral invariant added as
+  Decision 5 with its review rule; kernel-handoff implementation
+  detail moved down to the L3 stage ADRs.
