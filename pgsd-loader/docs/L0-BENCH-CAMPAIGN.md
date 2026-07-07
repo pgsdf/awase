@@ -16,9 +16,11 @@ left alone per L0 scope: Boot0000 FreeBSD (duplicate path to the
 stock loader; harmless, a third recovery route) and Boot0001
 "Awase fallback (stock loader)" referencing partition GUID
 72d0af4a... which does not match the current ESP; apparently
-stale from the deploy-loader.sh era. Disposition of the stale
-entry is deferred, recorded here so it is decided rather than
-forgotten.
+stale from the deploy-loader.sh era. Disposition, 2026-07-07:
+operator removed Boot0001 (efibootmgr -B), which also dropped it
+from BootOrder; verified clean afterward (0003, 0002, 0000,
+0080, no dangling tokens). Boot0000 retained deliberately as a
+third route to the stock loader.
 
 ## Criterion 3: cold boots, indistinguishable operation
 
