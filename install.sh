@@ -226,7 +226,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     done
 
     RCDDIR="$PREFIX/etc/rc.d"
-    for svc in inputfs audiofs awase-supervisor semaaud semadraw pgsd-sessiond semasound; do
+    for svc in inputfs audiofs awase-supervisor semaaud semadraw pgsd-sessiond semasound pgsd-bootchime; do
         target="$RCDDIR/$svc"
         if [ -f "$target" ]; then
             rm -f "$target"
@@ -290,6 +290,10 @@ if [ "$UNINSTALL" -eq 1 ]; then
     sysrc -x pgsd_sessiond_enable 2>/dev/null  && echo "  removed  pgsd_sessiond_enable"  || echo "  skip     pgsd_sessiond_enable (not set)"
     sysrc -x audiofs_enable 2>/dev/null        && echo "  removed  audiofs_enable"        || echo "  skip     audiofs_enable (not set)"
     sysrc -x semasound_enable 2>/dev/null      && echo "  removed  semasound_enable"      || echo "  skip     semasound_enable (not set)"
+    sysrc -x pgsd_bootchime_enable 2>/dev/null && echo "  removed  pgsd_bootchime_enable" || echo "  skip     pgsd_bootchime_enable (not set)"
+    # ADR 0032: reap the generated chime asset; boot.pcm is a build
+    # product, so uninstall owns its removal.
+    rm -f "$PREFIX/share/pgsd/sounds/boot.pcm" 2>/dev/null && echo "  removed  $PREFIX/share/pgsd/sounds/boot.pcm" || true
 
     echo ""
     echo "=== Removing drawfs from /boot/loader.conf ==="
@@ -1295,6 +1299,34 @@ else
 fi
 
 # ============================================================================
+# Boot chime asset (ADR 0032, audiofs series)
+# ============================================================================
+#
+# boot.pcm is a build product, never a committed binary: the committed
+# source of truth is tools/gen-boot-tone.py (stdlib-only python3; the
+# inputfs fuzz harness precedent makes python3 an acceptable tool
+# dependency). Generated fresh on every install so a retuned generator
+# ships without binary churn in history. If python3 is absent the asset
+# is skipped with a notice; the pgsd-bootchime rc script tolerates a
+# missing asset (one syslog line, boot unaffected).
+
+SOUNDS_DIR="$PREFIX/share/pgsd/sounds"
+echo ""
+echo "=== Installing boot chime asset to $SOUNDS_DIR/ ==="
+if command -v python3 >/dev/null 2>&1; then
+    mkdir -p "$SOUNDS_DIR"
+    if python3 "$SCRIPT_DIR/tools/gen-boot-tone.py" \
+        --rate 48000 --out "$SOUNDS_DIR/boot" >/dev/null 2>&1; then
+        chmod 0644 "$SOUNDS_DIR/boot.pcm"
+        echo "  installed $SOUNDS_DIR/boot.pcm (generated)"
+    else
+        echo "  WARNING: gen-boot-tone.py failed; chime asset not installed" >&2
+    fi
+else
+    echo "  skip      boot.pcm (no python3; pgsd-bootchime will log and skip)"
+fi
+
+# ============================================================================
 # rc.d scripts (FreeBSD service integration)
 # ============================================================================
 
@@ -1845,6 +1877,81 @@ RCEOF
     echo "  installed  $RCDDIR/pgsd-sessiond"
 
     # ========================================================================
+    # ADR 0032 (audiofs series): boot initialization chime. A oneshot,
+    # not a daemon: no s6 service directory, not the AD-20 shim shape,
+    # because there is nothing to supervise. It backgrounds immediately
+    # (rcorder is never delayed), polls the F.5.e device surface until
+    # the hardware sink is bound (AD-47: the broker starts on the null
+    # sink when the device is absent, and a chime played into the null
+    # sink exits 0 silently; the surface is the only observable that
+    # distinguishes the two), then plays the boot sound once through
+    # semasound-cat. Strictly best-effort: any failure is exactly one
+    # syslog line and boot proceeds identically.
+    # ========================================================================
+
+    cat > "$RCDDIR/pgsd-bootchime" << RCEOF
+#!/bin/sh
+# PROVIDE: pgsd_bootchime
+# REQUIRE: semasound
+
+# ADR 0032: boot initialization chime. Waits (bounded, backgrounded)
+# for semasound's F.5.e device surface to show the hardware sink
+# bound, then plays the boot sound. Doubles as a per-boot audible
+# probe of the CS4206 D0 power-up and GPIO ordering paths: a silent
+# boot on known-good hardware is a regression signal.
+
+. /etc/rc.subr
+
+name="pgsd_bootchime"
+rcvar="pgsd_bootchime_enable"
+: \${pgsd_bootchime_enable:="NO"}
+# Asset path baked at install time from the active PREFIX.
+: \${pgsd_bootchime_sound:="$PREFIX/share/pgsd/sounds/boot.pcm"}
+: \${pgsd_bootchime_polls:="50"}      # device-surface polls before giving up
+: \${pgsd_bootchime_interval:="0.1"}  # seconds between polls
+: \${pgsd_bootchime_timeout:="5"}     # hard kill for wedged playback
+
+# PATH fix; same reasoning as the semasound and semadraw shims.
+PATH="/usr/local/bin:\${PATH}"
+export PATH
+
+device_surface="/var/run/sema/audio/default/device"
+
+start_cmd="pgsd_bootchime_start"
+stop_cmd=":"
+
+pgsd_bootchime_start() {
+    if [ ! -r "\${pgsd_bootchime_sound}" ]; then
+        logger -t "\${name}" "sound asset missing: \${pgsd_bootchime_sound}"
+        return 0
+    fi
+    (
+        n=0
+        while [ "\$n" -lt "\${pgsd_bootchime_polls}" ]; do
+            dev="\$(head -n 1 "\${device_surface}" 2>/dev/null || true)"
+            if [ -n "\$dev" ] && [ "\$dev" != "none" ]; then
+                timeout "\${pgsd_bootchime_timeout}" \\
+                    /usr/local/bin/semasound-cat --label bootchime \\
+                    < "\${pgsd_bootchime_sound}" \\
+                    || logger -t "\${name}" "semasound-cat failed (exit \$?)"
+                exit 0
+            fi
+            sleep "\${pgsd_bootchime_interval}"
+            n=\$((n + 1))
+        done
+        logger -t "\${name}" \\
+            "device not bound after \${pgsd_bootchime_polls} polls; chime skipped"
+    ) &
+    return 0
+}
+
+load_rc_config \$name
+run_rc_command "\$1"
+RCEOF
+    chmod 555 "$RCDDIR/pgsd-bootchime"
+    echo "  installed  $RCDDIR/pgsd-bootchime"
+
+    # ========================================================================
     # AD-32 / AD-25 Round 1 follow-up: install the periodic(8) daily
     # wrapper for awase-log-cleanup. FreeBSD's periodic(8) runs every
     # script in /usr/local/etc/periodic/daily/ once per day at the
@@ -2007,6 +2114,9 @@ RCEOF
     # is the line that makes "boot to graphical login" actually
     # happen. Set to NO to disable boot-launch without uninstalling.
     sysrc pgsd_sessiond_enable="YES"
+    # ADR 0032: boot chime enabled by default; it is best-effort and
+    # inert without the asset. Set to NO for a silent boot.
+    sysrc pgsd_bootchime_enable="YES"
 fi
 
 # ============================================================================
