@@ -15,6 +15,12 @@
 # Usage: sh qemu-smoke.sh
 set -eu
 
+# Builds and emulation never need root, and a root run poisons the
+# zig caches and /tmp scratch for later user runs (field lesson,
+# first bench day). deploy.sh is the only script here that earns
+# sudo.
+[ "$(id -u)" -ne 0 ] || { echo "qemu-smoke: do not run as root" >&2; exit 1; }
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJ_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
@@ -36,7 +42,7 @@ OVMF_VARS="${OVMF_VARS:-$(probe \
 [ -n "$OVMF_VARS" ] || { echo "qemu-smoke: no OVMF vars image found; set OVMF_VARS" >&2; exit 1; }
 QEMU="${QEMU:-qemu-system-x86_64}"
 ESP="/tmp/pgsd-l0-smoke-esp.$$"
-LOG="/tmp/pgsd-l0-smoke.log"
+LOG="/tmp/pgsd-l0-smoke.$$.log"
 
 [ -f "$OVMF_CODE" ] || { echo "qemu-smoke: OVMF_CODE not found: $OVMF_CODE" >&2; exit 1; }
 
@@ -53,7 +59,7 @@ run() {
         -net none 2>/dev/null | tr -d '\r' > "$LOG" || true
 }
 
-cleanup() { rm -rf "$ESP" "$ESP.vars"; }
+cleanup() { rm -rf "$ESP" "$ESP.vars" "$LOG"; }
 trap cleanup EXIT INT TERM
 
 fails=0

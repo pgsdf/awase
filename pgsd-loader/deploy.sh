@@ -51,15 +51,30 @@ for esp in $esps; do
     [ "$(echo "$esps" | wc -w)" -gt 1 ] && suffix="-$idx"
 
     echo "=== ESP /dev/$esp ==="
-    mount_msdosfs "/dev/$esp" "$MNT" || {
-        echo "deploy.sh: cannot mount /dev/$esp; aborting" >&2
-        exit 1
-    }
+
+    # Reuse an existing mount (e.g. /boot/efi from fstab): a second
+    # mount of the same provider fails, and fighting the system's
+    # own mount is exactly the fragility this script exists to
+    # retire. Mount ourselves only when nothing else has, and
+    # unmount only what we mounted.
+    existing=$(mount -p | awk -v d="/dev/$esp" '$1 == d { print $2; exit }')
+    if [ -n "$existing" ]; then
+        ESPDIR="$existing"
+        we_mounted=0
+        echo "  mounted  at $ESPDIR (existing; reusing)"
+    else
+        mount_msdosfs "/dev/$esp" "$MNT" || {
+            echo "deploy.sh: cannot mount /dev/$esp; aborting" >&2
+            exit 1
+        }
+        ESPDIR="$MNT"
+        we_mounted=1
+    fi
 
     # 1. Fallback invariant, verified FIRST. The stock loader must be
     #    present and readable, and its boot entry must exist, before
     #    the primary path changes in any way.
-    if [ ! -r "$MNT/$STOCK_REL" ]; then
+    if [ ! -r "$ESPDIR/$STOCK_REL" ]; then
         echo "deploy.sh: fallback $STOCK_REL missing on /dev/$esp; ABORTING" >&2
         echo "deploy.sh: no changes made to this member or the boot order" >&2
         exit 1
@@ -67,7 +82,7 @@ for esp in $esps; do
     fb_label="PGSD-fallback$suffix"
     fb=$(entry_num "$fb_label")
     if [ -z "$fb" ]; then
-        efibootmgr -c -l "$MNT/$STOCK_REL" -L "$fb_label" >/dev/null || {
+        efibootmgr -c -l "$ESPDIR/$STOCK_REL" -L "$fb_label" >/dev/null || {
             echo "deploy.sh: cannot create fallback entry; ABORTING" >&2
             exit 1
         }
@@ -81,12 +96,12 @@ for esp in $esps; do
     efibootmgr -a -b "$fb" >/dev/null 2>&1 || true
 
     # 2. Publication write of pgsd-loader.efi (skip when identical).
-    mkdir -p "$MNT/EFI/pgsd"
-    if [ -f "$MNT/$PGSD_REL" ] && cmp -s "$LOADER" "$MNT/$PGSD_REL"; then
+    mkdir -p "$ESPDIR/EFI/pgsd"
+    if [ -f "$ESPDIR/$PGSD_REL" ] && cmp -s "$LOADER" "$ESPDIR/$PGSD_REL"; then
         echo "  unchanged $PGSD_REL"
     else
-        cp "$LOADER" "$MNT/$PGSD_REL.new"
-        mv "$MNT/$PGSD_REL.new" "$MNT/$PGSD_REL"
+        cp "$LOADER" "$ESPDIR/$PGSD_REL.new"
+        mv "$ESPDIR/$PGSD_REL.new" "$ESPDIR/$PGSD_REL"
         echo "  published $PGSD_REL"
         changed=1
     fi
@@ -95,7 +110,7 @@ for esp in $esps; do
     pr_label="PGSD$suffix"
     pr=$(entry_num "$pr_label")
     if [ -z "$pr" ]; then
-        efibootmgr -c -l "$MNT/$PGSD_REL" -L "$pr_label" >/dev/null || {
+        efibootmgr -c -l "$ESPDIR/$PGSD_REL" -L "$pr_label" >/dev/null || {
             echo "deploy.sh: cannot create primary entry; fallback remains default" >&2
             exit 1
         }
@@ -107,7 +122,7 @@ for esp in $esps; do
     fi
     efibootmgr -a -b "$pr" >/dev/null 2>&1 || true
 
-    umount "$MNT"
+    [ "$we_mounted" -eq 1 ] && umount "$MNT"
 done
 
 # 4. Boot order: primaries first, fallbacks after, existing entries
