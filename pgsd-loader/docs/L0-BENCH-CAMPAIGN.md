@@ -285,7 +285,39 @@ action, so binary provenance is answerable from the machine
 record rather than from memory. Lesson: operator recall is not
 an evidence source; instrument so the question answers itself.
 
-### F7: post-restore boots do not reach the primary (OPEN, under diagnosis)
+### F7: post-restore boots do not reach the primary (CLOSED: the installed image was empty)
+
+Diagnosis step 1 was conclusive: the installed pgsd-loader.efi
+hashed to e3b0c44298fc..., the SHA-256 of the empty input. The
+image on the ESP was zero bytes; firmware could not load it and
+fell through, exactly as the fallback design intends. Both
+confounded suspects are exonerated for this failure: neither the
+pinned TimeDateStamp nor the recreated entry was ever tested by
+that boot, because no image was present to test them. The pinned
+binary has still never booted; that thread resolves with the F8
+republish. How the publish came to be empty is F8.
+
+### F8: publish durability, log claimed what the disk did not hold (OPEN)
+
+The deploy log records publishing 38d9c6c8... at 22:50:32;
+the disk held zero bytes. Candidates: the async msdosfs write
+was lost in the seconds between deploy and poweroff (flush or
+unmount incomplete at shutdown), or the drill sequence's dd and
+rm left the FAT dirty and this file's cluster chain was the
+casualty. Not deterministic: drill 1's publish survived the
+identical deploy-then-poweroff pattern. Fix landed: deploy.sh
+now syncs and verifies the installed bytes by hash after every
+publish, refusing to report success otherwise, so the log can
+never again claim a publish the disk does not hold; the
+remaining window is a power loss after verification, which the
+BAS publication lifecycle's slot design eventually addresses.
+Bench to run before trusting the filesystem again: unmount,
+fsck_msdosfs, remount, republish with verification, cold boot.
+Closure: a verified publish that survives a cold boot to
+BootCurrent 0001.
+
+### Old F7 diagnosis record follows for the plan it carried:
+(superseded) post-restore boots do not reach the primary (was OPEN, under diagnosis)
 
 The campaign's first genuine anomaly. After drill 3's restore,
 with the binary published (verified output of deploy), Boot0001

@@ -176,8 +176,22 @@ MOUNTS
         [ -f "$ESPDIR/$PGSD_REL" ] && prev=$(sha256 -q "$ESPDIR/$PGSD_REL" 2>/dev/null || sha256sum "$ESPDIR/$PGSD_REL" | awk '{print $1}')
         cp "$LOADER" "$ESPDIR/$PGSD_REL.new"
         mv "$ESPDIR/$PGSD_REL.new" "$ESPDIR/$PGSD_REL"
-        echo "  published $PGSD_REL"
-        dlog "esp=$esp published sha256=$LOADER_SHA replaced=$prev"
+        # Verify after publish (bench finding F8): a publish is not a
+        # publish until the installed bytes hash correctly. sync(8)
+        # pushes dirty msdosfs buffers toward the disk so an
+        # immediately following poweroff has the smallest possible
+        # window; the read-back catches everything short of that.
+        sync
+        got=$(sha256 -q "$ESPDIR/$PGSD_REL" 2>/dev/null || sha256sum "$ESPDIR/$PGSD_REL" | awk '{print $1}')
+        if [ "$got" != "$LOADER_SHA" ]; then
+            echo "deploy.sh: PUBLISH VERIFICATION FAILED on /dev/$esp" >&2
+            echo "deploy.sh: expected $LOADER_SHA" >&2
+            echo "deploy.sh: read back $got" >&2
+            dlog "esp=$esp publish_verify_FAILED expected=$LOADER_SHA got=$got"
+            exit 1
+        fi
+        echo "  published $PGSD_REL (verified)"
+        dlog "esp=$esp published sha256=$LOADER_SHA replaced=$prev verified=yes"
         changed=1
     fi
 
