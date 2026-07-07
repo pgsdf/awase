@@ -64,6 +64,15 @@ entry_num() {
     entry_all "$1" | head -n 1
 }
 
+# all_entry_nums: every existing Boot entry number, any label.
+all_entry_nums() {
+    efibootmgr | awk '
+        {
+            if (match($0, /Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][*+]? /))
+                print substr($0, RSTART + 4, 4)
+        }'
+}
+
 # reap_duplicates LABEL: delete all but the first entry with LABEL.
 # Self-healing for boot orders damaged by the parser defect above:
 # a duplicate created by a bad lookup is removed on the next run.
@@ -192,23 +201,31 @@ for esp in $esps; do
 done
 want=$(echo $primaries $fallbacks | tr ' ' ',')
 cur=$(efibootmgr | awk -F': ' '/^BootOrder/ { gsub(/ /, "", $2); print $2; exit }')
-if [ "$cur" = "$want" ] || case "$cur" in "$want",*) true ;; *) false ;; esac; then
-    echo "boot order already begins $want"
+valid=",$(all_entry_nums | tr '\n' ',')"
+
+# Desired order: our entries first, then every other EXISTING entry
+# in current relative order. Dangling tokens (entries deleted but
+# still referenced, shown as MISSING by efibootmgr -v) are dropped,
+# and repeats are de-duplicated. Literal membership via index(),
+# never regex match: entry tokens must not be interpreted as
+# patterns. Compare the FULL order, not a prefix: an order can
+# begin correctly while carrying a corrupt tail, and healing must
+# own the whole string (bench finding F5).
+rest=$(echo "$cur" | awk -v w="$want" -v v="$valid" 'BEGIN { FS="," }
+    { n = split($0, a, ",")
+      for (i = 1; i <= n; i++) {
+          if (a[i] == "") continue
+          if (index("," w ",", "," a[i] ",") > 0) continue
+          if (index(v, "," a[i] ",") == 0) continue
+          if (seen[a[i]]++) continue
+          printf ",%s", a[i]
+      } }')
+desired="$want$rest"
+if [ "$cur" = "$desired" ]; then
+    echo "boot order already $desired"
 else
-    # Desired entries first, everything else retained behind them.
-    # Literal membership via index(), never regex match: entry tokens
-    # must not be interpreted as patterns. Retained entries are also
-    # de-duplicated, healing an order that accumulated repeats.
-    rest=$(echo "$cur" | awk -v w="$want" 'BEGIN { FS="," }
-        { n = split($0, a, ",")
-          for (i = 1; i <= n; i++) {
-              if (a[i] == "") continue
-              if (index("," w ",", "," a[i] ",") > 0) continue
-              if (seen[a[i]]++) continue
-              printf ",%s", a[i]
-          } }')
-    if efibootmgr -o "$want$rest" >/dev/null; then
-        echo "boot order set: $want$rest"
+    if efibootmgr -o "$desired" >/dev/null; then
+        echo "boot order set: $desired (was: $cur)"
         changed=1
     else
         echo "deploy.sh: could not set boot order; entries exist, order unchanged" >&2

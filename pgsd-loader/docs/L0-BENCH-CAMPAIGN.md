@@ -72,11 +72,18 @@ Two consecutive deploys; the second reports unchanged/present
 throughout and no-op.
 
 First attempt, 2026-07-07: FAILED, and productively (finding F3).
-Re-run PENDING after the F3 fix, expected shape: run one reaps
-the duplicate Boot000B entries and normalizes the boot order
-(changed); run two is the true no-op that closes the criterion.
-One unexplained observation from the failed attempt is held open
-in F4.
+
+Second attempt, 2026-07-07, after the F3 fix: pair behavior
+CORRECT (run one published and reported present entries, run two
+reported unchanged/present throughout and no-op), but the state
+was not fully healed, exposing F5: BootOrder still carried the
+dangling 000B tokens twice because the order check compared only
+a prefix. The duplicate entry itself was already gone (deleted by
+an unknown actor, shown as MISSING; our reap printed nothing).
+Run one also republished a binary expected unchanged, a second F4
+data point. Criterion remains PENDING: final clean re-run after
+the F5 fix, expected shape run one heals the order tail (changed)
+and run two is the true no-op against fully clean state.
 
 ## Criteria 1 and 2
 
@@ -122,6 +129,37 @@ against the exact corrupted bench output, all five label cases.
 Lesson, same family as F1's: field-position string surgery on
 tool output is identity-fragile; extract positionally, compare
 exactly.
+
+### F5: order healing compared a prefix, not the whole order (closed, fix landed)
+
+The second criterion 6 attempt left BootOrder as
+0003,0002,000B,000B,... with both 000B tokens dangling (entry
+deleted, references remaining, efibootmgr -v shows MISSING). The
+order check passed because the order began with the desired
+prefix, so the corrupt tail was never rewritten. Fix: compute the
+full desired order (our entries, then every other existing entry
+in current relative order, dangling tokens dropped, repeats
+de-duplicated) and compare whole strings, rewriting on any
+difference. Verified against the exact bench order, dropping both
+000B tokens while preserving the tail. Lesson, completing the F3
+family: healing that validates a prefix owns only a prefix; own
+the whole invariant or none of it.
+
+### F6: boot through the fallback, cause unconfirmed (open, operator input)
+
+BootCurrent: 0002 at the second criterion 6 attempt: the most
+recent boot ran through PGSD-fallback with Boot0003 present and
+the binary in place. Either the operator rebooted deliberately,
+or pgsd-loader failed and fell through by design. If the latter,
+a plausible chain ties F4 and F6 together: the root-owned-cache
+incident left a stale or partial zig-out binary, the earlier
+deploy published it, that boot fell through to 0002 (the fallback
+invariant's first unplanned field save), and the next deploy
+replaced it with a good rebuild. Operator to confirm: was a
+reboot performed since the failed attempt, was the pgsd-loader
+failure report observed on console, and did any build run between
+deploys. The answers close F4 and F6 together, in either
+direction.
 
 ### F4: unexplained republish on deploy run three (open)
 
