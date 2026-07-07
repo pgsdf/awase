@@ -9,8 +9,8 @@
 // Default rate is protocol.CANON_RATE (the bit-exact passthrough
 // path). First and last frames are sample-exact zero so the stream
 // can be cut hard with no click; peak is normalized to --gain of
-// full scale (default 0.15, operator-tuned: full-scale playback of
-// the sequence was vastly too loud on the bench hardware).
+// full scale (default 0.075, operator-tuned twice on bench
+// hardware: 0.85 was vastly too loud, and 0.15 still too loud).
 //
 // Structure of the sequence:
 //   0.00 - 0.60 s : low root swell, A2 gliding up one octave to A3
@@ -97,7 +97,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var rate: u32 = protocol.CANON_RATE;
     var mono = false;
     var wav = false;
-    var gain: f64 = 0.15;
+    var gain: f64 = 0.075;
     var out_base: []const u8 = "boot";
 
     const args_owned = try compat.args.alloc(gpa, init.args);

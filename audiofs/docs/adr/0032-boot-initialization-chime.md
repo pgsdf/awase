@@ -100,9 +100,9 @@ that already builds the tree. Output is 48000 Hz stereo s16le,
 the CANON_RATE bit-exact passthrough path, 2.000 s, sample-exact
 zero first and last frames so the stream cuts with no click. Peak
 level is a generator parameter (--gain, a fraction of full scale)
-defaulting to 0.15: the initial 0.85 was operator-judged vastly
-too loud on bench hardware, and a boot chime should announce
-readiness, not startle. Retuning the level is a one-line default
+defaulting to 0.075, reached by successive operator tuning on
+bench hardware (0.85 vastly too loud, 0.15 still too loud): a
+boot chime should announce readiness, not startle. Retuning the level is a one-line default
 change, shipped by regeneration with no binary churn.
 
 Rationale for Zig over a scripted generator: the vendored
@@ -162,3 +162,7 @@ recovery.pcm) anticipates it.
   as --gain and the default reduced from 0.85 to 0.15 of full
   scale after bench listening found the initial level vastly too
   loud (Decision 4).
+- 2026-07-07, post-ratification level retune, operator-directed:
+  default gain halved from 0.15 to 0.075 after bench listening
+  through the L0 boot path found 0.15 still too loud. Parameter
+  mechanism unchanged; default only.
