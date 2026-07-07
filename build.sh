@@ -84,6 +84,12 @@ echo ""
     echo "--- Building semadraw ---"
     echo "DRAWFS_DRM:${DRAWFS_DRM:-false}"
     ( cd semadraw && "$ZIG" build $BUILD_FLAGS "$@" 2>&1 ) || exit 1
+
+    # Build pgsd-loader through its own build.sh, which is the
+    # canonical byte-reproducible path (SOURCE_DATE_EPOCH pinned
+    # there, single home for the pin; ADR 0003 criterion 1).
+    echo "--- Building pgsd-loader ---"
+    sh pgsd-loader/build.sh 2>&1 || exit 1
     STATUS=0
 
     echo ""
