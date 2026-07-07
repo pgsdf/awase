@@ -1,5 +1,5 @@
 #!/bin/sh
-# UTF build wrapper: runs zig build and tees output to a log file.
+# Awase build wrapper: runs zig build and tees output to a log file.
 #
 # Usage:
 #   sh build.sh                    # build all subprojects
@@ -7,7 +7,7 @@
 #   sh build.sh test               # run all test suites
 #   sh build.sh --check            # verify dependencies only, do not build
 #
-# Log file: build-YYYYMMDD-HHMMSS.log in the UTF root directory.
+# Log file: build-YYYYMMDD-HHMMSS.log in the Awase root directory.
 # Symlink:  build-latest.log always points to the most recent log.
 
 set -eu
@@ -56,13 +56,13 @@ if [ -f "$CONFIG" ] && [ $# -eq 0 ]; then
     [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && BUILD_FLAGS="$BUILD_FLAGS -Dbsdinput=false"
 fi
 
-echo "UTF build, $(date)"
+echo "Awase build, $(date)"
 echo "Log: $LOG"
 echo ""
 
 # Run zig build, tee stdout+stderr to log file
 {
-    echo "=== UTF build ==="
+    echo "=== Awase build ==="
     echo "Date:      $(date)"
     echo "Host:      $(uname -n)"
     echo "OS:        $(uname -sr)"
