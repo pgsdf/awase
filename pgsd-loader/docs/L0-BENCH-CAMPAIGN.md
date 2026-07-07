@@ -81,9 +81,20 @@ dangling 000B tokens twice because the order check compared only
 a prefix. The duplicate entry itself was already gone (deleted by
 an unknown actor, shown as MISSING; our reap printed nothing).
 Run one also republished a binary expected unchanged, a second F4
-data point. Criterion remains PENDING: final clean re-run after
-the F5 fix, expected shape run one heals the order tail (changed)
-and run two is the true no-op against fully clean state.
+data point (mechanism later proven and closed under F4).
+
+Third attempt, 2026-07-07, after the F5 fix: CLOSED. Run one
+healed the order tail exactly as specified (boot order set:
+0003,0002,0000,0001,0080, was: with 000B twice), binary
+unchanged; run two the true no-op. efibootmgr -v confirms fully
+clean state: no MISSING references, single PGSD, single
+PGSD-fallback, expected order. The attempt also bench-confirmed
+two fixes previously verified only against captured output: the
+F3 parser handled the live +Boot0002 decoration, and F5's
+self-healing worked on real firmware first try.
+
+CRITERION 6: CLOSED, 2026-07-07, third attempt, with findings
+F3, F4, and F5 produced along the way.
 
 ## Criteria 1 and 2
 
