@@ -1303,27 +1303,27 @@ fi
 # ============================================================================
 #
 # boot.pcm is a build product, never a committed binary: the committed
-# source of truth is tools/gen-boot-tone.py (stdlib-only python3; the
-# inputfs fuzz harness precedent makes python3 an acceptable tool
-# dependency). Generated fresh on every install so a retuned generator
-# ships without binary churn in history. If python3 is absent the asset
-# is skipped with a notice; the pgsd-bootchime rc script tolerates a
-# missing asset (one syslog line, boot unaffected).
+# source of truth is semasound/src/gen_boot_tone.zig, built as
+# gen-boot-tone alongside the semasound binaries above (a build-time
+# tool, not a deployed one, so it is not in BINARIES). Generated fresh
+# on every install so a retuned generator ships without binary churn
+# in history. The pgsd-bootchime rc script tolerates a missing asset
+# (one syslog line, boot unaffected).
 
 SOUNDS_DIR="$PREFIX/share/pgsd/sounds"
+GENBOOT="$SCRIPT_DIR/semasound/zig-out/bin/gen-boot-tone"
 echo ""
 echo "=== Installing boot chime asset to $SOUNDS_DIR/ ==="
-if command -v python3 >/dev/null 2>&1; then
+if [ -x "$GENBOOT" ]; then
     mkdir -p "$SOUNDS_DIR"
-    if python3 "$SCRIPT_DIR/tools/gen-boot-tone.py" \
-        --rate 48000 --out "$SOUNDS_DIR/boot" >/dev/null 2>&1; then
+    if "$GENBOOT" --out "$SOUNDS_DIR/boot" 2>/dev/null; then
         chmod 0644 "$SOUNDS_DIR/boot.pcm"
         echo "  installed $SOUNDS_DIR/boot.pcm (generated)"
     else
-        echo "  WARNING: gen-boot-tone.py failed; chime asset not installed" >&2
+        echo "  WARNING: gen-boot-tone failed; chime asset not installed" >&2
     fi
 else
-    echo "  skip      boot.pcm (no python3; pgsd-bootchime will log and skip)"
+    echo "  WARNING: $GENBOOT missing (build incomplete?); chime asset not installed" >&2
 fi
 
 # ============================================================================

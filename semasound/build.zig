@@ -61,6 +61,20 @@ pub fn build(b: *std.Build) void {
     dump.root_module.addImport("compat", compat_mod);
     b.installArtifact(dump);
 
+    // gen-boot-tone: build-time generator for the boot chime asset
+    // (ADR 0032). Source of truth for boot.pcm; install.sh runs it
+    // from zig-out/bin at install time. Not a deployed binary.
+    const genboot = b.addExecutable(.{
+        .name = "gen-boot-tone",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gen_boot_tone.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    genboot.root_module.addImport("compat", compat_mod);
+    b.installArtifact(genboot);
+
     const run_cmd = b.addRunArtifact(exe);
     if (b.args) |args| run_cmd.addArgs(args);
     const run_step = b.step("run", "Run semasound");

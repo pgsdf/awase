@@ -87,17 +87,24 @@ distinct failures (2 rejected at hello, 3 preempted by policy,
 ADR 0026 Decision 6) are policy outcomes to report, not races to
 retry.
 
-### 4. Asset: build product from a committed generator
+### 4. Asset: build product from a committed Zig generator
 
-boot.pcm is never committed. tools/gen-boot-tone.py (python3,
-stdlib only; the inputfs fuzz harness precedent makes python3 an
-acceptable tool dependency) is the source of truth. install.sh
-generates and installs the asset at install time when python3 is
-present and skips with a notice otherwise; the rc script tolerates
-the missing asset per Decision 3. Output is pinned at 48000 Hz
-stereo s16le, the CANON_RATE bit-exact passthrough path, 2.000 s,
-sample-exact zero first and last frames so the stream cuts with no
-click.
+boot.pcm is never committed. semasound/src/gen_boot_tone.zig is
+the source of truth, built as gen-boot-tone by the semasound
+build alongside the other tools (it imports protocol.zig, so its
+default rate is literally CANON_RATE). A build-time tool, not a
+deployed binary: install.sh runs it from zig-out/bin to generate
+and install the asset, and the rc script tolerates a missing
+asset per Decision 3. No dependency beyond the pinned toolchain
+that already builds the tree. Output is 48000 Hz stereo s16le,
+the CANON_RATE bit-exact passthrough path, 2.000 s, sample-exact
+zero first and last frames so the stream cuts with no click.
+
+Rationale for Zig over a scripted generator: the vendored
+toolchain (tools/bootstrap.sh, sdk/zig/current) is the one build
+dependency the repository guarantees, so the generator adds
+nothing to the dependency surface, and the tool lives in the
+language and build of the subsystem it serves.
 
 ### 5. Sounds directory anticipates per-environment cues
 
@@ -143,3 +150,6 @@ recovery.pcm) anticipates it.
   unsound (broker-client architecture; AD-47 null-sink swallow).
   Open-retry replaced by device-surface polling; playback itself
   is attempted once. Returned for ratification.
+  Amended same day, operator-directed: the asset generator is
+  realized in Zig within the semasound build (Decision 4) rather
+  than as a python3 script, removing the python3 dependency.
