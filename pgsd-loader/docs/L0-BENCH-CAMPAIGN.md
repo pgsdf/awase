@@ -3,8 +3,9 @@
 Closure evidence for ADR 0003 (ratified rev 2), gathered on
 bare-metal-test-bench. The record for each criterion stays open
 until the operator judges it boring; no criterion closes on an
-arbitrary count. The operator appends entries; dispositions are
-recorded explicitly rather than left to the logs.
+arbitrary count. The operator appends entries; observations and
+dispositions are recorded explicitly rather than left implicit
+in the logs.
 
 Deployment state at campaign start: pgsd-loader.efi published to
 EFI/pgsd/ on gpt/efiboot0 (reused fstab mount at /boot/efi);
