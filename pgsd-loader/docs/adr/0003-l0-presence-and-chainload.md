@@ -87,13 +87,19 @@ members), the tooling applies the same deployment to every
 member per the ADR 0002 mirror equivalence invariant; the bench
 validates on the bench topology and records it.
 
-### 5. What L0 explicitly does not do
+### 5. L0 introduces no new boot authority
 
-No environment selection (L1), no audio (L2), no kernel handling
-(L3), no reading of any configuration, no writes anywhere but
-the Decision 2 location and the boot entries. The behavioral
-invariant review question for every L0 patch is: does this
-change anything but deployment and the banner?
+L0's responsibility is limited to publication into the
+provisional BAS location, execution, verification, chainloading,
+and recovery. Stock loader.efi remains authoritative for kernel
+loading, configuration processing, and handoff; L0 does not
+share, shadow, or influence that authority, it only precedes it.
+Concretely: no environment selection (L1), no audio (L2), no
+kernel handling (L3), no reading of any configuration, no writes
+anywhere but the Decision 2 location and the boot entries. The
+behavioral invariant review question for every L0 patch is: does
+this change anything but deployment and the banner? If it also
+touches authority, the answer is already no.
 
 ## Closure criteria
 
@@ -135,3 +141,8 @@ change anything but deployment and the banner?
   operator sequencing (L0, then the product architecture ADR,
   then L3a) as the first bench validation of the ratified
   architecture.
+- Revision 2, 2026-07-07: Decision 5 restated per operator
+  review as an authority statement: L0 introduces no new boot
+  authority, stock loader.efi remaining authoritative for kernel
+  loading, configuration processing, and handoff. Emphasis, not
+  a design change.
