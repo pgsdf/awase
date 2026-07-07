@@ -69,7 +69,14 @@ receives it intact. PENDING
 ## Criterion 6: deploy idempotence
 
 Two consecutive deploys; the second reports unchanged/present
-throughout and no-op. PENDING
+throughout and no-op.
+
+First attempt, 2026-07-07: FAILED, and productively (finding F3).
+Re-run PENDING after the F3 fix, expected shape: run one reaps
+the duplicate Boot000B entries and normalizes the boot order
+(changed); run two is the true no-op that closes the criterion.
+One unexplained observation from the failed attempt is held open
+in F4.
 
 ## Criteria 1 and 2
 
@@ -93,6 +100,40 @@ the mounted provider may be a GEOM alias (gpt/efiboot0) of the
 partition gpart names (ada0p1), and GEOM withers the other
 aliases while one is open; identity of a partition is not
 identity of its name. Both fixes landed same day.
+
+### F3: deploy entry parser corrupted by efibootmgr decorations (closed, fix landed)
+
+Criterion 6's first attempt exposed a parser defect with
+compounding damage. After booting through PGSD, efibootmgr
+decorates the current/next entry with a leading plus
+(+Boot0003*); the parser stripped the trailing star but not the
+plus, returned the malformed token Boot+Boot0003, and fed it to
+-a -b and -o. The corrupted lookup then made the next run
+conclude the entry was absent, creating a duplicate (Boot000B),
+and the boot-order filter compared tokens as regular expressions,
+letting both the malformed token and repeated entries through.
+Bench state after three runs: duplicate PGSD entry, 000B twice in
+BootOrder. Fix: positional extraction of the 4-hex-digit number
+with exact label comparison (decorations and alignment spaces
+stripped), literal index() membership in the order filter with
+de-duplication, and reap_duplicates so the fixed deploy
+self-heals the damage its predecessor made. Parser verified
+against the exact corrupted bench output, all five label cases.
+Lesson, same family as F1's: field-position string surgery on
+tool output is identity-fragile; extract positionally, compare
+exactly.
+
+### F4: unexplained republish on deploy run three (open)
+
+Run three of the failed criterion 6 attempt reported "published"
+for a binary runs one and two had reported "unchanged", with no
+known rebuild in between. Hypothesis: a zig build (for example
+via qemu-smoke) between runs producing a byte-different .efi
+through PE header variance, which would make cmp legitimately
+differ. Operator to confirm whether any build ran between the
+deploys; if none did, this needs investigation before criterion 6
+closes, since content-addressed publication is the mechanism
+idempotence rests on.
 
 ### F2: audiofs path_dead_end repetition (open, disposition pending)
 

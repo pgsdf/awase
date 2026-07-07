@@ -36,11 +36,44 @@ mkdir -p "$MNT"
 cleanup() { umount "$MNT" 2>/dev/null; rmdir "$MNT" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
-# entry_num LABEL: print the Boot#### number for LABEL, empty if none.
-entry_num() {
+# Parse efibootmgr entry lines robustly. The first field carries
+# decorations that shift between boots: a "+" prefix on the
+# BootNext/current entry and a "*" suffix on active ones, so the
+# field may read "+Boot0003*", " Boot0002", or "Boot0003*". Extract
+# the 4-hex-digit number positionally and compare the label exactly
+# (so PGSD never matches PGSD-fallback). Field-one string surgery is
+# what produced the Boot+Boot0003 corruption on the bench.
+
+# entry_all LABEL: print every Boot number whose label is exactly
+# LABEL, one per line (duplicates included, for reaping).
+entry_all() {
     efibootmgr | awk -v l="$1" '
-        $0 ~ ("[ +*]" l "$") { sub("^Boot", "", $1); sub("[*+]$", "", $1);
-                               print $1; exit }'
+        {
+            if (match($0, /Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][*+]? /)) {
+                num = substr($0, RSTART + 4, 4)
+                lbl = substr($0, RSTART + RLENGTH)
+                sub(/^[ \t]+/, "", lbl)
+                sub(/[ \t\r]+$/, "", lbl)
+                if (lbl == l) print num
+            }
+        }'
+}
+
+# entry_num LABEL: the first such number, empty if none.
+entry_num() {
+    entry_all "$1" | head -n 1
+}
+
+# reap_duplicates LABEL: delete all but the first entry with LABEL.
+# Self-healing for boot orders damaged by the parser defect above:
+# a duplicate created by a bad lookup is removed on the next run.
+reap_duplicates() {
+    for n in $(entry_all "$1" | awk 'NR > 1'); do
+        if efibootmgr -B -b "$n" >/dev/null 2>&1; then
+            echo "  reaped   duplicate $1 (Boot$n)"
+            changed=1
+        fi
+    done
 }
 
 changed=0
@@ -97,6 +130,7 @@ MOUNTS
         exit 1
     fi
     fb_label="PGSD-fallback$suffix"
+    reap_duplicates "$fb_label"
     fb=$(entry_num "$fb_label")
     if [ -z "$fb" ]; then
         efibootmgr -c -l "$ESPDIR/$STOCK_REL" -L "$fb_label" >/dev/null || {
@@ -125,6 +159,7 @@ MOUNTS
 
     # 3. Primary entry, only after 1 and 2 succeeded on this member.
     pr_label="PGSD$suffix"
+    reap_duplicates "$pr_label"
     pr=$(entry_num "$pr_label")
     if [ -z "$pr" ]; then
         efibootmgr -c -l "$ESPDIR/$PGSD_REL" -L "$pr_label" >/dev/null || {
@@ -161,10 +196,17 @@ if [ "$cur" = "$want" ] || case "$cur" in "$want",*) true ;; *) false ;; esac; t
     echo "boot order already begins $want"
 else
     # Desired entries first, everything else retained behind them.
+    # Literal membership via index(), never regex match: entry tokens
+    # must not be interpreted as patterns. Retained entries are also
+    # de-duplicated, healing an order that accumulated repeats.
     rest=$(echo "$cur" | awk -v w="$want" 'BEGIN { FS="," }
         { n = split($0, a, ",")
-          for (i = 1; i <= n; i++)
-              if (("," w ",") !~ ("," a[i] ",")) printf ",%s", a[i] }')
+          for (i = 1; i <= n; i++) {
+              if (a[i] == "") continue
+              if (index("," w ",", "," a[i] ",") > 0) continue
+              if (seen[a[i]]++) continue
+              printf ",%s", a[i]
+          } }')
     if efibootmgr -o "$want$rest" >/dev/null; then
         echo "boot order set: $want$rest"
         changed=1
