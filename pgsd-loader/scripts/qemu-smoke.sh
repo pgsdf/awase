@@ -9,22 +9,40 @@
 # failure path: with the target removed, pgsd-loader must report and
 # fall through.
 #
-# OVMF firmware paths are host-specific; override via environment.
-# FreeBSD (port edk2): OVMF_CODE=/usr/local/share/edk2-qemu/QEMU_UEFI_CODE-x86_64.fd
+# OVMF firmware paths are probed from known locations, bench
+# (FreeBSD edk2 port) first, then Linux packaging; override via
+# environment (OVMF_CODE, OVMF_VARS) if the probe misses.
 # Usage: sh qemu-smoke.sh
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJ_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
-OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
+
+probe() {
+    for f in "$@"; do
+        if [ -f "$f" ]; then echo "$f"; return 0; fi
+    done
+    return 1
+}
+OVMF_CODE="${OVMF_CODE:-$(probe \
+    /usr/local/share/edk2-qemu/QEMU_UEFI_CODE-x86_64.fd \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF_CODE.fd || true)}"
+OVMF_VARS="${OVMF_VARS:-$(probe \
+    /usr/local/share/edk2-qemu/QEMU_UEFI_VARS-x86_64.fd \
+    /usr/share/OVMF/OVMF_VARS_4M.fd \
+    /usr/share/OVMF/OVMF_VARS.fd || true)}"
+[ -n "$OVMF_CODE" ] || { echo "qemu-smoke: no OVMF code image found; set OVMF_CODE" >&2; exit 1; }
+[ -n "$OVMF_VARS" ] || { echo "qemu-smoke: no OVMF vars image found; set OVMF_VARS" >&2; exit 1; }
 QEMU="${QEMU:-qemu-system-x86_64}"
 ESP="/tmp/pgsd-l0-smoke-esp.$$"
 LOG="/tmp/pgsd-l0-smoke.log"
 
 [ -f "$OVMF_CODE" ] || { echo "qemu-smoke: OVMF_CODE not found: $OVMF_CODE" >&2; exit 1; }
 
-( cd "$PROJ_DIR" && zig build && zig build test-target )
+ZIG="$PROJ_DIR/../sdk/zig/current/zig"
+[ -x "$ZIG" ] || ZIG=zig
+( cd "$PROJ_DIR" && "$ZIG" build && "$ZIG" build test-target )
 
 run() {
     cp "$OVMF_VARS" "$ESP.vars"
