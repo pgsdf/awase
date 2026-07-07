@@ -2,11 +2,22 @@
 
 ## Status
 
-Proposed, 2026-07-07. The evaluation ADR required by parent ADR
-0001 Decision 6 before L3 design begins. Ratification of this
-document clears that gate for stage L3a only (Decision 4); the
-gate for L3b clears when the upstream product-architecture
-decision it depends on is ratified (Decision 6).
+Ratified, 2026-07-07, at revision 3 (operator: the document
+establishes the loader's architectural capability boundary
+without deciding product deployment policy; defines the Boot
+Artifact Store and Boot Pool Invariants as independently
+versioned subordinate specifications; limits the loader to
+installer-defined storage contracts; defers deployment authority
+and operational policy to the appropriate architectural venue;
+and is sufficiently abstract to survive changes in
+implementation strategy while providing stable guidance for L3a
+and any future conditional ZFS work).
+
+The evaluation ADR required by parent ADR 0001 Decision 6 before
+L3 design begins. Ratification clears that gate for stage L3a
+only (Decision 5); the gate for L3b clears when the upstream
+product-architecture decision it depends on is ratified
+(Decision 6).
 
 ## Context
 
@@ -313,4 +324,8 @@ persists at the stock-loader layer.
   lifecycle added as an invariant (artifacts immutable after
   publication, updates publish new sets); BAS sizing justified
   primarily by platform validation, with UEFI limit observations
-  demoted to informative background.
+  demoted to informative background. Ratified at this revision
+  the same day, with one editorial correction folded into the
+  ratification record: the Status block's L3a gate reference,
+  stale since the revision 2 renumbering, corrected from
+  Decision 4 to Decision 5. No decision content changed.
