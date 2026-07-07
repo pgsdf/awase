@@ -51,9 +51,19 @@ order (F5) boots through pgsd-loader correctly. Warm reboot, so
 recorded as supporting evidence rather than a cold-boot count
 entry; chime observation not reported for this boot.
 
+### Cold boots via fallback, drills 1 through 3, 2026-07-07
+
+Three cold boots, each landing on BootCurrent 0002 by design
+(criterion 4 drills, cross-recorded here per the ledger's rule:
+each demonstrates the fallback path remains healthy). Chime
+observations not reported for these boots. Note the chime plays
+on fallback boots too, the rc.d anchor being loader-independent,
+so future drill entries should record it.
+
 ### Subsequent cold boots
 
-(append: date, BootCurrent, chime audible yes/no, anomalies)
+(append: date, BootCurrent, chime audible yes/no, anomalies;
+primary entry is Boot0001 as of the drill 1 restore)
 
 ## Criterion 4: recovery, three ways
 
@@ -63,13 +73,43 @@ both a criterion 4 validation and another successful cold boot
 demonstrating that the fallback path remains healthy; entries
 here should be cross-recorded above when they are.
 
-1. Entry removed (efibootmgr -B -b 0003; boot; expect
-   BootCurrent 0002; re-deploy): PENDING
-2. Binary corrupted in place (boot; expect the LoadImage failure
-   report on console, three second stall, fall-through;
-   re-deploy): PENDING
-3. Binary deleted (boot; expect fall-through; re-deploy):
-   PENDING
+1. Entry removed: PASSED 2026-07-07. Boot0003 deleted, cold
+   boot landed on BootCurrent 0002 with no pgsd-loader banner
+   (firmware never invoked it, entry absent). Restore recreated
+   the primary as Boot0001, firmware reusing the slot freed by
+   the stale-entry removal: the entry-renumber case exercised
+   and handled by the F3 parser and order logic without
+   incident. Incidental: zig-out was absent at restore, build.sh
+   regenerated it, and the canonical pinned binary is deployed
+   from this point (see provenance note below).
+2. Binary corrupted in place: PASSED 2026-07-07. Four bytes over
+   the PE header; cold boot fell through to BootCurrent 0002.
+   Firmware behavior observed: silent and fast, messages too
+   quick to read, no dwell on the rejected image. As predicted
+   for this variant, no pgsd-loader failure report appears,
+   since the firmware's own LoadImage rejects the image before
+   any loader code runs; the loader's own report path is covered
+   by qemu-smoke pass 2. Restore published over the corrupted
+   file, provenance log capturing its hash as replaced.
+3. Binary deleted: fall-through VALIDATED 2026-07-07 (cold boot
+   to BootCurrent 0002 with the entry dangling); restore
+   PENDING: deploy plus one confirming cold boot through the
+   renumbered primary (Boot0001).
+
+Provenance note, first field outing of the deploy log: three
+hashes told the whole story. 1287401e... was the pre-pin binary
+(wall-clock PE stamps, built before SOURCE_DATE_EPOCH; its
+difference from the canonical build is expected and now
+explained). 38d9c6c8... is the canonical pinned hash for the
+current loader source, published identically in both restores.
+b2232083... is the corrupted file drill 2 replaced. The F4
+instrumentation answering exactly the question operator recall
+could not.
+
+Observability note: at this firmware's boot speed, console
+output including the healthy-boot banner is effectively
+unreadable in real time. Recorded as an observation only; any
+banner dwell is a behavior change gated on ADR revision.
 
 ## Criterion 5: load-option forwarding
 
