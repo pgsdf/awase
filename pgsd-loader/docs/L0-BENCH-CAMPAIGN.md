@@ -92,9 +92,10 @@ here should be cross-recorded above when they are.
    by qemu-smoke pass 2. Restore published over the corrupted
    file, provenance log capturing its hash as replaced.
 3. Binary deleted: fall-through VALIDATED 2026-07-07 (cold boot
-   to BootCurrent 0002 with the entry dangling); restore
-   PENDING: deploy plus one confirming cold boot through the
-   renumbered primary (Boot0001).
+   to BootCurrent 0002 with the entry dangling); restore deploy
+   ran clean (published, entry present, order begins 0001) but
+   the confirming cold boot LANDED ON 0002, opening finding F7.
+   Drill 3 does not close until a boot reaches the primary.
 
 Provenance note, first field outing of the deploy log: three
 hashes told the whole story. 1287401e... was the pre-pin binary
@@ -283,6 +284,31 @@ through it), and deploy.sh now appends every run to
 action, so binary provenance is answerable from the machine
 record rather than from memory. Lesson: operator recall is not
 an evidence source; instrument so the question answers itself.
+
+### F7: post-restore boots do not reach the primary (OPEN, under diagnosis)
+
+The campaign's first genuine anomaly. After drill 3's restore,
+with the binary published (verified output of deploy), Boot0001
+pointing at it, and the order beginning 0001, a cold boot landed
+on BootCurrent 0002: firmware tried or skipped the primary and
+fell through. Confounded pair: during drill 1's restore, the
+deployed binary became the SOURCE_DATE_EPOCH pinned build AND
+the entry was recreated as Boot0001 in the same operation, and
+no boot has reached the primary since; the pinned binary
+(38d9c6c8...) has never successfully booted, every prior success
+having run the pre-pin binary. Candidate causes, none asserted:
+firmware rejection of the pinned image (a zero PE TimeDateStamp
+offending this Apple EFI); firmware treatment of a recreated
+boot entry during order processing (Apple EFI is nonstandard
+about boot variables); or an unidentified third change in the
+window. Diagnosis plan, cheapest first: (1) hash the installed
+file against zig-out and the deploy log; (2) BootNext -n -b 0001
+to force one-shot selection, isolating entry processing from
+image rejection; (3) if the image is implicated, boot an
+unpinned wall-clock build to test the stamp as the variable,
+with the reproducibility mechanism adjustable to a fixed nonzero
+epoch if zero is the offender. Criterion 4 drill 3 and the
+criterion 3 count are blocked on this finding's disposition.
 
 ### F2: audiofs path_dead_end repetition (closed: disposed to BACKLOG as AD-60)
 
