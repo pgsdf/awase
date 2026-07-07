@@ -140,10 +140,18 @@ standing in for a firmware entry carrying options; pgsd-loader
 forwards; the chainload target echoes the string intact
 (qemu-smoke pass 3, all checks green). The forwarding code path
 is thereby verified end to end on real UEFI firmware code.
-OPERATOR TO RULE: whether this evidence satisfies the criterion,
-or the criterion is amended by ratified ADR revision to name the
-end-to-end emulation verification as its method. PENDING that
-ruling.
+Operator ruling, 2026-07-07: accepted subject to a
+post-ratification amendment of ADR 0003 replacing the
+unavailable firmware-entry method with the demonstrated
+end-to-end emulation method, on the stated principle that no
+claim should exceed the evidence: the original criterion
+satisfied-as-written would have overstated the record, and
+hand-crafted EFI_LOAD_OPTION blobs would answer a tooling
+limitation rather than a product question. Amendment applied to
+the ADR the same day; a future metal validation remains
+available if warranted.
+
+CRITERION 5: CLOSED, 2026-07-07, by amended method.
 
 ## Criterion 6: deploy idempotence
 

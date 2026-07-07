@@ -128,8 +128,14 @@ touches authority, the answer is already no.
    falls through to fallback; pgsd-loader.efi deleted, boot
    falls through to fallback. Each restored by re-running the
    deploy.
-5. Load-option forwarding verified: a boot with options set on
-   the primary entry reaches loader.efi with them intact.
+5. Load-option forwarding verified end to end in emulation: an
+   image started with load options set (the launcher harness
+   standing in for a firmware entry carrying options, which
+   FreeBSD 15.1's efibootmgr cannot construct) reaches the
+   chainloaded loader with them intact. A future metal
+   validation may be added if tooling or project needs warrant;
+   it is not required for closure. (Amended from the original
+   firmware-entry method, see revision history.)
 6. The deploy is re-run twice consecutively and is a no-op the
    second time (idempotence).
 
@@ -157,3 +163,16 @@ touches authority, the answer is already no.
   authority, stock loader.efi remaining authoritative for kernel
   loading, configuration processing, and handoff. Emphasis, not
   a design change. Ratified at this revision the same day.
+- 2026-07-07, post-ratification amendment, operator-ruled:
+  closure criterion 5's method replaced. The original method,
+  options set on the primary firmware entry, assumed a
+  capability FreeBSD 15.1's efibootmgr does not provide; the
+  demonstrated method, end-to-end emulation verification via a
+  launcher harness, exercises the property that matters,
+  preservation of LoadOptions across launcher, loader, and
+  chainload target. Calling the original criterion satisfied
+  would have made the record stronger than the evidence;
+  requiring hand-crafted EFI_LOAD_OPTION blobs would have
+  answered a tooling limitation rather than a product question.
+  The amendment keeps the ADR faithful to what was demonstrated
+  and preserves a future metal validation as an option.
