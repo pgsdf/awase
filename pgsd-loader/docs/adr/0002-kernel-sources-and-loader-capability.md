@@ -6,7 +6,7 @@ Proposed, 2026-07-07. The evaluation ADR required by parent ADR
 0001 Decision 6 before L3 design begins. Ratification of this
 document clears that gate for stage L3a only (Decision 4); the
 gate for L3b clears when the upstream product-architecture
-decision it depends on is ratified (Decision 5).
+decision it depends on is ratified (Decision 6).
 
 ## Context
 
@@ -46,7 +46,7 @@ it ever reaches the loader. It is explicitly not ruled here.
 
 pgsd-loader ADRs decide loader capability only. Deployment
 architecture and operational policy are product decisions,
-recorded outside this subproject (Decision 5), which loader
+recorded outside this subproject (Decision 6), which loader
 stages consume as ratified inputs. A pgsd-loader ADR that
 embeds a deployment or policy decision is reopened on those
 grounds alone.
@@ -68,7 +68,52 @@ by the installer and pgsd-loader and versioned independently, so
 this ADR does not encode a snapshot of today's OpenZFS feature
 set. The principle is permanent; the invariant list evolves.
 
-### 3. Loader capability: ESP read is unconditional
+### 3. The ESP is the Boot Artifact Store
+
+Architecturally, the ESP is not "the EFI partition" but the Boot
+Artifact Store (BAS): the deliberate system partition where
+immutable boot artifacts live. UEFI happens to require FAT; the
+role is what is designed. Content classes: pgsd-loader itself,
+the fallback loader, per-environment kernels and their module
+sets as the deployment architecture dictates, manifests and
+signatures, boot audio assets, and diagnostic artifacts as
+stages add them.
+
+The BAS is specified by a subordinate versioned specification,
+BOOT-ARTIFACT-STORE, the sibling of BOOT-POOL-INVARIANTS: two
+storage substrates the loader reads, two independently evolving
+specifications the loader and installer jointly own. The spec
+carries at minimum:
+
+- Layout and naming of content classes and kernel slots.
+- Sizing: 2 GiB baseline, growable to 4 GiB, negligible on
+  modern storage against substantial loader simplification. The
+  UEFI specification imposes no practical ESP ceiling; limits
+  are FAT32 and firmware quality, and the validated size on
+  supported platforms is recorded as an installer hardware
+  assumption per the Decision 2 philosophy, since large-volume
+  FAT32 defects are implementation bugs on hardware PGSD can
+  enumerate and bench.
+- Curation invariants that make the sizing hold: kernels ship
+  without debug symbol files and with an installer-curated
+  module set (a stock kernel directory with symbols exceeds the
+  per-kernel budget by an order of magnitude).
+- A retained-kernel-set policy (active plus N rollback targets,
+  generalizing A/B slots) so BAS capacity is bounded regardless
+  of how many boot environments accumulate in the pool; the
+  product ADR picks N, the spec defines the slot mechanism.
+- The write-authority invariant: the BAS is written only by
+  designated deployment tooling (installer, activation and
+  installworld hooks, the deploy tooling this subproject
+  absorbs); the running system otherwise treats it read-only,
+  and the loader always reads only.
+- Mirror replication: on multi-disk machines each mirror member
+  carries a BAS, deployment tooling updates every member, and
+  bench criteria include booting from a degraded mirror, so the
+  redundancy the pool provides is not silently lost at the boot
+  layer.
+
+### 4. Loader capability: ESP read is unconditional
 
 pgsd-loader gains the capability to read a kernel and its
 modules from the ESP (FAT, via UEFI's native filesystem
@@ -82,12 +127,12 @@ before transferring control, an integrity property the stock
 loader never provided and a stepping stone toward the
 secure-boot criteria this ADR inherits.
 
-### 4. Loader capability: constrained ZFS read is conditional
+### 5. Loader capability: constrained ZFS read is conditional
 
 A read-only ZFS path, scoped strictly to BOOT-POOL-INVARIANTS
 pools, is a capability this ADR endorses but gates: no design or
 implementation begins until the upstream product decision
-(Decision 5) ratifies a deployment architecture that requires
+(Decision 6) ratifies a deployment architecture that requires
 reading kernels from the pool. If the product ratifies ESP
 authority, this capability is never built and no loader document
 needs revision.
@@ -99,7 +144,7 @@ the parent's escalation requirement by construction: L3a is the
 smaller, pool-independent step and lands first regardless of the
 upstream outcome.
 
-### 5. Deployment architecture is deferred upstream, with the field mapped
+### 6. Deployment architecture is deferred upstream, with the field mapped
 
 The deployment-architecture and operational-policy selection is
 deferred to a product architecture ADR outside pgsd-loader (the
@@ -121,7 +166,9 @@ axis:
   identity and checksums, bench criteria), rather than remain a
   hook that is merely trusted? Weakness: the sync mechanism is
   load-bearing forever, and kernel-BE coherence rests entirely
-  on it.
+  on it. The capacity objection is retired by Decision 3: a
+  2-4 GiB BAS under the retained-kernel-set policy holds any
+  realistic rollback window with room to spare.
 
 - ZFS authority. The loader reads the active boot environment's
   kernel from the pool; coherence is by construction, no sync
@@ -158,7 +205,7 @@ environments are ruled out as the upgrade model (without BEs,
 the coherence argument for pool reads mostly evaporates);
 the documented stopping point (below) third.
 
-### 6. The documented stopping point
+### 7. The documented stopping point
 
 If the conditional capability's cost balloons or the product
 decision stalls, pgsd-loader may permanently end at L2, with
@@ -172,7 +219,7 @@ The costs are recorded with it: L5 never closes, the parent ADR
 remains permanently open, and the deploy-fragility class
 persists at the stock-loader layer.
 
-### 7. Considered and rejected
+### 8. Considered and rejected
 
 - Dedicated constrained boot pool (the bpool pattern). Solves
   implementation complexity by creating operational complexity:
@@ -202,14 +249,18 @@ persists at the stock-loader layer.
 
 1. Ratification of this ADR clears the parent Decision 6 gate
    for L3a; the L3a stage ADR may be drafted.
-2. BOOT-POOL-INVARIANTS exists as a versioned specification
+2. BOOT-ARTIFACT-STORE exists as a versioned specification
+   before L3a implementation begins (the L3a stage ADR may
+   draft it), and before the installer claims conformance to
+   its layout.
+3. BOOT-POOL-INVARIANTS exists as a versioned specification
    before any L3b design, and before the installer claims
    conformance.
-3. The product architecture ADR (Decision 5) is drafted in its
+4. The product architecture ADR (Decision 6) is drafted in its
    designated venue, consuming the field mapping and criteria
    recorded here; its ratification clears the L3b gate or
    invokes Decision 6.
-4. The upstream boot-environment ruling is recorded in that
+5. The upstream boot-environment ruling is recorded in that
    product ADR, not here; this document requires no revision in
    either outcome.
 
@@ -233,3 +284,12 @@ persists at the stock-loader layer.
   policy) per operator review of the option enumeration;
   installer-invariant principle elevated from an option
   constraint to an architectural principle per the same review.
+- Revision 2, 2026-07-07: the Boot Artifact Store added as
+  Decision 3 per operator input, reframing the ESP as a
+  deliberate system partition with a sibling subordinate
+  specification (BOOT-ARTIFACT-STORE) covering layout, 2-4 GiB
+  sizing validated per platform, symbol and module curation
+  invariants, a bounded retained-kernel-set policy, the
+  write-authority invariant, and mirror replication. The ESP
+  authority capacity objection retired accordingly; later
+  decisions renumbered.
