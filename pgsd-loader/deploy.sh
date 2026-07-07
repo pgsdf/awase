@@ -53,11 +53,28 @@ for esp in $esps; do
     echo "=== ESP /dev/$esp ==="
 
     # Reuse an existing mount (e.g. /boot/efi from fstab): a second
-    # mount of the same provider fails, and fighting the system's
+    # open of the same provider fails, and fighting the system's
     # own mount is exactly the fragility this script exists to
     # retire. Mount ourselves only when nothing else has, and
     # unmount only what we mounted.
-    existing=$(mount -p | awk -v d="/dev/$esp" '$1 == d { print $2; exit }')
+    #
+    # The member may be mounted under a GEOM alias rather than the
+    # raw partition name gpart reports: on the bench, gpart says
+    # ada0p1 while fstab mounts /dev/gpt/efiboot0, the GPT label of
+    # the same partition, and GEOM withers the other aliases while
+    # one is open (the raw device then fails with EPERM). Resolve
+    # msdosfs mounts through glabel to the underlying provider
+    # before concluding the member is unmounted.
+    existing=""
+    while read -r mdev mpoint mtype _; do
+        [ "$mtype" = "msdosfs" ] || continue
+        dev=${mdev#/dev/}
+        if [ "$dev" = "$esp" ]; then existing="$mpoint"; break; fi
+        real=$(glabel status -s 2>/dev/null | awk -v l="$dev" '$1 == l { print $3; exit }')
+        if [ "$real" = "$esp" ]; then existing="$mpoint"; break; fi
+    done << MOUNTS
+$(mount -p)
+MOUNTS
     if [ -n "$existing" ]; then
         ESPDIR="$existing"
         we_mounted=0
