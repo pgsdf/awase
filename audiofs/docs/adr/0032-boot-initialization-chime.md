@@ -98,7 +98,12 @@ and install the asset, and the rc script tolerates a missing
 asset per Decision 3. No dependency beyond the pinned toolchain
 that already builds the tree. Output is 48000 Hz stereo s16le,
 the CANON_RATE bit-exact passthrough path, 2.000 s, sample-exact
-zero first and last frames so the stream cuts with no click.
+zero first and last frames so the stream cuts with no click. Peak
+level is a generator parameter (--gain, a fraction of full scale)
+defaulting to 0.15: the initial 0.85 was operator-judged vastly
+too loud on bench hardware, and a boot chime should announce
+readiness, not startle. Retuning the level is a one-line default
+change, shipped by regeneration with no binary churn.
 
 Rationale for Zig over a scripted generator: the vendored
 toolchain (tools/bootstrap.sh, sdk/zig/current) is the one build
@@ -153,3 +158,7 @@ recovery.pcm) anticipates it.
   Amended same day, operator-directed: the asset generator is
   realized in Zig within the semasound build (Decision 4) rather
   than as a python3 script, removing the python3 dependency.
+  Amended same day, operator-directed: peak level parameterized
+  as --gain and the default reduced from 0.85 to 0.15 of full
+  scale after bench listening found the initial level vastly too
+  loud (Decision 4).

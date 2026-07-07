@@ -8,8 +8,9 @@
 //
 // Default rate is protocol.CANON_RATE (the bit-exact passthrough
 // path). First and last frames are sample-exact zero so the stream
-// can be cut hard with no click; peak is normalized 1.4 dB below
-// full scale.
+// can be cut hard with no click; peak is normalized to --gain of
+// full scale (default 0.15, operator-tuned: full-scale playback of
+// the sequence was vastly too loud on the bench hardware).
 //
 // Structure of the sequence:
 //   0.00 - 0.60 s : low root swell, A2 gliding up one octave to A3
@@ -18,7 +19,10 @@
 //   1.20 - 2.00 s : shimmer tail (detuned A5 pair, split L/R)
 //   final 5 ms    : linear fade forcing exact-zero endpoints
 //
-// Usage: gen-boot-tone [--rate N] [--mono] [--wav] [--out BASENAME]
+// Usage: gen-boot-tone [--rate N] [--mono] [--wav] [--gain G]
+//        [--out BASENAME]
+// --gain G sets the normalized peak as a fraction of full scale,
+// clamped to [0.0, 1.0].
 // Writes BASENAME.pcm (and BASENAME.wav with --wav). BASENAME may
 // include a path; default "boot". Exit codes: 0 written, 1 error.
 
@@ -93,6 +97,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var rate: u32 = protocol.CANON_RATE;
     var mono = false;
     var wav = false;
+    var gain: f64 = 0.15;
     var out_base: []const u8 = "boot";
 
     const args_owned = try compat.args.alloc(gpa, init.args);
@@ -108,12 +113,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
             mono = true;
         } else if (std.mem.eql(u8, a, "--wav")) {
             wav = true;
+        } else if (std.mem.eql(u8, a, "--gain")) {
+            i += 1;
+            if (i < args.len) {
+                const g = std.fmt.parseFloat(f64, args[i]) catch gain;
+                gain = std.math.clamp(g, 0.0, 1.0);
+            }
         } else if (std.mem.eql(u8, a, "--out")) {
             i += 1;
             if (i < args.len) out_base = args[i];
         } else {
             std.debug.print(
-                "usage: gen-boot-tone [--rate N] [--mono] [--wav] [--out BASENAME]\n",
+                "usage: gen-boot-tone [--rate N] [--mono] [--wav] [--gain G] [--out BASENAME]\n",
                 .{},
             );
             std.process.exit(1);
@@ -183,11 +194,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
         right[idx] = r;
     }
 
-    // Normalize with headroom (-1.4 dBFS) and quantize.
+    // Normalize the peak to `gain` of full scale and quantize.
     var peak: f64 = 0.0;
     for (left) |v| peak = @max(peak, @abs(v));
     for (right) |v| peak = @max(peak, @abs(v));
-    const scale: f64 = if (peak > 0.0) (0.85 / peak) * 32767.0 else 0.0;
+    const scale: f64 = if (peak > 0.0) (gain / peak) * 32767.0 else 0.0;
 
     const channels: u16 = if (mono) 1 else 2;
     const pcm = try gpa.alloc(i16, n * channels);
