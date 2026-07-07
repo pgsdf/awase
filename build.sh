@@ -1,5 +1,5 @@
 #!/bin/sh
-# UTF build wrapper — runs zig build and tees output to a log file.
+# UTF build wrapper: runs zig build and tees output to a log file.
 #
 # Usage:
 #   sh build.sh                    # build all subprojects
@@ -56,7 +56,7 @@ if [ -f "$CONFIG" ] && [ $# -eq 0 ]; then
     [ "${SEMADRAW_BSDINPUT:-false}" = "false" ] && BUILD_FLAGS="$BUILD_FLAGS -Dbsdinput=false"
 fi
 
-echo "UTF build — $(date)"
+echo "UTF build, $(date)"
 echo "Log: $LOG"
 echo ""
 
