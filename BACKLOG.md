@@ -2907,3 +2907,19 @@ introduction. Placement is the open design question: `tests/run.sh` is the
 reliable backstop since it always runs at bench time; a pre-commit hook
 would catch it earlier but is bypassable. No ADR required (enforcement
 mechanism, not a protocol change).
+
+### `[ ]` AD-60: audiofs path_dead_end event repetition floods the events ring  *(Open 2026-07-07, Small, P3; disposed here from pgsd-loader L0 campaign finding F2)*
+
+Observed on bare-metal-test-bench during the L0 boot campaign,
+present before and independent of the loader work: the
+path_dead_end events for nids 0xc/0xd/0xe/0xf/0x12 repeat in
+identical groups of five at roughly 21 ms intervals well after
+attach completes (dmesg timestamps 12.398, 12.419, 12.441,
+12.462, continuing), a cadence suggesting something in the
+running stream path re-walks codec topology and re-emits the
+same findings every cycle, flooding the events ring with
+duplicates. To investigate: which loop emits them (the 21 ms
+cadence is suspiciously close to the stream interrupt period),
+whether dead-end findings should be emitted once at discovery
+rather than per walk, and whether the ring's useful capacity is
+materially reduced on long uptimes.

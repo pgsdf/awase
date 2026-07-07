@@ -82,4 +82,17 @@ run
 check "failure reported"          "LoadImage failed"
 check "fall-through announced"    "falling through to firmware boot order"
 
+# Pass 3: load-option forwarding (ADR 0003 criterion 5). The
+# launcher starts pgsd-loader with a known option string, standing
+# in for a firmware entry carrying options (FreeBSD efibootmgr
+# cannot set them); the chainload target echoes what arrived.
+rm -rf "$ESP"
+mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/pgsd" "$ESP/EFI/freebsd"
+cp "$PROJ_DIR/zig-out/bin/option-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
+cp "$PROJ_DIR/zig-out/bin/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader.efi"
+cp "$PROJ_DIR/zig-out/bin/chainload-target.efi" "$ESP/EFI/freebsd/loader.efi"
+run
+check "options reached loader"    "pgsd-loader .* (L0"
+check "options forwarded intact"  "LOAD OPTIONS: pgsd-opt-test alpha beta"
+
 [ "$fails" -eq 0 ] && echo "qemu-smoke: all checks passed" || { echo "qemu-smoke: $fails check(s) FAILED"; exit 1; }

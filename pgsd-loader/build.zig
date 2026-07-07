@@ -33,6 +33,19 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tgt.subsystem = .efi_application;
-    const tgt_step = b.step("test-target", "Build the emulation chainload stand-in");
+    // option-launcher: emulation-only criterion 5 harness, starts
+    // pgsd-loader with a known option string (never deployed).
+    const launcher = b.addExecutable(.{
+        .name = "option-launcher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/option_launcher.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    launcher.subsystem = .efi_application;
+
+    const tgt_step = b.step("test-target", "Build the emulation test harnesses");
     tgt_step.dependOn(&b.addInstallArtifact(tgt, .{}).step);
+    tgt_step.dependOn(&b.addInstallArtifact(launcher, .{}).step);
 }

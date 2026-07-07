@@ -38,8 +38,16 @@ The remaining observation for cold boot #1 is whether the boot
 chime was audible. The logs establish the attach sequence, D0
 transition, GPIO programming, and stream startup, but they
 cannot attest to audibility, so that observation is recorded
-explicitly: PENDING operator report (first ride of the ADR 0032
-chime through the new boot path, at the 0.15 gain).
+explicitly: REPORTED, chime audible, level acceptable at the
+0.15 gain (first ride of the ADR 0032 chime through the new boot
+path).
+
+### Boot, 2026-07-07 22:38 (warm reboot)
+
+BootCurrent: 0003 after the criterion 6 close: the healed boot
+order (F5) boots through pgsd-loader correctly. Warm reboot, so
+recorded as supporting evidence rather than a cold-boot count
+entry; chime observation not reported for this boot.
 
 ### Subsequent cold boots
 
@@ -64,7 +72,22 @@ here should be cross-recorded above when they are.
 ## Criterion 5: load-option forwarding
 
 Set an option string on the PGSD entry; confirm loader.efi
-receives it intact. PENDING
+receives it intact.
+
+Method finding, 2026-07-07: FreeBSD 15.1's efibootmgr has no
+flag to set load options on an entry (usage verified on the
+bench), so the criterion as written assumes a capability the OS
+tooling does not provide. Evidence obtained instead: an
+emulation-only launcher harness (never deployed) starts
+pgsd-loader with the option string "pgsd-opt-test alpha beta",
+standing in for a firmware entry carrying options; pgsd-loader
+forwards; the chainload target echoes the string intact
+(qemu-smoke pass 3, all checks green). The forwarding code path
+is thereby verified end to end on real UEFI firmware code.
+OPERATOR TO RULE: whether this evidence satisfies the criterion,
+or the criterion is amended by ratified ADR revision to name the
+end-to-end emulation verification as its method. PENDING that
+ruling.
 
 ## Criterion 6: deploy idempotence
 
@@ -161,7 +184,7 @@ difference. Verified against the exact bench order, dropping both
 family: healing that validates a prefix owns only a prefix; own
 the whole invariant or none of it.
 
-### F6: boot through the fallback, cause unconfirmed (open, operator input)
+### F6: boot through the fallback (closed: UNRESOLVED, timeline confirmed, cause unproven)
 
 BootCurrent: 0002 at the second criterion 6 attempt: the most
 recent boot ran through PGSD-fallback with Boot0003 present and
@@ -189,6 +212,15 @@ loader-written boot-evidence UEFI variable would answer the
 under the ADR 0003 authority statement, recorded here as a
 deferred proposal for the operator, not implemented.
 
+Closure, 2026-07-07: forensics confirmed five boots on the bench
+day (21:40, 21:45, 22:25, 22:35, 22:38), establishing that boots
+occurred in the window; the cause of the boot that landed on
+Boot0002 is not determinable (pre-kernel console output persists
+nowhere, and the binary that was installed at the time was
+replaced). Closed UNRESOLVED per the ledger's own rule: both
+hypotheses stand recorded, deliberate reboot or the fallback
+invariant's first unplanned field save, and no cause is claimed.
+
 ### F4: unexplained republishes (closed: mechanism proven, timeline unrecoverable)
 
 Runs reported "published" for binaries expected unchanged, twice
@@ -210,7 +242,7 @@ action, so binary provenance is answerable from the machine
 record rather than from memory. Lesson: operator recall is not
 an evidence source; instrument so the question answers itself.
 
-### F2: audiofs path_dead_end repetition (open, disposition pending)
+### F2: audiofs path_dead_end repetition (closed: disposed to BACKLOG as AD-60)
 
 Not a loader finding; the first non-loader observation of the
 campaign, present before L0 and surfaced by reading the cold
@@ -220,6 +252,6 @@ roughly 21 ms intervals well after attach completes (12.398,
 12.419, 12.441, 12.462, ...), a cadence suggesting something in
 the running stream path re-walks codec topology and re-emits the
 same findings every cycle, which would flood the events ring
-with duplicates. Even if this is expected audiofs behavior it
-deserves explicit disposition rather than disappearing into the
-logs. Operator to rule: known behavior, or BACKLOG entry.
+with duplicates. Operator disposition, 2026-07-07: BACKLOG entry.
+Recorded as AD-60 with the cadence evidence and the
+investigation questions; closed here.
