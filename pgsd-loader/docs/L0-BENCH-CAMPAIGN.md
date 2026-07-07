@@ -51,6 +51,14 @@ order (F5) boots through pgsd-loader correctly. Warm reboot, so
 recorded as supporting evidence rather than a cold-boot count
 entry; chime observation not reported for this boot.
 
+### Cold boot, 2026-07-07 (post-F8, drill 3 confirmation)
+
+BootCurrent: 0001, through the renumbered primary. First
+successful boot of the SOURCE_DATE_EPOCH pinned binary
+(38d9c6c8...), which exonerates the zero PE TimeDateStamp on
+this firmware and closes the never-booted thread from F7's
+confounded pair. Chime observation not reported for this boot.
+
 ### Cold boots via fallback, drills 1 through 3, 2026-07-07
 
 Three cold boots, each landing on BootCurrent 0002 by design
@@ -94,8 +102,13 @@ here should be cross-recorded above when they are.
 3. Binary deleted: fall-through VALIDATED 2026-07-07 (cold boot
    to BootCurrent 0002 with the entry dangling); restore deploy
    ran clean (published, entry present, order begins 0001) but
-   the confirming cold boot LANDED ON 0002, opening finding F7.
-   Drill 3 does not close until a boot reaches the primary.
+   the confirming cold boot LANDED ON 0002, opening finding F7
+   (closed: the installed image was empty, see F7 and F8).
+   CLOSED 2026-07-07: after the F8 fsck and verified republish,
+   the confirming cold boot reached BootCurrent 0001.
+
+CRITERION 4: CLOSED, 2026-07-07, all three drills passed, with
+findings F7 and F8 produced by the confirming-boot discipline.
 
 Provenance note, first field outing of the deploy log: three
 hashes told the whole story. 1287401e... was the pre-pin binary
@@ -315,6 +328,21 @@ Bench to run before trusting the filesystem again: unmount,
 fsck_msdosfs, remount, republish with verification, cold boot.
 Closure: a verified publish that survives a cold boot to
 BootCurrent 0001.
+
+CLOSED 2026-07-07, mechanism confirmed with forensic precision:
+fsck_msdosfs found two lost cluster chains of 326 clusters each,
+matching the loader binary's size at this FAT's cluster size to
+the cluster; two publishes had written their data intact and
+lost their directory linkage (plus an FSInfo free-count error),
+which is msdosfs metadata not fully flushed at fast poweroff
+while data blocks survived. fsck repaired; the republish was
+hash-verified on disk (manually, the verify-enabled deploy.sh
+not yet pulled to the bench for that run; the script does it
+automatically from the next pull onward), sync plus settle, and
+the cold boot reached BootCurrent 0001. Standing bench
+discipline from this finding: no poweroff in the same breath as
+an ESP write; the deploy's own sync-and-verify plus a settle
+before power-off.
 
 ### Old F7 diagnosis record follows for the plan it carried:
 (superseded) post-restore boots do not reach the primary (was OPEN, under diagnosis)
