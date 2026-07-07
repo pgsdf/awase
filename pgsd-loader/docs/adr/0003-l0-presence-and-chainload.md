@@ -2,9 +2,20 @@
 
 ## Status
 
-Proposed, 2026-07-07. First stage ADR under parent ADR 0001
-(ratified rev 2) Decision 3, consuming ADR 0002 (ratified rev 3).
-ADR-before-code: no L0 code exists at proposal time.
+Ratified, 2026-07-07, at revision 2 (operator: the stage is
+narrowly scoped, faithfully consumes the ADR 0001 and 0002
+contracts without extending them, converts the fallback and
+behavioral invariants into concrete deployment and bench
+procedures, establishes the initial Boot Artifact Store
+publication path without constraining the future
+BOOT-ARTIFACT-STORE specification, provides objective closure
+criteria suitable for hardware validation, introduces no new
+boot authority, and is ready to guide the L0 implementation).
+
+First stage ADR under parent ADR 0001 (ratified rev 2) Decision
+3, consuming ADR 0002 (ratified rev 3). ADR-before-code: no L0
+code existed at proposal time; implementation follows this
+ratification.
 
 ## Context
 
@@ -145,4 +156,4 @@ touches authority, the answer is already no.
   review as an authority statement: L0 introduces no new boot
   authority, stock loader.efi remaining authoritative for kernel
   loading, configuration processing, and handoff. Emphasis, not
-  a design change.
+  a design change. Ratified at this revision the same day.
