@@ -2,10 +2,17 @@
 
 ## Status
 
-Proposed, 2026-07-07. Parent architecture ADR for the pgsd-loader
-subproject. Stage ADRs (Decision 3) are drafted and ratified
-beneath it individually; this document does not close until stage
-L5 closes or it is explicitly superseded.
+Ratified, 2026-07-07, at revision 2 (operator: the revision
+distinguishes architecture from implementation, policy from
+execution, and long-lived project invariants from stage-specific
+design; the fallback and behavioral invariants together provide a
+durable review framework, and implementation choices can evolve
+beneath this document without requiring architectural revision).
+
+Parent architecture ADR for the pgsd-loader subproject. Stage
+ADRs (Decision 3) are drafted and ratified beneath it
+individually; this document does not close until stage L5 closes
+or it is explicitly superseded.
 
 ## Context
 
@@ -256,4 +263,5 @@ rather than being absorbed silently.
   the Decision 6 gate strengthened to bar all L3 implementation
   work before ratification; the behavioral invariant added as
   Decision 5 with its review rule; kernel-handoff implementation
-  detail moved down to the L3 stage ADRs.
+  detail moved down to the L3 stage ADRs. Ratified at this
+  revision the same day.

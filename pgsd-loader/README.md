@@ -10,4 +10,5 @@ coexistence mechanism, the L0-L5 milestones, and the fallback
 invariant every stage must preserve. Stage ADRs live beneath it
 in docs/adr/ and are ratified individually, ADR-before-code.
 
-Status: architecture proposed; no stage ADR ratified; no code.
+Status: architecture ratified (ADR 0001 revision 2,
+2026-07-07); no stage ADR ratified; no code.
