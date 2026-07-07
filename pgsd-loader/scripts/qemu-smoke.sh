@@ -46,9 +46,10 @@ LOG="/tmp/pgsd-l0-smoke.$$.log"
 
 [ -f "$OVMF_CODE" ] || { echo "qemu-smoke: OVMF_CODE not found: $OVMF_CODE" >&2; exit 1; }
 
-ZIG="$PROJ_DIR/../sdk/zig/current/zig"
-[ -x "$ZIG" ] || ZIG=zig
-( cd "$PROJ_DIR" && "$ZIG" build && "$ZIG" build test-target )
+# Build through build.sh so smoke binaries are the canonical
+# byte-reproducible ones (SOURCE_DATE_EPOCH pinned there).
+sh "$PROJ_DIR/build.sh"
+sh "$PROJ_DIR/build.sh" test-target
 
 run() {
     cp "$OVMF_VARS" "$ESP.vars"

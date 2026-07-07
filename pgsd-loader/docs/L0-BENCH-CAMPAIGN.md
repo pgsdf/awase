@@ -99,7 +99,12 @@ F3, F4, and F5 produced along the way.
 ## Criteria 1 and 2
 
 1. Reproducible build via the vendored toolchain: DEMONSTRATED
-   (qemu-smoke builds on the bench host, 2026-07-07).
+   at the byte level, 2026-07-07, after the F4 investigation:
+   with SOURCE_DATE_EPOCH pinned (build.sh, the canonical build
+   path), two clean-cache builds hash identically. Without the
+   pin, clean-cache builds differ in exactly two bytes, the PE
+   COFF TimeDateStamp and its debug-directory duplicate; the
+   code itself was deterministic throughout.
 2. Deploy creates both entries, fallback verified before primary
    activation: DEMONSTRATED (first successful deploy,
    2026-07-07; two earlier deploy aborts were clean and
@@ -169,20 +174,41 @@ invariant's first unplanned field save), and the next deploy
 replaced it with a good rebuild. Operator to confirm: was a
 reboot performed since the failed attempt, was the pgsd-loader
 failure report observed on console, and did any build run between
-deploys. The answers close F4 and F6 together, in either
-direction.
+deploys. Operator recall could not resolve
+this ("I don't recall"), so F6 stays open on forensics instead:
+last reboot and uptime establish whether and when a boot
+occurred between the attempts; whether pgsd-loader printed a
+failure report on that boot is unrecoverable (pre-kernel console
+output persists nowhere). If the timeline confirms a boot in the
+window, the fall-through hypothesis stands as plausible but
+unproven, and F6 closes as UNRESOLVED with both hypotheses
+recorded rather than a cause claimed. Prevention: deploy logging
+(F4 fix) timestamps every publish, narrowing future windows; a
+loader-written boot-evidence UEFI variable would answer the
+"did pgsd-loader run" question directly but is a behavior change
+under the ADR 0003 authority statement, recorded here as a
+deferred proposal for the operator, not implemented.
 
-### F4: unexplained republish on deploy run three (open)
+### F4: unexplained republishes (closed: mechanism proven, timeline unrecoverable)
 
-Run three of the failed criterion 6 attempt reported "published"
-for a binary runs one and two had reported "unchanged", with no
-known rebuild in between. Hypothesis: a zig build (for example
-via qemu-smoke) between runs producing a byte-different .efi
-through PE header variance, which would make cmp legitimately
-differ. Operator to confirm whether any build ran between the
-deploys; if none did, this needs investigation before criterion 6
-closes, since content-addressed publication is the mechanism
-idempotence rests on.
+Runs reported "published" for binaries expected unchanged, twice
+across the criterion 6 attempts. Operator recall could not
+establish which builds ran between deploys, so the finding was
+closed by experiment instead: warm-cache rebuilds are
+byte-identical, clean-cache rebuilds differ in exactly two bytes
+(PE COFF TimeDateStamp at file offset 128 and its
+debug-directory duplicate), and pinning SOURCE_DATE_EPOCH makes
+clean-cache builds byte-identical (two wiped-cache builds, same
+sha256). The bench sequence is consistent with the root-cache
+cleanup forcing a cold rebuild whose fresh timestamps made cmp
+legitimately differ; the exact bench build timeline is
+unrecoverable and is not claimed. Fixes: build.sh is the
+canonical byte-reproducible build path (qemu-smoke routes
+through it), and deploy.sh now appends every run to
+/var/log/pgsd-deploy.log with the binary sha256 and per-member
+action, so binary provenance is answerable from the machine
+record rather than from memory. Lesson: operator recall is not
+an evidence source; instrument so the question answers itself.
 
 ### F2: audiofs path_dead_end repetition (open, disposition pending)
 

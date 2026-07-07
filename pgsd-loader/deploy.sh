@@ -18,15 +18,26 @@ set -u
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 LOADER="$SCRIPT_DIR/zig-out/bin/pgsd-loader.efi"
+DEPLOY_LOG="/var/log/pgsd-deploy.log"
+
+# Machine-kept deploy record (bench lesson: operator recall is not
+# an evidence source). Each run appends what was deployed and what
+# it hashed to, so binary-provenance questions are answerable from
+# the log rather than from memory.
+dlog() {
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$DEPLOY_LOG" 2>/dev/null || true
+}
 STOCK_REL="EFI/freebsd/loader.efi"
 PGSD_REL="EFI/pgsd/pgsd-loader.efi"
 MNT="/tmp/pgsd-deploy-esp.$$"
 
 [ "$(id -u)" -eq 0 ] || { echo "deploy.sh: run as root" >&2; exit 1; }
 [ -f "$LOADER" ] || {
-    echo "deploy.sh: $LOADER missing; run the vendored zig build first" >&2
+    echo "deploy.sh: $LOADER missing; run sh build.sh first" >&2
     exit 1
 }
+LOADER_SHA=$(sha256 -q "$LOADER" 2>/dev/null || sha256sum "$LOADER" | awk '{print $1}')
+dlog "run start loader_sha256=$LOADER_SHA"
 
 # Enumerate ESP partitions (gpart type "efi") as provider names.
 esps=$(gpart show -p 2>/dev/null | awk '$4 == "efi" { print $3 }')
@@ -159,10 +170,14 @@ MOUNTS
     mkdir -p "$ESPDIR/EFI/pgsd"
     if [ -f "$ESPDIR/$PGSD_REL" ] && cmp -s "$LOADER" "$ESPDIR/$PGSD_REL"; then
         echo "  unchanged $PGSD_REL"
+        dlog "esp=$esp unchanged sha256=$LOADER_SHA"
     else
+        prev="none"
+        [ -f "$ESPDIR/$PGSD_REL" ] && prev=$(sha256 -q "$ESPDIR/$PGSD_REL" 2>/dev/null || sha256sum "$ESPDIR/$PGSD_REL" | awk '{print $1}')
         cp "$LOADER" "$ESPDIR/$PGSD_REL.new"
         mv "$ESPDIR/$PGSD_REL.new" "$ESPDIR/$PGSD_REL"
         echo "  published $PGSD_REL"
+        dlog "esp=$esp published sha256=$LOADER_SHA replaced=$prev"
         changed=1
     fi
 
@@ -233,5 +248,10 @@ else
     fi
 fi
 
-[ "$changed" -eq 0 ] && echo "deploy.sh: no-op (already deployed)"
+if [ "$changed" -eq 0 ]; then
+    echo "deploy.sh: no-op (already deployed)"
+    dlog "run end no-op"
+else
+    dlog "run end changed"
+fi
 echo "deploy.sh: done"
