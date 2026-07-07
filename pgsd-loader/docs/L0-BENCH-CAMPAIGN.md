@@ -24,6 +24,21 @@ third route to the stock loader.
 
 ## Criterion 3: cold boots, indistinguishable operation
 
+Stopping rule, operator-ratified 2026-07-07: five consecutive
+clean cold boots of the pinned binary through Boot0001, each
+recording date/time, BootCurrent (expect 0001), chime audible at
+0.030 (y/n), and anomalies. The sample is tied to the deployed
+configuration, not the design in the abstract: earlier boots
+remain evidence for the architecture and development history but
+not for the exact artifact now installed. The rule is
+configuration-specific (every observation exercises the
+identical deployed state), objective (identical observable
+fields per entry), risk-focused (after F8 the dominant
+uncertainty was deployment integrity, not repeated execution of
+unchanged code), and bounded (a clear acceptance criterion, not
+an open-ended confidence exercise). The post-F8 confirmation
+boot counts as entry one pending its chime observation.
+
 ### Cold boot #1, 2026-07-07
 
 BootCurrent: 0003, the objective proof the boot ran through
