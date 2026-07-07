@@ -88,12 +88,16 @@ carries at minimum:
 - Layout and naming of content classes and kernel slots.
 - Sizing: 2 GiB baseline, growable to 4 GiB, negligible on
   modern storage against substantial loader simplification. The
-  UEFI specification imposes no practical ESP ceiling; limits
-  are FAT32 and firmware quality, and the validated size on
-  supported platforms is recorded as an installer hardware
-  assumption per the Decision 2 philosophy, since large-volume
-  FAT32 defects are implementation bugs on hardware PGSD can
-  enumerate and bench.
+  primary justification is platform validation: PGSD validates
+  the chosen BAS size on its supported platforms and records it
+  as an installer hardware assumption per the Decision 2
+  philosophy. The architecture does not depend on assumptions
+  about UEFI or FAT32 limits; whatever ceiling future firmware
+  exhibits, the installer validates the size the project
+  supports. (Informative background only: the UEFI specification
+  imposes no practical ESP ceiling, and large-volume defects are
+  firmware implementation bugs, which is exactly why validation
+  rather than specification is the argument.)
 - Curation invariants that make the sizing hold: kernels ship
   without debug symbol files and with an installer-curated
   module set (a stock kernel directory with symbols exceeds the
@@ -107,11 +111,20 @@ carries at minimum:
   installworld hooks, the deploy tooling this subproject
   absorbs); the running system otherwise treats it read-only,
   and the loader always reads only.
-- Mirror replication: on multi-disk machines each mirror member
-  carries a BAS, deployment tooling updates every member, and
-  bench criteria include booting from a degraded mirror, so the
-  redundancy the pool provides is not silently lost at the boot
-  layer.
+- The publication lifecycle: boot artifacts are immutable after
+  publication; updating a kernel or loader publishes a new
+  artifact set rather than modifying artifacts in place. This is
+  the invariant that manifests, signatures, rollback,
+  reproducibility, and any future measured-boot posture stand
+  on, and it matches the publication philosophy the project uses
+  elsewhere: state is published whole, never edited in place.
+- Mirror equivalence: every bootable member contains an
+  equivalent BAS, so the redundancy the pool provides is not
+  silently lost at the boot layer. Equivalence is the
+  architectural invariant; the replication mechanism that
+  maintains it (synchronous writes, activation hooks, installer
+  logic) belongs to the subordinate specification. Bench
+  criteria include booting from a degraded mirror.
 
 ### 4. Loader capability: ESP read is unconditional
 
@@ -293,3 +306,11 @@ persists at the stock-loader layer.
   write-authority invariant, and mirror replication. The ESP
   authority capacity objection retired accordingly; later
   decisions renumbered.
+- Revision 3, 2026-07-07: operator review refinements. Mirror
+  replication restated as an equivalence invariant (every
+  bootable member contains an equivalent BAS) with the mechanism
+  delegated to the subordinate specification; the publication
+  lifecycle added as an invariant (artifacts immutable after
+  publication, updates publish new sets); BAS sizing justified
+  primarily by platform validation, with UEFI limit observations
+  demoted to informative background.
