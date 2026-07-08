@@ -2,12 +2,15 @@
 
 ## Status
 
-Proposed, 2026-07-08. The first project-level ADR, occupying the
-venue established 2026-07-07 for product decisions that
-subproject series consume. This document answers the questions
-deferred upstream by pgsd-loader ADR 0002 Decision 6, and its
-ratification clears or forecloses the gates that decision left
-standing.
+Ratified, 2026-07-08, at revision 2. In force: the six decisions
+bind downstream documents and tooling per the closure criteria,
+and pgsd-loader ADR 0002 Decision 5's gate for L3b design is
+cleared, sequenced after L3a under the parent escalation rule.
+
+The first project-level ADR, occupying the venue established
+2026-07-07 for product decisions that subproject series consume.
+This document answers the questions deferred upstream by
+pgsd-loader ADR 0002 Decision 6.
 
 ## Context
 
@@ -277,4 +280,4 @@ binds:
   matching rather than on any filesystem's fitness, per the
   review's distinction that F8's evidence is that FAT supplies
   no publication semantics by itself, not that FAT is
-  unsuitable.
+  unsuitable. Ratified at this revision the same day.

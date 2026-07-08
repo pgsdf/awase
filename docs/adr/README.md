@@ -12,13 +12,14 @@ ADR that embeds a product decision is reopened on those grounds
 (pgsd-loader ADR 0002 Decision 1 states the rule for its series;
 the same rule applies to every series beneath this one).
 
-First planned ADR: the deployment architecture and operational
-policy decision deferred by pgsd-loader ADR 0002 Decision 6,
-covering whether the boot environment is the canonical upgrade
-unit, the deployment publication model, the authoritative kernel
-source per environment, and the rollback contract. Per operator
-sequencing it is drafted after stage L0 has been demonstrated on
-the bench.
+ADR 0001 (boot artifact deployment architecture) is ratified at
+revision 2, 2026-07-08: deployment, publication, and durability
+contracts; split authority for artifact location; boot
+environment interaction as relationship properties; recovery
+invariants; and the content, publication, and selection
+authority triad. It was drafted after stage L0 completed on the
+bench, per the operator sequencing that created this venue, and
+every requirement in it traces to a ratified document or a
+recorded bench observation.
 
-Numbering begins at 0001 with the first ADR; this README carries
-no decisions.
+This README carries no decisions.
