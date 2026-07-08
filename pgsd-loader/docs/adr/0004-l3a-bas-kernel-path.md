@@ -97,20 +97,42 @@ The stage closes on two campaigns, run in the L0 ledger
 methodology (a campaign document, findings with dispositions,
 operator-ratified stopping rules):
 
-Publication campaign: repeated publications with induced power
-interruption at every protocol phase boundary (during slot
-write, after flush before commit, mid-selector-write, after
-commit before report), verifying after each interruption that
-the selector resolves to a complete verified state, that
-monotonic reachability held, and that GC reclaims the debris.
-The section 8 fsync question and the selector-atomicity
-assumption are answered here.
+Publication campaign, expressed as hypotheses the evidence
+confirms or refutes:
+
+- H1: the ordering contract guarantees monotonic reachability
+  under power interruption at every protocol phase boundary
+  (during slot write, after slot durability before commit,
+  mid-selector-write, after commit before report).
+- H2: recovery is deterministic at every interruption point,
+  the selector resolving to exactly one complete verified state
+  with GC reclaiming the debris.
+- H3: the platform assumptions hold on bench hardware
+  (BOOT-ARTIFACT-STORE section 14, A1 and A2).
+- H4: TxFAT32 merits standalone extraction only if the campaign
+  record supports it; the AD-61 disposition is written from the
+  evidence, in either direction.
 
 Boot campaign: the selected slot's kernel and modules boot to
 multi-user on the bench with drawfs preloaded and the ADR 0032
 chime audible; the default chainload path demonstrated unchanged
 throughout; fallback demonstrated from a refused slot and from a
 destroyed selector.
+
+### 6. Non-goals
+
+Stated explicitly so scope cannot drift into them:
+
+- L3a does not replace the stock loader; the default boot path
+  chainloads it, unchanged, until L4 rules otherwise.
+- L3a implements no filesystem. ZFS reading is L3b, separately
+  gated; FAT is read through firmware protocols only.
+- L3a does not reproduce loader.conf or lua semantics; L3a.4 is
+  defined by what the bench shows missing, and configuration
+  parity is a non-goal by ratified parent decision.
+- L3a does not optimize performance. The campaigns test
+  correctness properties; speed is measured only to detect
+  regressions, never pursued.
 
 ## Closure criteria
 
@@ -149,3 +171,9 @@ destroyed selector.
 - Revision 1, 2026-07-08: initial proposal, drafted on the
   operator's L3a target list following project ADR 0001's
   ratification.
+- Revision 2, 2026-07-08: operator review applied. The
+  publication campaign restated as hypotheses H1 through H4,
+  including the evidence-in-either-direction framing of the
+  AD-61 extraction disposition; non-goals stated as Decision 6.
+  Companion changes in BOOT-ARTIFACT-STORE 0.2 (layering,
+  definitions, assumptions).

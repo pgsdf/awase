@@ -1,4 +1,4 @@
-# BOOT-ARTIFACT-STORE, version 0.1
+# BOOT-ARTIFACT-STORE, version 0.2
 
 The subordinate specification of the Boot Artifact Store (BAS)
 required by pgsd-loader ADR 0002 Decision 3 and bound by project
@@ -18,11 +18,26 @@ single correctness statement everything below serves:
     The selector is the only mutable object whose state
     determines reachability.
 
+Reachable, precisely: an artifact set is reachable when it is
+the unique set designated by the highest valid selector record
+(section 7.2) and accepted by manifest verification at use
+(section 13). Both conditions are required: a selector may
+designate a slot that verification then refuses, in which case
+the set is not reachable and the reader falls back per section
+10.
+
 Consequences: slot contents may be incomplete; garbage may
 exist; interrupted writes are permissible; recovery never
 examines partially written slots except to reclaim them.
 Correctness rests on choosing between complete states, not on
 replaying incomplete ones.
+
+This specification separates three layers throughout, per
+review: protocol invariants (portable, carry the correctness
+argument), platform assumptions (section 14, validated by the
+L3a campaign), and implementation mechanisms (how the current
+target realizes the requirements). A change in a lower layer
+must not weaken an upper one.
 
 ## 2. Volume and sizing
 
@@ -111,9 +126,14 @@ Record format (little-endian):
 
 A reader validates both records (magic, version, CRC) and takes
 the valid record with the highest generation. One valid record
-suffices; zero valid records means an unprovisioned or destroyed
-selector, and the reader falls back per the selection-domain
-hierarchy (section 10).
+suffices. The selector is destroyed, exactly, when any of the
+following holds: the file is missing; the file cannot be read;
+the file is not the specified size; or both records are invalid,
+a record being invalid on wrong magic, unsupported version, or
+CRC failure. A destroyed selector sends the reader to the
+fallback of the selection-domain hierarchy (section 10); no
+other recovery is attempted and no partial record is ever
+interpreted.
 
 ### 7.3 Commit rule
 
@@ -128,12 +148,13 @@ writer must remember: always overwrite the loser.
 1. Write the new slot's artifacts under the slot namespace.
 2. Write the slot manifest (artifact list with per-artifact
    SHA-256 and sizes).
-3. Flush the write path (fsync with device cache flush).
+3. Make the slot content durable (protocol requirement 8.1;
+   realized per 8.2).
 4. Read back and verify every artifact against the manifest and
    the manifest against the build's canonical hashes.
 5. Commit: overwrite the losing selector record per 7.3 with the
    new slot and manifest hash.
-6. Flush.
+6. Make the selector durable (8.1; realized per 8.2).
 7. Report success, recording provenance (project ADR 0001
    Decision 2); only now is the publication complete.
 8. Garbage collect (section 9), at leisure.
@@ -158,14 +179,46 @@ the L0 fallback design demonstrated repeatedly at the firmware
 domain: failures may prevent progress, but they do not remove
 the last known-good path.
 
-## 8. Write-path requirements
+### 7.7 Integrity layers
 
-Only designated deployment tooling writes the BAS (project ADR
-0001 Decision 1). Flush semantics must reach the medium: fsync
-must be verified on the target OS to issue a device cache flush
-for msdosfs, and if it does not, the tooling must flush the
-device explicitly. A settle discipline applies between reported
-success and any deliberate power event.
+Three distinct integrity mechanisms, one per question, never
+substituting for one another:
+
+- Selector CRC: is this selector record intact? Failure means
+  the record is ignored and the other record read (7.2).
+- Manifest hash (in the selector record): which publication does
+  the selector designate? A slot whose manifest does not hash to
+  the selector's value is refused.
+- Artifact hashes (in the manifest): are the artifact bytes
+  right? Any mismatch refuses the slot.
+
+Refusal at either of the last two layers falls back per section
+10; it never falls back to a different record of the selector,
+whose integrity is the first layer's question alone.
+
+## 8. Protocol requirements and platform realization
+
+### 8.1 Protocol requirements (portable)
+
+- Single designated writer (project ADR 0001 Decision 1).
+- Two durability points, and only two: slot content and manifest
+  are durable before the selector commit is written; the
+  selector commit is durable before success is reported.
+- Selector writes are sector-granular overwrites of preallocated
+  storage, never allocations.
+
+These requirements, with the section 7 protocol and the section
+14 assumptions, carry the entire correctness argument; nothing
+below this line does.
+
+### 8.2 Platform realization (current target)
+
+On the current target OS, durability is realized by fsync, which
+must be verified to issue a device cache flush for msdosfs; if
+it does not, the tooling flushes the device explicitly. A settle
+discipline applies between reported success and any deliberate
+power event. These are mechanisms: a port replaces them freely
+provided 8.1's requirements hold.
 
 ## 9. Garbage collection
 
@@ -220,14 +273,29 @@ section 8 requirements. The loader conforms by the section 7.2
 read rule, verification of the selected slot's manifest before
 any control transfer, and the section 10 fallback behavior.
 
+## 14. Assumptions
+
+Stated so the L3a campaign validates them rather than the
+protocol resting on them implicitly:
+
+- A1, sector-write atomicity: an aligned 512-byte overwrite of
+  existing storage is atomic with respect to power loss on the
+  target device. Campaign-validated (the interruption matrix
+  includes mid-selector-write).
+- A2, durable flush: the 8.2 realization actually reaches the
+  medium. Campaign-validated.
+- A3, single writer: no concurrent BAS writer exists.
+  Architectural (project ADR 0001 Decision 1), not
+  campaign-tested.
+- A4, read-only other parties: firmware and any foreign OS read
+  BAS paths and do not write them. Architectural; violation is
+  outside this specification's guarantees.
+
 ## Open questions (resolved by the L3a campaign)
 
-1. msdosfs fsync semantics on the target OS (section 8): verify
-   or compensate.
-2. Selector sector atomicity on bench storage: single-sector
-   overwrite is assumed atomic at the device; the power-loss
-   campaign tests the assumption.
-3. Whether N=2 retention is right once RE and ME artifact sets
+1. Assumptions A1 and A2 hold on bench hardware (the campaign's
+   hypothesis H3, ADR 0004 Decision 5).
+2. Whether N=2 retention is right once RE and ME artifact sets
    are real.
 
 ## Revision history
@@ -236,3 +304,12 @@ any control transfer, and the section 10 fallback behavior.
   the AD-61 design and the operator's review: the correctness
   statement, ordering not journaling, monotonic reachability,
   and the selection-domain hierarchy.
+- 0.2, 2026-07-08: operator review applied. Reachable defined
+  precisely; the three-layer separation (protocol invariants,
+  platform assumptions, implementation mechanisms) stated and
+  applied, section 8 split into portable requirements and
+  current-target realization; integrity layers distinguished
+  (selector CRC, manifest hash, artifact hashes) with per-layer
+  failure handling; assumptions A1 through A4 stated explicitly
+  for campaign validation; destroyed selector defined
+  exhaustively.
