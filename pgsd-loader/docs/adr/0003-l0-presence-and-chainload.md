@@ -2,7 +2,18 @@
 
 ## Status
 
-Ratified, 2026-07-07, at revision 2 (operator: the stage is
+CLOSED, 2026-07-08. All six closure criteria satisfied on
+bare-metal-test-bench; the evidentiary basis is
+docs/L0-BENCH-CAMPAIGN.md (campaign complete, eight findings
+disposed, criterion 3's operator-ratified stopping rule met with
+five consecutive clean cold boots of the pinned binary through
+the primary entry). Closure follows the operator's pre-stated
+ruling that clean completion of the count marks this ADR ready
+to be Closed with the ledger cited. Stage L0 of parent ADR 0001
+is complete; the L0 artifacts (loader, deployment tooling,
+emulation harnesses) are in service.
+
+Previously: Ratified, 2026-07-07, at revision 2 (operator: the stage is
 narrowly scoped, faithfully consumes the ADR 0001 and 0002
 contracts without extending them, converts the fallback and
 behavioral invariants into concrete deployment and bench
@@ -176,3 +187,5 @@ touches authority, the answer is already no.
   answered a tooling limitation rather than a product question.
   The amendment keeps the ADR faithful to what was demonstrated
   and preserves a future metal validation as an option.
+- 2026-07-08: CLOSED, campaign complete, all criteria satisfied,
+  ledger cited as evidentiary basis.

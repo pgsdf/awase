@@ -1,5 +1,13 @@
 # L0 bench campaign: presence and chainload
 
+CAMPAIGN COMPLETE, 2026-07-08: all six criteria closed
+(criterion 1 at byte level; criterion 5 by operator-ruled
+amended method). Eight findings produced and disposed, F1
+through F8, of which two (F7, F8) were surfaced only by the
+confirming-boot and cross-recording rules and would have shipped
+a non-booting primary under a weaker methodology. This ledger is
+the evidentiary basis cited by ADR 0003's closure.
+
 Closure evidence for ADR 0003 (ratified rev 2), gathered on
 bare-metal-test-bench. The record for each criterion stays open
 until the operator judges it boring; no criterion closes on an
@@ -83,10 +91,25 @@ observations not reported for these boots. Note the chime plays
 on fallback boots too, the rc.d anchor being loader-independent,
 so future drill entries should record it.
 
-### Subsequent cold boots
+### The stopping-rule count, 2026-07-08
 
-(append: date, BootCurrent, chime audible yes/no, anomalies;
-primary entry is Boot0001 as of the drill 1 restore)
+Five consecutive clean cold boots of the pinned binary
+(38d9c6c8...) through Boot0001, per the ratified stopping rule.
+The post-F8 confirmation boot was not counted retroactively, its
+chime observation being uncertain; only certainty counts.
+
+- entry 1: 2026-07-08 09:41 JST, BootCurrent 0001, chime y at
+  0.030, anomalies none
+- entry 2: 2026-07-08 09:55 JST, BootCurrent 0001, chime y at
+  0.030, anomalies none
+- entry 3: 2026-07-08 09:58 JST, BootCurrent 0001, chime y at
+  0.030, anomalies none
+- entry 4: 2026-07-08 10:00 JST, BootCurrent 0001, chime y at
+  0.030, anomalies none
+- entry 5: 2026-07-08 10:02 JST, BootCurrent 0001, chime y at
+  0.030, anomalies none
+
+CRITERION 3: CLOSED, 2026-07-08, stopping rule satisfied.
 
 ## Criterion 4: recovery, three ways
 
