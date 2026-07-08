@@ -61,6 +61,16 @@ authority is the build (the committed sources and the pinned
 toolchain that reproduce every artifact byte-identically, per
 the L0 criterion 1 result).
 
+Three authorities, named so future documents do not conflate
+them: the build holds content authority (what bytes exist, and
+that they are reproducible); deployment tooling holds
+publication authority (which bytes are placed where, under the
+Decision 2 contract); the operator and ratified policy hold
+selection authority (which bytes should boot: boot order,
+environment selection, activation of a system image unit).
+Decisions 5 and 6 exercise selection authority; nothing in this
+document moves it into tooling or into the loader.
+
 Rationale. This generalizes the write-authority invariant
 already ratified for the BAS (ADR 0002 Decision 3) to a product
 rule for all boot artifacts wherever stored. A single writer is
@@ -131,11 +141,17 @@ applied:
 
 - ESP authority: strengthened by the campaign in one respect,
   the publication contract is now proven mechanism rather than
-  trusted hook. Weakened decisively in another: F8 demonstrated
-  the precise failure class of holding every bootable kernel on
-  FAT, and under ESP authority the OE kernel's durability would
-  rest permanently on the filesystem least equipped to provide
-  it, mitigated only by construction.
+  trusted hook. Weakened decisively in another: under ESP
+  authority the Operating environment kernel would permanently
+  depend on publication guarantees that must be constructed
+  above FAT rather than supplied by the filesystem itself. The
+  L0 campaign demonstrated both that such construction is
+  necessary (F8) and that ZFS already provides the stronger
+  durability semantics naturally for Operating environment
+  artifacts. The decision is about matching threat models to
+  storage semantics, not about declaring any filesystem
+  unsuitable: the BAS construction makes FAT fully serviceable
+  for the artifacts that must live there.
 - ZFS authority: unchanged from the ADR 0002 assessment, the
   pure architecture and the wrong one alone, because Recovery
   cannot source its kernel from the casualty.
@@ -253,3 +269,12 @@ binds:
 - Revision 1, 2026-07-08: initial proposal, structured on the
   operator's six decision questions, written against the L0
   campaign's evidence.
+- Revision 2, 2026-07-08: operator review applied. Selection
+  authority named alongside content and publication authority
+  under Decision 1, so which-bytes-should-boot is never
+  conflated with what-bytes-exist; Decision 4's rationale
+  refined to rest on publication semantics and threat-model
+  matching rather than on any filesystem's fitness, per the
+  review's distinction that F8's evidence is that FAT supplies
+  no publication semantics by itself, not that FAT is
+  unsuitable.
