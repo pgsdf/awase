@@ -71,8 +71,23 @@ F2.
 Cycle 3 (active order head): BOOTED THROUGH THE ARMED ENTRY,
 BootCurrent 0003, normal boot and chime after: the safety
 property holds on metal. Verdict unobserved, producing F3.
-Cycle 4 PENDING: repeat cycle 3 with the verdict variable
-binary; read the verdict after boot with
-sudo efivar -p 50475344-6261-4c33-8a01-706773646261-PgsdBasVerdict
-expecting PASS gen=1 slot=1. That reading closes the increment 1
-metal run.
+Cycle 4, 2026-07-08: CLOSED with PASS. Armed binary
+f2ee3fcad529... at the activated order head; BootCurrent 0003
+after a normal boot with the chime; the verdict variable read
+back PASS gen=1 slot=1. The loader verified the real slot on
+real msdosfs, kernel and drawfs.ko hashed clean, and attested it
+from inside the boot.
+
+INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
+F1 through F3 produced and disposed. The read side of
+BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
+integrity layers, with the safety property (verify, then
+chainload regardless) demonstrated under both a running verdict
+and, in emulation, a refusing one.
+
+Scaffolding note for the campaigns: PgsdBasVerdict records the
+most recent armed run only; unarmed boots leave it stale.
+Adequate for scaffolding where the operator controls the cycle;
+any campaign automation that reads it must pair the read with
+the cycle that wrote it, and a timestamp or nonce field is the
+upgrade if that pairing ever gets fragile.
