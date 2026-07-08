@@ -14,6 +14,30 @@ const std = @import("std");
 const uefi = std.os.uefi;
 const bas_boot = @import("bas_boot.zig");
 
+// Vendor GUID for PGSD boot-evidence variables (generated for this
+// project; recorded in the L3a campaign ledger). The armed test
+// path writes its verdict here because this platform's console is
+// not reliably observable (ledger F3); the booted OS reads it back
+// with efivar(8).
+const pgsd_guid = uefi.Guid{
+    .time_low = 0x50475344,
+    .time_mid = 0x6261,
+    .time_high_and_version = 0x4c33,
+    .clock_seq_high_and_reserved = 0x8a,
+    .clock_seq_low = 0x01,
+    .node = .{ 0x70, 0x67, 0x73, 0x64, 0x62, 0x61 },
+};
+
+fn recordVerdict(verdict: []const u8) void {
+    const rs = uefi.system_table.runtime_services;
+    rs.setVariable(
+        std.unicode.utf8ToUtf16LeStringLiteral("PgsdBasVerdict"),
+        &pgsd_guid,
+        .{ .non_volatile = true, .bootservice_access = true, .runtime_access = true },
+        verdict,
+    ) catch {};
+}
+
 const banner = "pgsd-loader " ++ version ++ " (L0: presence and chainload)\r\n";
 pub const version = "0.1.0";
 
@@ -80,9 +104,14 @@ pub fn main() uefi.Status {
     if (bas_boot.armed(self_image.file_path)) {
         print("pgsd-loader: BAS verification mode (L3a.2 increment 1)\r\n");
         if (bas_boot.verifyActiveSlot(device_handle, printAscii)) |res| {
-            _ = res;
+            var vb: [96]u8 = undefined;
+            const v = std.fmt.bufPrint(&vb, "PASS gen={d} slot={d}", .{ res.generation, res.slot }) catch "PASS";
+            recordVerdict(v);
             print("BAS: active slot VERIFIED; chainloading (increment 1)\r\n");
         } else |e| {
+            var vb: [96]u8 = undefined;
+            const v = std.fmt.bufPrint(&vb, "FAIL {s}", .{@errorName(e)}) catch "FAIL";
+            recordVerdict(v);
             printAscii("BAS: verification FAILED: ");
             printAscii(@errorName(e));
             printAscii("; chainloading (increment 1)\r\n");
