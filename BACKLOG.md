@@ -2923,3 +2923,28 @@ cadence is suspiciously close to the stream interrupt period),
 whether dead-end findings should be emitted once at discovery
 rather than per walk, and whether the ring's useful capacity is
 materially reduced on long uptimes.
+
+### `[ ]` AD-61: TxFAT32, transactional publication profile over FAT32  *(Open 2026-07-08, Medium, P2; extraction decision deferred pending L3a bench evidence)*
+
+Operator-originated from the L0 campaign and project ADR 0001:
+with designated tooling as sole writer (ADR 0001 Decision 1) and
+firmware plus legacy systems as read-only FAT32 clients,
+publication semantics become a writer protocol over unmodified
+FAT32 rather than a filesystem change. Core design as discussed:
+slotted artifacts written under non-live names (crash leaves
+discardable orphans, never damaged live state); commit via a
+preallocated fixed-size contiguous dual-copy selector file whose
+switch is a single data-sector overwrite touching no directory or
+FAT metadata (sequence number plus CRC, reader takes highest
+valid); ordering contract, slot data flushed before selector
+write, selector flushed before success reported; garbage
+collection of unreferenced slots; intent journal as an optional
+observability extension, not required for deterministic recovery.
+Self-hosting boundary: firmware-read artifacts (the loader
+itself) use NVRAM boot entries as their selector, the L0
+dual-entry design being the same commit pattern on a different
+substrate. Name avoids the historical Microsoft TFAT. Disposition
+plan: specified as a self-contained, parameterized section of
+BOOT-ARTIFACT-STORE at L3a (the sole current consumer);
+standalone extraction evaluated only after an L3a bench campaign
+has exercised publications, power events, and GC against it.
