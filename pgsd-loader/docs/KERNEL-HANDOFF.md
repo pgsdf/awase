@@ -5,13 +5,14 @@ implementation must satisfy to start a FreeBSD amd64 kernel from
 UEFI. Organized by the kernel's required contracts, with source
 as evidence for each; the source is not the outline.
 
-Status: draft 1, 2026-07-08. Corroborated against FreeBSD main
-branch sources (stand/efi/loader/bootinfo.c read in full;
-stand/efi/loader/arch/amd64/elf64_freebsd.c and amd64_tramp.S
-via their defining commits, notably f75caed644a5). The anchor of
-record is the bench /usr/src (15.1-RELEASE n283562, matching the
-running kernel); a verification pass against it is listed at the
-end and is required before L3a.2 review uses this document.
+Status: draft 2, 2026-07-08. Draft 1 was corroborated against
+FreeBSD main branch sources; the bench verification pass against
+/usr/src (15.1, tip commit 4f09e9082493, the operator's own
+AD-56 instrumentation atop n283562, matching the running kernel)
+was executed the same day and its evidence file is
+kernel-handoff-evidence-20260708-122517.txt. All draft 1 VERIFY
+items are resolved below except one, explicitly retained. This
+document is fit for L3a.2 review use.
 
 Every claim is tagged:
 - REQUIRED: the kernel depends on it; omission breaks boot or
@@ -48,11 +49,15 @@ COPY_STAGING_AUTO default in main):
   are physically relocatable; staging stays below 4 GiB and no
   copy occurs; page tables map KERNBASE to the actual staging
   base.
-VERIFY on bench: 15.1's default and the running kernel's
-kernphys presence (nm /boot/kernel/kernel | grep kernphys). The
-PGSD loader must implement at least one regime correctly and
-must detect which the target kernel supports (REQUIRED); which
-to prefer is an L3a.2 decision informed by the bench.
+VERIFIED on bench: copy_staging defaults to AUTO (copy.c line
+205); 15.1's is_kernphys_relocatable is the symbol lookup alone,
+no size check, and multiboot also qualifies (load_elf.c lines
+215 to 223, 488); the running kernel exports kernphys
+(ffffffff81a87570 B). On this bench AUTO therefore resolves to
+the no-copy regime. The PGSD loader must detect kernphys and
+must not assume it (REQUIRED); implementing the no-copy regime
+first, with copy as follow-on if a target ever lacks kernphys,
+is the L3a.2 recommendation this evidence supports.
 
 1.4 REQUIRED. The entry point is ehdr->e_entry, a virtual
 address in the kernel's linked range; control transfer is
@@ -109,7 +114,35 @@ machdep.c/pmap.c):
   it on serial (VERIFY the degraded path is acceptable for RE).
 - MODINFOMD_ELFHDR, MODINFOMD_SSYM/MODINFOMD_ESYM: kernel ELF
   header and symbol range. OBSERVED; required only for
-  ddb/symbol resolution, not for boot (VERIFY).
+  ddb/symbol resolution, not for boot (VERIFY by an L3a.2
+  omission experiment if desired; not load-bearing for the
+  contract).
+- MODINFOMD_MODULEP (0x1006): the metadata block's own physical
+  address, added as a self-reference (bootinfo.c line 464).
+  VERIFIED present on 15.1; treat as REQUIRED for parity until
+  an omission experiment says otherwise.
+- MODINFOMD_EFI_ARCH (0x1008): MACHINE_ARCH string (line 471).
+  VERIFIED present on 15.1; same treatment.
+- Numeric constants VERIFIED against sys/sys/linker.h and
+  sys/x86/include/metadata.h: MODINFO_NAME 0x0001 through
+  MODINFO_ARGS 0x0006, MODINFO_METADATA 0x8000, MODINFOMD_ENVP
+  0x0006, HOWTO 0x0007, KERNEND 0x0008, FW_HANDLE 0x000c,
+  EFI_MAP 0x1004, EFI_FB 0x1005, and MODINFOMD_NOCOPY 0x8000 as
+  the do-not-copy flag. struct efi_fb has nine fields ending
+  fb_mask_reserved; struct efi_map_header is padded to 16 bytes
+  before descriptors (efisz = (sizeof + 0xf) & ~0xf, line 228).
+- 15.1 metadata order on the kernel entry, OBSERVED (lines 452
+  to 471, then bi_load_efi_data): HOWTO, ENVP, [DTBP], KERNEND,
+  MODULEP, FW_HANDLE, EFI_ARCH, then EFI_FB and EFI_MAP added
+  during the exit sequence. Order remains incidental; the set is
+  the contract.
+- The kernel file is located by file_findfile(NULL, md_kerntype)
+  (line 444), the type string indirected through metadata.c
+  rather than a literal; an implementation using the shared
+  loader infrastructure inherits this, one building its own
+  chain must emit the type string the kernel linker expects
+  (VERIFIED mechanism; exact string value inherited from the
+  shared code path).
 
 2.3 REQUIRED for modules (L3a.3): each .ko is a further chain
 entry, type "elf module" (VERIFY exact string on 15.1, from
@@ -147,13 +180,18 @@ firmware allocations (AllocatePages, EfiLoaderData/Code) made
 BEFORE the final GetMemoryMap, so the map accounts for them and
 the kernel will not treat them as free.
 
-3.4 OBSERVED. After ExitBootServices succeeds, the stock loader
-calls RS->SetVirtualAddressMap with a 1:1 map (VirtualStart =
-PhysicalStart) of the RUNTIME-attributed entries unless
-efi_disable_vmap is set (efi_do_vmap). VERIFY against 15.1
-sys/dev/efidev/efirt.c expectations: whether the kernel's
-runtime-services support assumes the loader performed this.
-Treat as REQUIRED until the bench pass proves otherwise.
+3.4 RESOLVED: required for efirt, not for boot. The stock
+loader calls RS->SetVirtualAddressMap 1:1 after exit unless
+efi_disable_vmap=YES (bootinfo.c lines 222 to 226, 306 to 313).
+The kernel side (efirt.c lines 240 to 250, VERIFIED) explicitly
+accommodates "an old loader.efi" that did not: it checks whether
+RS->GetTime lies within the delivered EFI map and fails efirt
+attach if not, while boot proceeds. Contract consequence: a
+loader omitting the vmap boots a working system without EFI
+runtime services (no efi time of day, no efibootmgr from the
+booted OS). For an RE slot that trade may be acceptable; L3a.2
+decides it consciously and records which. Performing the vmap is
+the parity-preserving default.
 
 ## 4. Firmware exit contract
 
@@ -196,22 +234,55 @@ alternatives satisfying 5.1 are permitted):
 %cr3 to the constructed PT4, performs the staging copy in the
 copy regime (inlined, 4.2), establishes the entry stack, and
 jumps to e_entry.
-5.3 REQUIRED (entry state consumed by locore btext /
-hammer_time): 64-bit long mode, interrupts off, %cr3 = the 5.1
-tables; the kernel entry receives modulep and kernend. OBSERVED
-call shape: trampoline(trampstack, copy_finish, kernend,
-modulep, PT4, e_entry) with amd64_tramp arranging the stack so
-btext finds its arguments; VERIFY the exact register/stack
-convention against bench sys/amd64/amd64/locore.S and
-stand/efi/loader/arch/amd64/amd64_tramp.S before L3a.2 codes
-it. This is the single most transcription-sensitive item in the
-contract.
-5.4 OBSERVED. GDT: long-mode code segment already in effect
-from UEFI; the EFI amd64 path historically relies on the
-firmware GDT remaining valid through the jump (the i386-loading-
-amd64 path builds its own). VERIFY on bench source whether
-15.1's amd64 trampoline loads a GDT; if it does, that is
-REQUIRED.
+5.3 VERIFIED, verbatim from the bench sources, and it earned
+its transcription-sensitive flag. amd64_tramp(stack %rdi,
+copy_finish %rsi, kernend %rdx, modulep %rcx, pagetable %r8,
+entry %r9): cli; %rsp = %rdi (a scratch stack, stock allocates
+the trampoline page and uses page_top minus 8); stash args; call
+*%rsi (efi_copy_finish in the copy regime, efi_copy_finish_nop
+in no-copy); then build the handoff stack: push kernend;
+salq $32, modulep; push it; push entry; mov pagetable to %cr3;
+ret. The ret pops entry as the jump target, leaving %rsp at two
+qwords: [modulep shifted into the high half][kernend].
+
+btext's consumption (locore.S line 61, VERIFIED): it distrusts
+rflags (pushes PSL_KERNEL and popfq), saves the handoff %rsp to
+%rbp, switches to its own bootstack, then reads
+movl 4(%rbp) into %edi (modulep) and movl 8(%rbp) into %esi
+(kernend) and calls hammer_time. The salq exists exactly so a
+32-bit modulep lands at byte offset 4 of the little-endian
+qword. Consequences, both REQUIRED:
+- modulep and kernend are consumed as 32-bit values: the
+  metadata block and the preloaded set must lie below 4 GiB.
+  This is the deep reason for the no-copy regime's 4 GiB
+  staging ceiling.
+- The handoff stack need only survive those two reads; btext
+  abandons it immediately. Interrupts stay off through the
+  transfer regardless.
+
+hammer_time semantics (machdep.c line 1293, VERIFIED):
+kernphys = amd64_loadaddr(); physfree += kernphys, so the
+kernend the loader passes is interpreted relative to the
+kernel's physical load base; parse_preload_data(modulep)
+consumes the chain; efi_boot is detected by the presence of
+MODINFOMD_EFI_MAP, nothing else.
+
+One VERIFY retained, the only one in this document: the exact
+address-value convention the loader-side vm_offset quantities
+carry through efi_copy (staging-relative versus final-physical)
+in each regime, i.e. precisely what numbers bi_load's addr
+arithmetic produces for MODINFOMD_ADDR, ENVP, modulep, and
+kernend in the no-copy case. Resolvable by reading
+stand/efi/loader/copy.c's translation functions plus one L3a.2
+instrumented boot; the implementation must not be coded from an
+assumption here.
+5.4 RESOLVED: no GDT handling exists anywhere in 15.1's amd64
+EFI exec path (grep VERIFIED empty). The firmware GDT persists
+through the transfer; hammer_time builds the kernel's own GDT
+immediately (its locals include the descriptor table, VERIFIED).
+REQUIRED consequence for an implementation: do not tear down or
+replace the firmware GDT before the jump; preserve CS validity
+through the trampoline.
 
 ## 6. Observable invariants
 
@@ -235,27 +306,34 @@ explicitly via the 2.2 ENVP block (vfs.root.mountfrom and
 kin as the slot manifest defines); parity is a non-goal (ADR
 0004 Decision 6).
 
-## Bench verification pass (required before L3a.2 review)
+## Bench verification pass: EXECUTED 2026-07-08
 
-Against /usr/src at n283562, confirm and record in this
-document's revision history:
-1. bi_load signature (bool exit_bs parameter present?) and the
-   kernel type string emitted: stand/efi/loader/bootinfo.c.
-2. copy_staging default and kernphys handling:
-   stand/efi/loader/copy.c, stand/common/load_elf.c; nm
-   /boot/kernel/kernel | grep kernphys.
-3. amd64_tramp argument order and GDT behavior:
-   stand/efi/loader/arch/amd64/amd64_tramp.S, elf64_freebsd.c.
-4. btext entry expectations: sys/amd64/amd64/locore.S,
-   hammer_time in sys/amd64/amd64/machdep.c.
-5. efirt's assumption about SetVirtualAddressMap:
-   sys/dev/efidev/efirt.c.
-6. The MODINFOMD_* numeric values and struct efi_map_header /
-   efi_fb layouts: sys/x86/include/metadata.h (padding of the
-   map header to 16 bytes especially).
+All six items collected by collect-kernel-handoff-evidence.sh
+into kernel-handoff-evidence-20260708-122517.txt and folded into
+the sections above: (1) bi_load carries exit_bs; the kernel file
+is found via the md_kerntype indirection. (2) copy_staging AUTO;
+kernphys present in the running kernel; no-copy regime governs
+this bench. (3) amd64_tramp captured verbatim including the
+salq $32 modulep shift; no GDT handling on the amd64 EFI path.
+(4) btext reads modulep and kernend as 32-bit values at stack
+offsets 4 and 8, imposing the below-4-GiB requirement;
+hammer_time treats kernend as load-base-relative and detects EFI
+boots by EFI_MAP presence. (5) the vmap is required for efirt
+attach, not for boot. (6) all metadata constants and struct
+layouts confirmed, plus two records draft 1 lacked, MODULEP and
+EFI_ARCH. The single retained VERIFY is the address-value
+convention in 5.3, assigned to an L3a.2 reading of copy.c plus
+one instrumented boot.
 
 ## Revision history
 
 - Draft 1, 2026-07-08: written from main-branch sources and
-  defining commits; bench verification pass pending, items
-  enumerated above.
+  defining commits; bench verification pass pending.
+- Draft 2, 2026-07-08: bench verification pass executed and
+  folded in. Five of six VERIFY items resolved (kernphys and
+  regime selection; the trampoline and btext convention with the
+  salq $32 discovery and the below-4-GiB consequence; no-GDT;
+  efirt-conditional vmap; constants and the MODULEP and EFI_ARCH
+  additions). One VERIFY retained by design: the loader-side
+  address-value convention through efi_copy, held for L3a.2.
+  L3a.1's deliverable is complete.
