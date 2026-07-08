@@ -5,7 +5,8 @@ implementation must satisfy to start a FreeBSD amd64 kernel from
 UEFI. Organized by the kernel's required contracts, with source
 as evidence for each; the source is not the outline.
 
-Status: draft 2, 2026-07-08. Draft 1 was corroborated against
+Status: draft 3, 2026-07-08, no open VERIFY items.
+Previously draft 2: Draft 1 was corroborated against
 FreeBSD main branch sources; the bench verification pass against
 /usr/src (15.1, tip commit 4f09e9082493, the operator's own
 AD-56 instrumentation atop n283562, matching the running kernel)
@@ -37,6 +38,26 @@ address (KERNBASE region) and physical placement is handled by
 paging, not relocation. Evidence: elf64_exec builds page tables
 mapping the kernel's linked VA to the staging PA (contract 5)
 rather than relocating.
+
+1.3a REQUIRED. The staging area is 2 MiB aligned
+(EFI_STAGING_2M_ALIGN, copy.c efi_copy_init): the kernel builds
+its early page table from its own load address using 1 or 2 MiB
+pages, so misalignment breaks pmap bootstrap.
+
+1.3b REQUIRED. Space beyond kernend is kernel property: the
+amd64 kernel carves very early allocations out of memory after
+kernend (efi_check_space comment), so the loader must leave slop
+(stock: EFI_STAGING_SLOP) between kernend and the end of usable
+staging, inside the memory-map accounting.
+
+1.3c REQUIRED ordering. The stock staging area can MOVE during
+load (efi_check_space expands after or before the allocation,
+memmoving content and re-deriving stage_offset), so page tables
+and any captured staging address are valid only after bi_load
+returns; the stock construction order (bi_load, then page
+tables, then trampoline) is contractual for any implementation
+whose staging can move, and remains the safe order for one whose
+staging cannot.
 
 1.3 REQUIRED (placement, version-dependent). Two regimes exist,
 selected by copy_staging (stand/efi/loader/copy.c,
@@ -267,15 +288,26 @@ kernel's physical load base; parse_preload_data(modulep)
 consumes the chain; efi_boot is detected by the presence of
 MODINFOMD_EFI_MAP, nothing else.
 
-One VERIFY retained, the only one in this document: the exact
-address-value convention the loader-side vm_offset quantities
-carry through efi_copy (staging-relative versus final-physical)
-in each regime, i.e. precisely what numbers bi_load's addr
-arithmetic produces for MODINFOMD_ADDR, ENVP, modulep, and
-kernend in the no-copy case. Resolvable by reading
-stand/efi/loader/copy.c's translation functions plus one L3a.2
-instrumented boot; the implementation must not be coded from an
-assumption here.
+The address-value convention, VERIFIED (copy.c lines 428 to
+528): stage_offset = staging minus dest, set by the FIRST
+copyin/readin, so the kernel's first PT_LOAD p_paddr anchors the
+coordinate system, and every loader-side address (ADDR entries,
+ENVP, modulep, kernend) lives in that dest-space; real memory is
+touched only through the offset (efi_translate). For a
+kernphys-relocatable kernel dest-space is load-relative offset
+space. The two regimes then make the same handoff numbers valid
+by opposite mechanisms: the copy regime physicalizes dest-space,
+efi_copy_finish copying staging to staging minus stage_offset,
+literally the dest addresses; the no-copy regime virtualizes it,
+the upper page tables walking the staging base so KERNBASE plus
+offset resolves, parse_preload_data adding KERNBASE to modulep,
+and physfree += kernphys re-basing kernend. REQUIRED
+consequences for an implementation: pick and hold one coordinate
+anchor (the stock anchor is the first write; an implementation
+controlling all writes may fix offset space at the kernel image
+base deliberately); pass dest-space values, never
+staging-absolute ones; and in the no-copy regime the upper
+mapping must walk the actual staging base.
 5.4 RESOLVED: no GDT handling exists anywhere in 15.1's amd64
 EFI exec path (grep VERIFIED empty). The firmware GDT persists
 through the transfer; hammer_time builds the kernel's own GDT
@@ -321,9 +353,12 @@ hammer_time treats kernend as load-base-relative and detects EFI
 boots by EFI_MAP presence. (5) the vmap is required for efirt
 attach, not for boot. (6) all metadata constants and struct
 layouts confirmed, plus two records draft 1 lacked, MODULEP and
-EFI_ARCH. The single retained VERIFY is the address-value
-convention in 5.3, assigned to an L3a.2 reading of copy.c plus
-one instrumented boot.
+EFI_ARCH. The final VERIFY, the address-value
+convention, was closed the same day by the copy.c reading
+(stage_offset anchor, dest-space, the two regimes' opposite
+realizations) which also produced requirements 1.3a through
+1.3c. No VERIFY items remain; the contract is fully
+source-anchored.
 
 ## Revision history
 
@@ -337,3 +372,12 @@ one instrumented boot.
   additions). One VERIFY retained by design: the loader-side
   address-value convention through efi_copy, held for L3a.2.
   L3a.1's deliverable is complete.
+- Draft 3, 2026-07-08: the retained VERIFY closed from the
+  bench copy.c reading. The address-value convention recorded in
+  5.3 (dest-space anchored by the first write, translated by
+  stage_offset, physicalized by the copy regime and virtualized
+  by the no-copy regime's upper mapping); three new REQUIRED
+  items 1.3a through 1.3c (2 MiB staging alignment, slop after
+  kernend as kernel property, staging motion making post-bi_load
+  ordering contractual). The document carries no open VERIFY;
+  L3a.2 implementation may proceed against it.
