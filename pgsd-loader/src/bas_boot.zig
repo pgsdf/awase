@@ -152,6 +152,35 @@ pub fn verifyActiveSlot(
 /// selection authority stays outside the loader. Walks the
 /// LoadedImage file path for the last Media File Path node and
 /// compares its basename, ASCII case-insensitively (FAT).
+/// Open an artifact within the given slot for reading. The caller
+/// owns closing both returned handles (file, then root). Used by
+/// increment 2 to hand the verified kernel to the ELF loader.
+pub const SlotFile = struct {
+    root: *uefi.protocol.File,
+    file: *uefi.protocol.File,
+    pub fn close(self: SlotFile) void {
+        self.file.close() catch {};
+        self.root.close() catch {};
+    }
+};
+
+pub fn openSlotFile(
+    device_handle: uefi.Handle,
+    slot: u32,
+    name: []const u8,
+) !SlotFile {
+    const bs = uefi.system_table.boot_services orelse return error.NoBootServices;
+    const sfs = (bs.handleProtocol(uefi.protocol.SimpleFileSystem, device_handle) catch
+        return error.NoFilesystem) orelse return error.NoFilesystem;
+    const root = sfs.openVolume() catch return error.NoVolume;
+    errdefer root.close() catch {};
+    var pathbuf: [96]u8 = undefined;
+    var path16: [96:0]u16 = undefined;
+    const p = std.fmt.bufPrint(&pathbuf, "\\EFI\\pgsd\\bas\\slots\\{d}\\{s}", .{ slot, name }) catch return error.Overflow;
+    const f = root.open(widen(96, p, &path16), .read, .{}) catch return error.NotFound;
+    return .{ .root = root, .file = f };
+}
+
 pub fn armed(file_path: ?*const uefi.protocol.DevicePath) bool {
     const want = "pgsd-loader-bas.efi";
     var node: *const uefi.protocol.DevicePath = file_path orelse return false;

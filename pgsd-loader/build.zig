@@ -56,8 +56,18 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const mkfake = b.addExecutable(.{
+        .name = "mk-fake-kernel",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/mk_fake_kernel.zig"),
+            .target = host,
+            .optimize = optimize,
+        }),
+    });
+
     const tools_step = b.step("tools", "Build host-side BAS tools");
     tools_step.dependOn(&b.addInstallArtifact(seltool, .{}).step);
+    tools_step.dependOn(&b.addInstallArtifact(mkfake, .{}).step);
 
     const bas_tests = b.addTest(.{
         .root_module = b.createModule(.{

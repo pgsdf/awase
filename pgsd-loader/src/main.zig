@@ -13,6 +13,7 @@
 const std = @import("std");
 const uefi = std.os.uefi;
 const bas_boot = @import("bas_boot.zig");
+const elf_load = @import("elf_load.zig");
 
 // Vendor GUID for PGSD boot-evidence variables (generated for this
 // project; recorded in the L3a campaign ledger). The armed test
@@ -104,8 +105,36 @@ pub fn main() uefi.Status {
     if (bas_boot.armed(self_image.file_path)) {
         print("pgsd-loader: BAS verification mode (L3a.2 increment 1)\r\n");
         if (bas_boot.verifyActiveSlot(device_handle, printAscii)) |res| {
-            var vb: [96]u8 = undefined;
-            const v = std.fmt.bufPrint(&vb, "PASS gen={d} slot={d}", .{ res.generation, res.slot }) catch "PASS";
+            // Increment 2: load the verified kernel image per the
+            // handoff contract, attest, free. Runs only when the
+            // slot carries an artifact named kernel; a slot
+            // without one is scaffolding, reported and skipped.
+            var vb: [160]u8 = undefined;
+            var elf_note: []const u8 = "elf=skip";
+            var enbuf: [96]u8 = undefined;
+            if (bas_boot.openSlotFile(device_handle, res.slot, "kernel")) |sf| {
+                const bsp = uefi.system_table.boot_services.?;
+                if (elf_load.loadKernel(bsp, sf.file, printAscii)) |lr| {
+                    var lb: [128]u8 = undefined;
+                    if (std.fmt.bufPrint(&lb, "ELF: LOADED entry=0x{x} base=0x{x} end=0x{x} staging=0x{x}\r\n", .{ lr.entry, lr.base_paddr, lr.image_end, lr.staging })) |m| printAscii(m) else |_| {}
+                    elf_note = std.fmt.bufPrint(&enbuf, "elf=loaded entry=0x{x} base=0x{x} end=0x{x}", .{ lr.entry, lr.base_paddr, lr.image_end }) catch "elf=loaded";
+                    // Verify-only increment: the staging pages are
+                    // deliberately left allocated (loader_data is
+                    // reclaimed by the booted OS after the stock
+                    // chainload path exits boot services); the
+                    // handoff increment owns the allocation for
+                    // real.
+                } else |e2| {
+                    printAscii("ELF: FAIL ");
+                    printAscii(@errorName(e2));
+                    printAscii("\r\n");
+                    elf_note = std.fmt.bufPrint(&enbuf, "elf=FAIL:{s}", .{@errorName(e2)}) catch "elf=FAIL";
+                }
+                sf.close();
+            } else |_| {
+                printAscii("ELF: no kernel artifact in slot; skipping (increment 2)\r\n");
+            }
+            const v = std.fmt.bufPrint(&vb, "PASS gen={d} slot={d} {s}", .{ res.generation, res.slot, elf_note }) catch "PASS";
             recordVerdict(v);
             print("BAS: active slot VERIFIED; chainloading (increment 1)\r\n");
         } else |e| {

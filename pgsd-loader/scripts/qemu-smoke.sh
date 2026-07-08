@@ -107,10 +107,10 @@ mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/pgsd/bas/slots/1" "$ESP/EFI/freebsd"
 cp "$PROJ_DIR/zig-out/bin/bas-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
 cp "$PROJ_DIR/zig-out/bin/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-bas.efi"
 cp "$PROJ_DIR/zig-out/bin/chainload-target.efi" "$ESP/EFI/freebsd/loader.efi"
-printf 'smoke fake kernel content\n' > "$ESP/EFI/pgsd/bas/slots/1/fakekernel"
+"$PROJ_DIR/zig-out/bin/mk-fake-kernel" "$ESP/EFI/pgsd/bas/slots/1/kernel"
 {
     echo "PGSD-BAS-MANIFEST 1"
-    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/fakekernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/fakekernel" | tr -d ' ') fakekernel"
+    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
 } > "$ESP/EFI/pgsd/bas/slots/1/manifest"
 "$PROJ_DIR/zig-out/bin/bas-selector" init "$ESP/EFI/pgsd/bas/selector" >/dev/null
 "$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
@@ -118,17 +118,35 @@ printf 'smoke fake kernel content\n' > "$ESP/EFI/pgsd/bas/slots/1/fakekernel"
 run
 check "BAS mode armed"            "BAS verification mode"
 check "manifest identity"         "manifest identity verified"
-check "artifact verified"         "artifact fakekernel verified"
+check "artifact verified"         "artifact kernel verified"
+check "elf segments loaded"       "ELF: segment paddr=0x200000"
+check "elf image loaded"          "ELF: LOADED entry=0xffffffff80200000 base=0x200000 end=0x204100"
 check "slot verified"             "active slot VERIFIED"
 check "still chainloads"          "CHAINLOAD TARGET REACHED"
 
 # Pass 5: BAS refusal, corrupted artifact. The slot must be
 # refused with the failure named, and the boot must still reach
 # the chainload target (fail-visible, boot-safe).
-printf 'corrupted' >> "$ESP/EFI/pgsd/bas/slots/1/fakekernel"
+printf 'corrupted' >> "$ESP/EFI/pgsd/bas/slots/1/kernel"
 run
-check "corruption refused"        "artifact fakekernel FAILED verification"
+check "corruption refused"        "artifact kernel FAILED verification"
 check "failure reported"          "verification FAILED"
 check "refusal still chainloads"  "CHAINLOAD TARGET REACHED"
+
+# Pass 6: ELF refusal. A truncated ELF published with a CORRECT
+# manifest passes all three integrity layers (the hash is of the
+# truncated bytes) and must fail at the ELF layer, still
+# chainloading (increment 2 is verify-only).
+"$PROJ_DIR/zig-out/bin/mk-fake-kernel" "$ESP/EFI/pgsd/bas/slots/1/kernel" truncate
+{
+    echo "PGSD-BAS-MANIFEST 1"
+    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
+} > "$ESP/EFI/pgsd/bas/slots/1/manifest"
+"$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
+    "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
+run
+check "layers pass on truncated"  "artifact kernel verified"
+check "elf refuses truncated"     "ELF: FAIL"
+check "elf refusal chainloads"    "CHAINLOAD TARGET REACHED"
 
 [ "$fails" -eq 0 ] && echo "qemu-smoke: all checks passed" || { echo "qemu-smoke: $fails check(s) FAILED"; exit 1; }
