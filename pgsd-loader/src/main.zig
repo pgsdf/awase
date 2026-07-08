@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const uefi = std.os.uefi;
+const bas_boot = @import("bas_boot.zig");
 
 const banner = "pgsd-loader " ++ version ++ " (L0: presence and chainload)\r\n";
 pub const version = "0.1.0";
@@ -69,6 +70,24 @@ pub fn main() uefi.Status {
 
     const device_handle = self_image.device_handle orelse
         return fail("no device handle on own image", "");
+
+    // L3a.2 increment 1: BAS verification mode, armed only when
+    // this binary runs under the dedicated test name (ADR 0004
+    // Decision 2; the default path below is untouched). Verifies
+    // the active slot through all three integrity layers and
+    // reports; control transfer is a later increment, so it
+    // chainloads regardless, keeping every armed boot bootable.
+    if (bas_boot.armed(self_image.file_path)) {
+        print("pgsd-loader: BAS verification mode (L3a.2 increment 1)\r\n");
+        if (bas_boot.verifyActiveSlot(device_handle, printAscii)) |res| {
+            _ = res;
+            print("BAS: active slot VERIFIED; chainloading (increment 1)\r\n");
+        } else |e| {
+            printAscii("BAS: verification FAILED: ");
+            printAscii(@errorName(e));
+            printAscii("; chainloading (increment 1)\r\n");
+        }
+    }
 
     // The device path of the volume we were loaded from, extended
     // with the stock loader's file path. The chainloaded image gets

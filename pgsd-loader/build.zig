@@ -69,7 +69,18 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run BAS record unit tests");
     test_step.dependOn(&b.addRunArtifact(bas_tests).step);
 
+    const bas_launcher = b.addExecutable(.{
+        .name = "bas-launcher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/bas_launcher.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    bas_launcher.subsystem = .efi_application;
+
     const tgt_step = b.step("test-target", "Build the emulation test harnesses");
     tgt_step.dependOn(&b.addInstallArtifact(tgt, .{}).step);
     tgt_step.dependOn(&b.addInstallArtifact(launcher, .{}).step);
+    tgt_step.dependOn(&b.addInstallArtifact(bas_launcher, .{}).step);
 }

@@ -50,6 +50,7 @@ LOG="/tmp/pgsd-l0-smoke.$$.log"
 # byte-reproducible ones (SOURCE_DATE_EPOCH pinned there).
 sh "$PROJ_DIR/build.sh"
 sh "$PROJ_DIR/build.sh" test-target
+sh "$PROJ_DIR/build.sh" tools
 
 run() {
     cp "$OVMF_VARS" "$ESP.vars"
@@ -94,5 +95,40 @@ cp "$PROJ_DIR/zig-out/bin/chainload-target.efi" "$ESP/EFI/freebsd/loader.efi"
 run
 check "options reached loader"    "pgsd-loader .* (L0"
 check "options forwarded intact"  "LOAD OPTIONS: pgsd-opt-test alpha beta"
+
+hashf() { sha256 -q "$1" 2>/dev/null || sha256sum "$1" | awk '{print $1}'; }
+
+# Pass 4: BAS verification mode, valid slot (L3a.2 increment 1).
+# The launcher starts the loader under its ARMED name; the loader
+# must verify the active slot through all three integrity layers,
+# report, and still chainload (increment 1 is verify-only).
+rm -rf "$ESP"
+mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/pgsd/bas/slots/1" "$ESP/EFI/freebsd"
+cp "$PROJ_DIR/zig-out/bin/bas-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
+cp "$PROJ_DIR/zig-out/bin/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-bas.efi"
+cp "$PROJ_DIR/zig-out/bin/chainload-target.efi" "$ESP/EFI/freebsd/loader.efi"
+printf 'smoke fake kernel content\n' > "$ESP/EFI/pgsd/bas/slots/1/fakekernel"
+{
+    echo "PGSD-BAS-MANIFEST 1"
+    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/fakekernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/fakekernel" | tr -d ' ') fakekernel"
+} > "$ESP/EFI/pgsd/bas/slots/1/manifest"
+"$PROJ_DIR/zig-out/bin/bas-selector" init "$ESP/EFI/pgsd/bas/selector" >/dev/null
+"$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
+    "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
+run
+check "BAS mode armed"            "BAS verification mode"
+check "manifest identity"         "manifest identity verified"
+check "artifact verified"         "artifact fakekernel verified"
+check "slot verified"             "active slot VERIFIED"
+check "still chainloads"          "CHAINLOAD TARGET REACHED"
+
+# Pass 5: BAS refusal, corrupted artifact. The slot must be
+# refused with the failure named, and the boot must still reach
+# the chainload target (fail-visible, boot-safe).
+printf 'corrupted' >> "$ESP/EFI/pgsd/bas/slots/1/fakekernel"
+run
+check "corruption refused"        "artifact fakekernel FAILED verification"
+check "failure reported"          "verification FAILED"
+check "refusal still chainloads"  "CHAINLOAD TARGET REACHED"
 
 [ "$fails" -eq 0 ] && echo "qemu-smoke: all checks passed" || { echo "qemu-smoke: $fails check(s) FAILED"; exit 1; }
