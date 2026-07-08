@@ -121,6 +121,7 @@ check "manifest identity"         "manifest identity verified"
 check "artifact verified"         "artifact kernel verified"
 check "elf segments loaded"       "ELF: segment paddr=0x200000"
 check "elf image loaded"          "ELF: LOADED entry=0xffffffff80200000 base=0x200000 end=0x204100"
+check "metadata chain built"      "META: modulep=0x"
 check "slot verified"             "active slot VERIFIED"
 check "still chainloads"          "CHAINLOAD TARGET REACHED"
 

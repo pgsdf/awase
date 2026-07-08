@@ -14,6 +14,7 @@ const std = @import("std");
 const uefi = std.os.uefi;
 const bas_boot = @import("bas_boot.zig");
 const elf_load = @import("elf_load.zig");
+const metadata = @import("metadata.zig");
 
 // Vendor GUID for PGSD boot-evidence variables (generated for this
 // project; recorded in the L3a campaign ledger). The armed test
@@ -117,13 +118,46 @@ pub fn main() uefi.Status {
                 if (elf_load.loadKernel(bsp, sf.file, printAscii)) |lr| {
                     var lb: [128]u8 = undefined;
                     if (std.fmt.bufPrint(&lb, "ELF: LOADED entry=0x{x} base=0x{x} end=0x{x} staging=0x{x}\r\n", .{ lr.entry, lr.base_paddr, lr.image_end, lr.staging })) |m| printAscii(m) else |_| {}
-                    elf_note = std.fmt.bufPrint(&enbuf, "elf=loaded entry=0x{x} base=0x{x} end=0x{x}", .{ lr.entry, lr.base_paddr, lr.image_end }) catch "elf=loaded";
-                    // Verify-only increment: the staging pages are
-                    // deliberately left allocated (loader_data is
-                    // reclaimed by the booted OS after the stock
-                    // chainload path exits boot services); the
-                    // handoff increment owns the allocation for
-                    // real.
+                    // Increment 3: build the MODINFO chain in
+                    // dest-space above the loaded image. stage_offset
+                    // maps dest to staging (contract 0); the env
+                    // block and chain sit page-aligned past
+                    // image_end. Still verify-then-chainload: the
+                    // chain is built and attested, not transferred
+                    // to. EFI_MAP and EFI_FB are bound to
+                    // ExitBootServices and belong to increment 4.
+                    const stage_off = lr.staging - lr.base_paddr;
+                    const envp_dest = std.mem.alignForward(u64, lr.image_end, 4096);
+                    // Minimal environment: empty (double NUL), the
+                    // valid terminator; real vars arrive with the
+                    // slot manifest in a later increment.
+                    const env_bytes = [_]u8{ 0, 0 };
+                    const env_stage: [*]u8 = @ptrFromInt(envp_dest + stage_off);
+                    @memcpy(env_stage[0..env_bytes.len], &env_bytes);
+                    const chain_dest = std.mem.alignForward(u64, envp_dest + env_bytes.len, 4096);
+                    var chain_buf: [1024]u8 = undefined;
+                    if (metadata.buildChain(&chain_buf, chain_dest, .{
+                        .name = "kernel",
+                        .addr = lr.base_paddr,
+                        .size = lr.image_end - lr.base_paddr,
+                        .howto = 0,
+                    }, envp_dest)) |ch| {
+                        const chain_stage: [*]u8 = @ptrFromInt(chain_dest + stage_off);
+                        @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
+                        var mb: [128]u8 = undefined;
+                        if (std.fmt.bufPrint(&mb, "META: modulep=0x{x} kernend=0x{x} chainlen={d}\r\n", .{ ch.modulep, ch.kernend, ch.len })) |m| printAscii(m) else |_| {}
+                        elf_note = std.fmt.bufPrint(&enbuf, "elf=loaded entry=0x{x} base=0x{x} modulep=0x{x} kernend=0x{x}", .{ lr.entry, lr.base_paddr, ch.modulep, ch.kernend }) catch "elf=loaded meta=built";
+                    } else |em| {
+                        printAscii("META: FAIL ");
+                        printAscii(@errorName(em));
+                        printAscii("\r\n");
+                        elf_note = std.fmt.bufPrint(&enbuf, "elf=loaded meta=FAIL:{s}", .{@errorName(em)}) catch "meta=FAIL";
+                    }
+                    // Verify-only increment: staging pages are left
+                    // allocated (loader_data is reclaimed by the
+                    // booted OS after the stock chainload exits boot
+                    // services); the handoff increment owns the
+                    // allocation for real.
                 } else |e2| {
                     printAscii("ELF: FAIL ");
                     printAscii(@errorName(e2));

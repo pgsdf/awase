@@ -76,8 +76,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    const test_step = b.step("test", "Run BAS record unit tests");
+    const meta_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/metadata.zig"),
+            .target = host,
+            .optimize = optimize,
+        }),
+    });
+    const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(bas_tests).step);
+    test_step.dependOn(&b.addRunArtifact(meta_tests).step);
 
     const bas_launcher = b.addExecutable(.{
         .name = "bas-launcher",
