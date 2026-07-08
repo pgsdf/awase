@@ -78,6 +78,33 @@ back PASS gen=1 slot=1. The loader verified the real slot on
 real msdosfs, kernel and drawfs.ko hashed clean, and attested it
 from inside the boot.
 
+### Increment 2 metal run: CLOSED, 2026-07-08
+
+Binary 222f4c01... at the activated order head; the verdict
+variable read back:
+
+  PASS gen=1 slot=1 elf=loaded entry=0xffffffff80383000
+  base=0x200000 end=0x1c00000
+
+The loader parsed the real slot kernel's ELF64 and loaded every
+PT_LOAD segment into 2 MiB aligned staging below 4 GiB on real
+hardware, attested from inside the boot, then chainloaded to a
+normal boot (the verify-only safety property). Three facts
+recorded as evidence for the increments ahead:
+
+  - base=0x200000 confirms KERNEL-HANDOFF.md contract 0 on
+    metal: dest-space anchors at the minimum PT_LOAD p_paddr, and
+    the real kernel's minimum p_paddr is 0x200000 as the contract
+    predicted, not merely the fake kernel's.
+  - entry=0xffffffff80383000 is the real kernel's virtual entry,
+    0x183000 above the load base; the increment 4 trampoline
+    transfers here.
+  - end=0x1c00000 is the loaded image's dest-space extent, span
+    0x1a00000 (26 MiB) from base, comfortably below the 4 GiB
+    ceiling the salq handoff convention requires. KERNEND (the
+    metadata chain, increment 3) derives from this end rounded
+    up past the environment and the chain itself.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
