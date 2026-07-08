@@ -23,6 +23,33 @@ Every claim is tagged:
 - VERIFY: believed true, confirmed only by the bench pass or an
   L3a.2 experiment.
 
+## 0. Coordinate systems
+
+Three address spaces run through every contract below; the
+distinctions are the document's skeleton, stated once here.
+
+- Staging space: real physical RAM, the loader's allocation
+  (staging_base through staging_end), where bytes actually live
+  while the loader runs. Never exported to the kernel.
+- Dest-space: the contract's coordinate system. Anchored at the
+  kernel image base (stock: the first write's destination, the
+  first PT_LOAD p_paddr; load-relative offsets for a
+  kernphys-relocatable kernel). Every value the kernel receives,
+  ADDR entries, ENVP, modulep, kernend, lives here. Translation
+  to staging space is a single signed offset (stage_offset =
+  staging minus dest), applied at write time and never exported.
+- Kernel virtual space: the KERNBASE-mapped range the kernel
+  executes in. The transfer contract's page tables connect it to
+  wherever the bytes are: in the copy regime by first making
+  dest-space physically true (copying staging onto the dest
+  addresses), in the no-copy regime by mapping KERNBASE plus
+  offset onto the staging base.
+
+An implementation may choose any internal representation,
+provided the values it emits are dest-space and its page tables
+realize the connection. The regimes are two realizations of one
+contract, not two contracts.
+
 ## 1. Kernel image contract
 
 1.1 REQUIRED. The kernel is ELF64 (EM_X86_64, ET_EXEC), loaded
@@ -381,3 +408,6 @@ source-anchored.
   kernend as kernel property, staging motion making post-bi_load
   ordering contractual). The document carries no open VERIFY;
   L3a.2 implementation may proceed against it.
+- Draft 3 amendment, 2026-07-08, operator review: coordinate
+  systems elevated to an introductory section 0, the model
+  stated once before the contracts that depend on it.
