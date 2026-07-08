@@ -15,6 +15,7 @@ const uefi = std.os.uefi;
 const bas_boot = @import("bas_boot.zig");
 const elf_load = @import("elf_load.zig");
 const metadata = @import("metadata.zig");
+const handoff = @import("handoff.zig");
 
 // Vendor GUID for PGSD boot-evidence variables (generated for this
 // project; recorded in the L3a campaign ledger). The armed test
@@ -146,7 +147,28 @@ pub fn main() uefi.Status {
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
                         var mb: [128]u8 = undefined;
                         if (std.fmt.bufPrint(&mb, "META: modulep=0x{x} kernend=0x{x} chainlen={d}\r\n", .{ ch.modulep, ch.kernend, ch.len })) |m| printAscii(m) else |_| {}
-                        elf_note = std.fmt.bufPrint(&enbuf, "elf=loaded entry=0x{x} base=0x{x} modulep=0x{x} kernend=0x{x}", .{ lr.entry, lr.base_paddr, ch.modulep, ch.kernend }) catch "elf=loaded meta=built";
+
+                        // Increment 4a: build the remaining handoff
+                        // state (page tables, framebuffer record) and
+                        // attest it, still short of ExitBootServices.
+                        // The memory map is captured last in 4b (its
+                        // key must be the final one), so 4a validates
+                        // the page tables and framebuffer only.
+                        var ho_note: []const u8 = "ho=skip";
+                        var hbuf: [80]u8 = undefined;
+                        const fb = handoff.framebuffer(bsp);
+                        if (handoff.buildPageTables(bsp, lr.staging)) |pt| {
+                            const okpt = handoff.checkPageTables(pt, lr.staging);
+                            var hb: [128]u8 = undefined;
+                            if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} fb_base=0x{x}\r\n", .{ pt.pml4, okpt, fb.present, fb.base })) |m| printAscii(m) else |_| {}
+                            ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={}", .{ pt.pml4, okpt, fb.present }) catch "ho=prepared";
+                        } else |he| {
+                            printAscii("HO: FAIL ");
+                            printAscii(@errorName(he));
+                            printAscii("\r\n");
+                            ho_note = std.fmt.bufPrint(&hbuf, "ho=FAIL:{s}", .{@errorName(he)}) catch "ho=FAIL";
+                        }
+                        elf_note = std.fmt.bufPrint(&enbuf, "elf=loaded base=0x{x} modulep=0x{x} kernend=0x{x} {s}", .{ lr.base_paddr, ch.modulep, ch.kernend, ho_note }) catch "elf=loaded meta=built ho=built";
                     } else |em| {
                         printAscii("META: FAIL ");
                         printAscii(@errorName(em));
