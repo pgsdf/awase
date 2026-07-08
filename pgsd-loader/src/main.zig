@@ -87,6 +87,12 @@ pub fn main() uefi.Status {
             printAscii(@errorName(e));
             printAscii("; chainloading (increment 1)\r\n");
         }
+        // Armed mode only: dwell so the verdict is readable on
+        // hardware whose firmware boots faster than a human reads
+        // (L0 campaign observability note). The default path has
+        // no dwell and no output; this is test scaffolding on the
+        // armed name.
+        _ = bs.stall(5_000_000) catch {};
     }
 
     // The device path of the volume we were loaded from, extended
