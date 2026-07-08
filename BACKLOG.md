@@ -1802,6 +1802,11 @@ structured to contain exactly that risk.
     minimal handoff, 3b full modules, 3c fold in the UI, 3d
     Awase-native display contract, 3e AD-11 recovery integration).
 
+    Phase 3 is under implementation as **AD-62** (`pgsd-loader/`): the
+    fresh loader exists, L0 is closed, the kernel handoff contract
+    (L3a.1) is complete, and the BAS kernel path (L3a.2) is
+    bench-proven through the ELF loader. See the AD-62 entry below.
+
 **Phase 0 exit criteria (hard gates, all five required):**
   1. Permanent fallback boot entry verified on real hardware.
   2. Boot-chain document produced.
@@ -1876,6 +1881,140 @@ justification.
 definition without turning the repo into a FreeBSD source mirror. Full
 vendoring is rejected as the first move; whether any touched-file
 patch-base is vendored is a representation detail, not this decision.
+
+### `[~]` AD-62: pgsd-loader, the fresh Awase loader (AD-56 Phase 3 implementation)  *(In progress, Large; project ADR 0001 ratified; L0 closed, L3a.1 complete, L3a.2 through increment 2 bench-proven on bare-metal-test-bench)*
+
+**Tracks**: `pgsd-loader/` (the implementation), `pgsd-loader/docs/`
+(the ADR series, the two bench-campaign ledgers, and the three
+substrate specifications), and `docs/adr/0001-boot-artifact-deployment-architecture.md`
+(the project-level deployment architecture).
+
+The concrete realization of AD-56 Phase 3: the fresh Awase loader
+the firmware hands control to, written fresh (never forked from
+loader.efi) per the AD-56 operator decision. Where AD-56 is the
+program and its phasing, AD-62 is the code and its bench evidence.
+It advances by small, individually bench-proven increments under the
+project disciplines (ADR-before-code, bench as sole authority,
+forward-only history, operator ratification), and its central
+methodological result inverts L0's flow: L0 built an implementation
+and extracted architecture from the evidence; L3a observes the stock
+implementation, extracts the contract, verifies the contract against
+FreeBSD source, implements against the contract, and validates on the
+bench, so the implementation is traceable to explicit requirements
+rather than to resemblance.
+
+**Stages.** L0 (presence and chainload) is closed. L1 and L2 are
+scheduled but not started. L3a (BAS kernel path) is the live edge;
+L3b (boot pool invariants) is gated behind it and cleared to design
+by project ADR 0001. Each stage is its own ADR before its code.
+
+**L0: presence and chainload (CLOSED, pgsd-loader ADR 0003).** The
+loader proves it runs and hands control to the stock loader, with a
+permanent fallback entry, verified across cold boots. The campaign
+ledger (`docs/L0-BENCH-CAMPAIGN.md`) disposed eight findings; two of
+them (F7, F8) would have shipped a non-booting primary under weaker
+methodology, and F8's forensics (two lost FAT cluster chains of
+exactly the loader size, metadata lost at fast poweroff while data
+survived) produced the publication disciplines the BAS now enforces:
+verify by read-back hash, no poweroff in the same breath as an ESP
+write. Byte-identical rebuilds are pinned by SOURCE_DATE_EPOCH=0.
+
+**Project ADR 0001 (RATIFIED): boot artifact deployment
+architecture.** The project-level decision that governs how any boot
+artifact is deployed: designated tooling is the sole writer; a named
+authority triad separates content (build), publication (tooling), and
+selection (operator plus policy) so nothing silently moves selection
+into tooling; publication means publish-then-switch with
+verify-in-place and provenance, or it is not publication; authority
+is split so the loader, Recovery, and Maintenance environments live
+in the Boot Artifact Store while the Operational kernel stays in its
+ZFS system-image unit, matched to threat model; and recovery
+invariants include verification-precedes-reliance (the prior path is
+retained until the new artifact actually boots, the F7 lesson).
+
+**L3a.1: the kernel handoff contract (COMPLETE).**
+`docs/KERNEL-HANDOFF.md` is the amd64 EFI kernel handoff contract, the
+stage's deliverable in place of code, organized by the kernel's
+required contracts (kernel image, boot metadata, memory, firmware
+exit, transfer, observable invariants) with every claim tagged
+REQUIRED, OBSERVED, or VERIFY so incidental stock behavior never
+hardens into imitation. A bench verification pass against the pinned
+/usr/src resolved every VERIFY item; the sharpest, the trampoline's
+salq shift of modulep before the kernel consumes it and kernend as
+32-bit stack values, imposes the real below-4-GiB requirement on the
+preloaded set. A single coordinate model (staging space, dest-space,
+kernel virtual space) unifies the copy and no-copy staging regimes as
+two realizations of one contract, and the handoff invariant states
+it: every address exported to the kernel is expressed in dest-space,
+and no staging address or loader-private translation crosses the
+handoff boundary. The document is frozen to two sources of change,
+new bench evidence or an upstream kernel contract change.
+
+**L3a.2: the BAS kernel path (IN PROGRESS, ADR 0004).** Sequenced
+tooling-first-minimal so the loader answers exactly one question at a
+time. Done and bench-proven:
+  - The Boot Artifact Store (`docs/BOOT-ARTIFACT-STORE.md`): a
+    transactional publication substrate over FAT32 whose selector is a
+    dual 512-byte record pair committed by a single sector overwrite
+    of the losing record (ordering, not journaling), with a
+    manifest-hash publication identity and a five-invariant frame
+    (I1 through I5). One Zig source, `src/bas.zig`, is the single
+    source of truth for the record bytes, imported by both the host
+    publication tool and the loader read path so the two sides cannot
+    drift.
+  - Provisioning and section 7.4 publication (`tools/bas-provision.sh`,
+    `tools/bas-publish.sh`, `src/bas_selector_tool.zig`): field-run on
+    the real store, a known-good slot published (the running kernel
+    plus drawfs.ko), the active-slot refusal (I1) fired on real
+    hardware.
+  - Increment 1 (the read and verification path): the loader resolves
+    the active slot through the shared record code and verifies all
+    three integrity layers before relying on the slot, then chainloads
+    regardless (the safety property). Armed by file name, since the
+    bench firmware cannot set boot-entry load options. CLOSED on metal:
+    the verdict, recorded in a UEFI variable because this panel does
+    not render console text, read back PASS on the real store.
+  - Increment 2 (the ELF loader): parses the slot kernel's ELF64 and
+    loads it into staging per the handoff contract, dest-space
+    anchored at the image base, staging 2 MiB aligned below 4 GiB with
+    slop past the image, segments placed with zero fill and no
+    relocation. Verify-only (attest and free); proven in emulation in
+    both directions, including a truncated image whose hash is
+    legitimately correct so it passes all integrity layers and is
+    refused only at the ELF layer. Its bench cycle is the immediate
+    next step.
+
+Remaining L3a.2 increments (each judged against KERNEL-HANDOFF.md,
+never against loader.efi): the metadata chain (MODINFO with the
+two-pass KERNEND self-consistency), the memory map and
+ExitBootServices sequencing, the no-copy page tables and the
+trampoline, then the first BAS-slot boot (multi-user plus drawfs plus
+chime), followed by the two ADR 0004 closure campaigns (publication
+under a power-interruption matrix, and the boot campaign with fallback
+from a refused slot and a destroyed selector).
+
+**The L3a campaign ledger** (`docs/L3A-BENCH-CAMPAIGN.md`) records the
+bench findings under the L0 methodology. Three so far, all from
+metal: F1 (this firmware consumes BootNext without honoring it), F2
+(efibootmgr creates entries inactive, and an inactive order head sent
+the firmware to an internal default rather than the next active
+entry, on watch), and F3 (the console does not render on this panel,
+disposed by the verdict variable, which also explains the
+never-observed L0 banner).
+
+**Relationship to AD-56, AD-57, AD-59.** AD-62 is AD-56 Phase 3
+made real; AD-56 remains the program, the phasing, and the trust
+model, and its earlier phases (menu and framebuffer ownership inside
+stock loader.efi) are separate work AD-62 does not subsume. AD-57
+(the pinned kernel source of truth) is the anchor the L3a.1
+verification pass reads against. AD-59 (loader-stage recovery
+reachability) is the policy layer that a future migration moves onto
+this loader; project ADR 0001's split authority places the Recovery
+environment in the same Boot Artifact Store AD-62 implements.
+
+**Backlog items originated here:** AD-60 (audiofs path_dead_end flood,
+from an L0 finding) and AD-61 (TxFAT32 extraction, deferred pending
+L3a bench evidence) both below.
 
 ### `[~]` AD-59: Bootstrap recovery pipeline (loader-stage recovery reachability)  *(In progress, Large; design ratified through Part 15; pipeline validated end-to-end on hardware; the operator_recovery_request producer is done (Experiment 9); the Recovery binding producer remains)*
 
