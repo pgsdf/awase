@@ -50,6 +50,13 @@ provided the values it emits are dest-space and its page tables
 realize the connection. The regimes are two realizations of one
 contract, not two contracts.
 
+Invariant: every address exported to the kernel is expressed in
+dest-space; neither staging-space addresses nor loader-private
+translations cross the handoff boundary. This is the sentence to
+carry through the rest of the document: the metadata chain, the
+page tables, and the trampoline are different mechanisms for
+realizing it.
+
 ## 1. Kernel image contract
 
 1.1 REQUIRED. The kernel is ELF64 (EM_X86_64, ET_EXEC), loaded
@@ -411,3 +418,14 @@ source-anchored.
 - Draft 3 amendment, 2026-07-08, operator review: coordinate
   systems elevated to an introductory section 0, the model
   stated once before the contracts that depend on it.
+- Draft 3 amendment 2, 2026-07-08, operator: the handoff
+  invariant stated after section 0 (dest-space only across the
+  boundary). Recorded with it, a quiet result of the study:
+  stage_offset is demoted from the thing a loader must implement
+  to one mechanism realizing the contract, and copy versus
+  no-copy from two contracts to two realizations of one, so
+  L3a.2 begins by satisfying the contract, the regime being an
+  implementation decision. The document is COMPLETE; future
+  edits come only from new bench evidence or an upstream kernel
+  contract change. Everything else belongs in the
+  implementation.
