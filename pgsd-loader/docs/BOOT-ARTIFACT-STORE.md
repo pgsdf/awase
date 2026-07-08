@@ -1,4 +1,4 @@
-# BOOT-ARTIFACT-STORE, version 0.2
+# BOOT-ARTIFACT-STORE, version 0.3
 
 The subordinate specification of the Boot Artifact Store (BAS)
 required by pgsd-loader ADR 0002 Decision 3 and bound by project
@@ -38,6 +38,25 @@ argument), platform assumptions (section 14, validated by the
 L3a campaign), and implementation mechanisms (how the current
 target realizes the requirements). A change in a lower layer
 must not weaken an upper one.
+
+The protocol invariants, named so ADRs, reviews, and code can
+cite them ("this preserves I3") rather than paraphrase prose:
+
+- I1: the selector is the only mutable object whose state
+  determines reachability (this section).
+- I2: reachability is monotonic (7.6).
+- I3: recovery is computed exclusively from durable, complete
+  state; no partial record and no incomplete slot is ever
+  interpreted (1, 7.2).
+- I4: publication ordering precedes publication visibility: the
+  content a selector names is durable before the selector names
+  it, and the selector is durable before success is visible
+  (8.1).
+- I5: verification precedes control transfer (13; project ADR
+  0001 Decision 6.3, ADR 0004 Decision 3).
+
+These name what the document already establishes; they add no
+requirements.
 
 ## 2. Volume and sizing
 
@@ -168,7 +187,7 @@ reported (6 before 7). An intent journal is an optional
 extension (section 11) that improves diagnosis and audit; it is
 not part of the proof.
 
-### 7.6 Invariant: monotonic reachability
+### 7.6 Invariant I2: monotonic reachability
 
 Publication may introduce new reachable state; no publication
 failure may make previously reachable verified state
@@ -201,7 +220,8 @@ whose integrity is the first layer's question alone.
 ### 8.1 Protocol requirements (portable)
 
 - Single designated writer (project ADR 0001 Decision 1).
-- Two durability points, and only two: slot content and manifest
+- Two durability points, and only two (invariant I4): slot
+  content and manifest
   are durable before the selector commit is written; the
   selector commit is durable before success is reported.
 - Selector writes are sector-granular overwrites of preallocated
@@ -271,7 +291,8 @@ preallocated selector, and the invariants of section 5. The
 deployment tooling conforms by the section 7.4 protocol and
 section 8 requirements. The loader conforms by the section 7.2
 read rule, verification of the selected slot's manifest before
-any control transfer, and the section 10 fallback behavior.
+any control transfer (invariant I5), and the section 10 fallback
+behavior.
 
 ## 14. Assumptions
 
@@ -313,3 +334,7 @@ protocol resting on them implicitly:
   failure handling; assumptions A1 through A4 stated explicitly
   for campaign validation; destroyed selector defined
   exhaustively.
+- 0.3, 2026-07-08: protocol invariants named I1 through I5 per
+  operator suggestion at ratification; pure naming of what 0.2
+  established, no new requirements. Ratified at this version as
+  an architectural draft with ADR 0004 revision 2.

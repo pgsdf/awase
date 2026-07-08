@@ -2,7 +2,17 @@
 
 ## Status
 
-Proposed, 2026-07-08. Stage ADR under parent ADR 0001 Decision 3
+Ratified, 2026-07-08, at revision 2, as an architectural draft
+(operator: the revisions strengthen structure rather than adding
+mechanism; the protocol, platform, and mechanism layers isolate
+the correctness argument; the documents have reached the point
+where further improvement comes from implementation and bench
+evidence rather than architectural editing). BOOT-ARTIFACT-STORE
+is ratified with it at version 0.3, which names the protocol
+invariants I1 through I5 per the operator's suggestion at
+ratification. L3a.1, the kernel handoff study, begins.
+
+Previously: Proposed, 2026-07-08. Stage ADR under parent ADR 0001 Decision 3
 (the L3 subdivision defined by ADR 0002 Decision 5), unlocked by
 the ratification of project ADR 0001, which cleared this stage's
 gate and decided split authority. ADR-before-code: no L3a code
@@ -177,3 +187,5 @@ Stated explicitly so scope cannot drift into them:
   AD-61 extraction disposition; non-goals stated as Decision 6.
   Companion changes in BOOT-ARTIFACT-STORE 0.2 (layering,
   definitions, assumptions).
+- 2026-07-08: ratified at revision 2 with the specification at
+  0.3.
