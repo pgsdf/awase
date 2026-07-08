@@ -45,6 +45,30 @@ pub fn build(b: *std.Build) void {
     });
     launcher.subsystem = .efi_application;
 
+    // Host-side tools (bas-selector): native target, never for
+    // the ESP. zig build tools
+    const host = b.resolveTargetQuery(.{});
+    const seltool = b.addExecutable(.{
+        .name = "bas-selector",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bas_selector_tool.zig"),
+            .target = host,
+            .optimize = optimize,
+        }),
+    });
+    const tools_step = b.step("tools", "Build host-side BAS tools");
+    tools_step.dependOn(&b.addInstallArtifact(seltool, .{}).step);
+
+    const bas_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bas.zig"),
+            .target = host,
+            .optimize = optimize,
+        }),
+    });
+    const test_step = b.step("test", "Run BAS record unit tests");
+    test_step.dependOn(&b.addRunArtifact(bas_tests).step);
+
     const tgt_step = b.step("test-target", "Build the emulation test harnesses");
     tgt_step.dependOn(&b.addInstallArtifact(tgt, .{}).step);
     tgt_step.dependOn(&b.addInstallArtifact(launcher, .{}).step);
