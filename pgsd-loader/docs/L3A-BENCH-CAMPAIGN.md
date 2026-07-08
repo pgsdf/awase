@@ -105,6 +105,26 @@ recorded as evidence for the increments ahead:
     metadata chain, increment 3) derives from this end rounded
     up past the environment and the chain itself.
 
+### Increment 3 metal run: CLOSED, 2026-07-08
+
+Binary 40062e3c... at the activated order head; the verdict
+variable read back:
+
+  PASS gen=1 slot=1 elf=loaded entry=0xffffffff80383000
+  base=0x200000 modulep=0x1c01000 kernend=0x1c02000
+
+The MODINFO chain built in dest-space above the real loaded
+kernel, attested from inside the boot, then chainloaded normally.
+The geometry confirms the page-alignment discipline on real
+addresses: the image ended at 0x1c00000 (increment 2), the
+environment block page-aligned there, the chain landed at
+modulep=0x1c01000, and kernend=0x1c02000 rounds one page past
+the 144-byte chain. KERNEND is self-consistent, its value written
+into a record the chain itself contains. These are the exact
+modulep and kernend the increment 4 trampoline hands the kernel;
+both are far below the 4 GiB ceiling the salq handoff convention
+requires.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
