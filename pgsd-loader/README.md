@@ -1,8 +1,16 @@
 # pgsd-loader
 
 From-scratch Zig EFI boot loader for PGSD, replacing FreeBSD's
-stock loader.efi incrementally. The designated successor to
-pgsd-boot/ and its lua shims.
+stock loader.efi incrementally. This is the AD-56 Phase 3
+implementation, tracked as AD-62.
+
+This component owns boot MECHANISM: parsing the kernel, building
+the memory map, owning the framebuffer, and performing the kernel
+handoff. It is distinct from pgsd-boot/, which owns recovery
+POLICY (the AD-59 Lua pipeline that selects a boot environment
+from inside the stock loader). The two do not overlap; AD-59's
+policy is written to migrate onto this loader in time, at which
+point only its loader-specific observation producers change.
 
 Start with docs/adr/0001-architecture-and-staged-replacement.md:
 the parent architecture ADR defining the purpose, the chainload
