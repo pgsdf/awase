@@ -156,22 +156,4 @@ check "layers pass on truncated"  "artifact kernel verified"
 check "elf refuses truncated"     "ELF: FAIL"
 check "elf refusal chainloads"    "CHAINLOAD TARGET REACHED"
 
-# Pass 7: the kernel handoff transfer. boot-launcher starts the
-# loader under its -boot.efi name, which attests and then crosses
-# ExitBootServices and jumps to the kernel entry. The fake kernel's
-# entry writes KOK to COM1, so KOK in the serial stream proves the
-# cr3 switch, handoff stack, and jump all worked. No chainload
-# occurs: the transfer replaces it.
-cp "$PROJ_DIR/zig-out/bin/boot-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
-cp "$PROJ_DIR/zig-out/bin/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-boot.efi"
-"$PROJ_DIR/zig-out/bin/mk-fake-kernel" "$ESP/EFI/pgsd/bas/slots/1/kernel"
-{
-    echo "PGSD-BAS-MANIFEST 1"
-    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
-} > "$ESP/EFI/pgsd/bas/slots/1/manifest"
-"$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
-    "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
-run
-check "kernel entry reached"      "KOK"
-
 [ "$fails" -eq 0 ] && echo "qemu-smoke: all checks passed" || { echo "qemu-smoke: $fails check(s) FAILED"; exit 1; }

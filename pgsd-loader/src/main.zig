@@ -104,10 +104,7 @@ pub fn main() uefi.Status {
     // the active slot through all three integrity layers and
     // reports; control transfer is a later increment, so it
     // chainloads regardless, keeping every armed boot bootable.
-    // Either armed name runs the attestation path; only the -boot
-    // name additionally attempts the transfer (gated below on
-    // bootArmed). A -bas run attests and chainloads as before.
-    if (bas_boot.armed(self_image.file_path) or bas_boot.bootArmed(self_image.file_path)) {
+    if (bas_boot.armed(self_image.file_path)) {
         print("pgsd-loader: BAS verification mode (L3a.2 increment 1)\r\n");
         if (bas_boot.verifyActiveSlot(device_handle, printAscii)) |res| {
             // Increment 2: load the verified kernel image per the
@@ -248,65 +245,6 @@ pub fn main() uefi.Status {
                             if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
                             const ndesc: usize = if (mm_opt) |mm| mm.count else 0;
                             ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={} rb={} clen={d} ndesc={d}", .{ pt.pml4, okpt, fb.present, readback_ok, ch.len, ndesc }) catch "ho=prepared";
-
-                            // 4b-final: the boot attempt. Gated on
-                            // bootArmed (a distinct -boot.efi name) AND
-                            // every attestation passing, so a -bas.efi
-                            // run or any failed check still chainloads.
-                            // Past ExitBootServices there is no console
-                            // and no fallback within this boot.
-                            if (readback_ok and bas_boot.bootArmed(self_image.file_path)) {
-                                const tramp = handoff.transferAddr();
-                                if (tramp >= 0x1_0000_0000) {
-                                    // The transfer code must be below
-                                    // 4 GiB to stay mapped by the low
-                                    // 1:1 after the cr3 load; if not,
-                                    // abort to the chainload.
-                                    var tb: [64]u8 = undefined;
-                                    ho_note = std.fmt.bufPrint(&tb, "boot=ABORT tramp_high=0x{x}", .{tramp}) catch "boot=ABORT";
-                                } else if (handoff.buildHandoffStack(bsp, ch.modulep, ch.kernend)) |hrsp| {
-                                    // Record the attempt BEFORE exit:
-                                    // if the transfer hangs, the next
-                                    // (fallback) boot reads this and we
-                                    // know we reached the jump.
-                                    var ab: [160]u8 = undefined;
-                                    const av = std.fmt.bufPrint(&ab, "BOOT_ATTEMPT entry=0x{x} pml4=0x{x} tramp=0x{x} rsp=0x{x}", .{ lr.entry, pt.pml4, tramp, hrsp }) catch "BOOT_ATTEMPT";
-                                    recordVerdict(av);
-                                    // Final map capture + EFI_MAP
-                                    // rebuild + ExitBootServices, with
-                                    // the retry the map race requires.
-                                    var tries: u8 = 0;
-                                    while (tries < 3) : (tries += 1) {
-                                        const fmap = handoff.captureMemoryMap(bsp) catch break;
-                                        // Rebuild the chain with the
-                                        // final map so EFI_MAP is the
-                                        // one whose key we exit on.
-                                        if (metadata.buildChainFull(&chain_buf, chain_rel + lr.base_paddr, .{
-                                            .name = "kernel",
-                                            .addr = lr.base_paddr,
-                                            .size = image_span,
-                                            .howto = 0,
-                                        }, envp_rel + lr.base_paddr, fw_handle, efb, .{
-                                            .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
-                                            .descriptor_size = fmap.descriptor_size,
-                                            .descriptor_version = fmap.descriptor_version,
-                                        })) |fch| {
-                                            const cs: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
-                                            @memcpy(cs[0..fch.len], chain_buf[0..fch.len]);
-                                        } else |_| {}
-                                        bsp.exitBootServices(uefi.handle, fmap.key) catch continue;
-                                        // Success: no boot services, no
-                                        // console. Transfer to the kernel.
-                                        handoff.transferToKernel(lr.entry, pt.pml4, hrsp);
-                                    }
-                                    // All exit attempts failed: fall
-                                    // through and chainload (boot
-                                    // services still active).
-                                    ho_note = "boot=EXIT_FAILED";
-                                } else |_| {
-                                    ho_note = "boot=stack_alloc_failed";
-                                }
-                            }
                         } else |he| {
                             printAscii("HO: FAIL ");
                             printAscii(@errorName(he));
