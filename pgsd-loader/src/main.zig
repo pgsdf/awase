@@ -127,23 +127,32 @@ pub fn main() uefi.Status {
                     // chain is built and attested, not transferred
                     // to. EFI_MAP and EFI_FB are bound to
                     // ExitBootServices and belong to increment 4.
-                    const stage_off = lr.staging - lr.base_paddr;
-                    const envp_dest = std.mem.alignForward(u64, lr.image_end, 4096);
-                    // Minimal environment: empty (double NUL), the
-                    // valid terminator; real vars arrive with the
-                    // slot manifest in a later increment.
+                    // Coordinate convention (KERNEL-HANDOFF 5.3,
+                    // matching elf_load's segment placement): work
+                    // in image-base-relative offsets. A relative
+                    // offset R is physically at staging+R, and the
+                    // kernel reads it at KERNBASE+R which the upper
+                    // page tables send to staging+R. Every value
+                    // handed to the kernel (modulep, envp, kernend,
+                    // and the ADDR entry) is therefore relative to
+                    // base_paddr, exactly as the loaded segments are.
+                    const image_span = lr.image_end - lr.base_paddr;
+                    const envp_rel = std.mem.alignForward(u64, image_span, 4096);
                     const env_bytes = [_]u8{ 0, 0 };
-                    const env_stage: [*]u8 = @ptrFromInt(envp_dest + stage_off);
+                    const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
                     @memcpy(env_stage[0..env_bytes.len], &env_bytes);
-                    const chain_dest = std.mem.alignForward(u64, envp_dest + env_bytes.len, 4096);
+                    const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
                     var chain_buf: [1024]u8 = undefined;
-                    if (metadata.buildChain(&chain_buf, chain_dest, .{
+                    // ADDR is the kernel image's own relative base,
+                    // which is 0 (the image begins at base_paddr);
+                    // the kernel adds KERNBASE. SIZE is the span.
+                    if (metadata.buildChain(&chain_buf, chain_rel, .{
                         .name = "kernel",
-                        .addr = lr.base_paddr,
-                        .size = lr.image_end - lr.base_paddr,
+                        .addr = 0,
+                        .size = image_span,
                         .howto = 0,
-                    }, envp_dest)) |ch| {
-                        const chain_stage: [*]u8 = @ptrFromInt(chain_dest + stage_off);
+                    }, envp_rel)) |ch| {
+                        const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
                         var mb: [128]u8 = undefined;
                         if (std.fmt.bufPrint(&mb, "META: modulep=0x{x} kernend=0x{x} chainlen={d}\r\n", .{ ch.modulep, ch.kernend, ch.len })) |m| printAscii(m) else |_| {}
@@ -159,9 +168,30 @@ pub fn main() uefi.Status {
                         const fb = handoff.framebuffer(bsp);
                         if (handoff.buildPageTables(bsp, lr.staging)) |pt| {
                             const okpt = handoff.checkPageTables(pt, lr.staging);
-                            var hb: [128]u8 = undefined;
-                            if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} fb_base=0x{x}\r\n", .{ pt.pml4, okpt, fb.present, fb.base })) |m| printAscii(m) else |_| {}
-                            ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={}", .{ pt.pml4, okpt, fb.present }) catch "ho=prepared";
+                            // 4b preflight: verify the coordinate
+                            // convention end to end while the console
+                            // still exists. The kernel will read
+                            // KERNBASE+modulep through the upper page
+                            // tables, which resolve to staging+dest.
+                            // Read staging+modulep here and confirm
+                            // it finds the chain's first record
+                            // (MODINFO_NAME=1); read staging+envp and
+                            // confirm the env terminator. If these
+                            // match, the trampoline is safe to
+                            // attempt; if not, the bug is found with
+                            // a console alive.
+                            // modulep and envp are image-base
+                            // relative; physical = staging + rel,
+                            // the same expression the kernel's page
+                            // walk resolves KERNBASE+rel to.
+                            const chain_phys: [*]u8 = @ptrFromInt(lr.staging + ch.modulep);
+                            const name_type = std.mem.readInt(u32, chain_phys[0..4], .little);
+                            const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
+                            const env_ok = env_phys[0] == 0 and env_phys[1] == 0;
+                            const readback_ok = (name_type == 1) and env_ok;
+                            var hb: [160]u8 = undefined;
+                            if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
+                            ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={} rb={}", .{ pt.pml4, okpt, fb.present, readback_ok }) catch "ho=prepared";
                         } else |he| {
                             printAscii("HO: FAIL ");
                             printAscii(@errorName(he));

@@ -124,6 +124,7 @@ check "elf image loaded"          "ELF: LOADED entry=0xffffffff80200000 base=0x2
 check "metadata chain built"      "META: modulep=0x"
 check "handoff state prepared"    "HO: pml4=0x"
 check "page tables coherent"      "pt_ok=true"
+check "coordinate readback holds" "readback=true"
 check "slot verified"             "active slot VERIFIED"
 check "still chainloads"          "CHAINLOAD TARGET REACHED"
 
