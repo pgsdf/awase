@@ -61,10 +61,18 @@ release-level reproducibility.
 
 ## Build the PGSD kernel
 
-    sudo install -m 0644 pgsd-kernel/PGSD /usr/src/sys/amd64/conf/PGSD
     sh pgsd-kernel/pgsd-kernel-build.sh check     # verifies the pin
     sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
     sudo sh pgsd-kernel/pgsd-kernel-build.sh install
+
+The PGSD config is an Awase artifact and stays in `pgsd-kernel/`; the
+build reads it in place via `make`'s `KERNCONFDIR`, so `/usr/src` is
+never modified and remains a faithful checkout of the pinned revision.
+Do NOT copy the config into `/usr/src/sys/amd64/conf/`: that mutates
+the tree and, being untracked in the fork, shows up as pin drift that
+the check then rejects. If an older build left a stale
+`/usr/src/sys/amd64/conf/PGSD`, remove it (`sudo rm -f
+/usr/src/sys/amd64/conf/PGSD`); the check flags it.
 
 The check phase enforces the pin (AD-57): it fails if /usr/src does not
 match the recorded commit, unless PGSD_ALLOW_UNPINNED=1 is set for

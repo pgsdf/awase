@@ -362,18 +362,23 @@ phase_check() {
         fails=$((fails + 1))
     fi
 
-    # Installed config matches repo
-    if [ -f "$PGSD_INSTALLED_CONFIG" ] && [ -f "$PGSD_REPO_CONFIG" ]; then
-        if cmp -s "$PGSD_REPO_CONFIG" "$PGSD_INSTALLED_CONFIG"; then
-            ok "installed $KERNCONF matches repo"
-        else
-            warn "installed $KERNCONF differs from repo"
-            note "build phase will sync it before running buildkernel"
-            warns=$((warns + 1))
-        fi
-    elif [ ! -f "$PGSD_INSTALLED_CONFIG" ]; then
-        warn "$PGSD_INSTALLED_CONFIG does not exist yet"
-        note "build phase will install it"
+    # Config source. The PGSD config is an Awase artifact and stays in
+    # pgsd-kernel/; the build reads it in place via KERNCONFDIR and never
+    # copies it into /usr/src, so /usr/src stays a faithful checkout of
+    # the pinned revision. Verify the repo config is present and, if a
+    # stale in-tree copy exists from an older build, note that it is now
+    # unused (and, being untracked in the fork, would show as pin drift).
+    if [ -f "$PGSD_REPO_CONFIG" ]; then
+        ok "$KERNCONF config source: $PGSD_REPO_CONFIG (read via KERNCONFDIR)"
+    else
+        fail "missing repo config: $PGSD_REPO_CONFIG"
+        fails=$((fails + 1))
+    fi
+    if [ -f "$PGSD_INSTALLED_CONFIG" ]; then
+        warn "$PGSD_INSTALLED_CONFIG exists but is no longer used"
+        note "the build reads $KERNCONF from pgsd-kernel/ via KERNCONFDIR;"
+        note "this in-tree copy is stale and, being untracked in the fork,"
+        note "will show as pin drift. Remove it: rm -f $PGSD_INSTALLED_CONFIG"
         warns=$((warns + 1))
     fi
 
@@ -456,29 +461,23 @@ phase_build() {
     fi
     rm -f /tmp/pgsd-check-$$.log
 
-    # Sync the repo config into /usr/src/sys/amd64/conf/. The install
-    # below copies the dev-side config into the source tree.
+    # Awase owns the PGSD config: it is an Awase artifact, not upstream
+    # FreeBSD, so it stays authoritative in pgsd-kernel/ and is never
+    # copied into /usr/src. buildkernel reads it in place via KERNCONFDIR
+    # (below), so /usr/src remains a faithful, unmodified checkout of the
+    # pinned revision from start to finish and the pin cleanliness check
+    # and the build agree by construction. KERNCONFDIR is the directory
+    # holding the KERNCONF file; for PGSD and PGSD-DEBUG that is
+    # pgsd-kernel/. The config is standalone (no include of GENERIC), so
+    # no source-tree conf files need to resolve relative to it.
+    KERNCONFDIR="${REPO_ROOT}/pgsd-kernel"
     emit ""
-    emit "Step 1/4: sync $KERNCONF config into source tree"
-    if ! cmp -s "$PGSD_REPO_CONFIG" "$PGSD_INSTALLED_CONFIG" 2>/dev/null; then
-        if [ "$(id -u)" -ne 0 ]; then
-            emit "  ERROR: need root to write $PGSD_INSTALLED_CONFIG"
-            emit "         re-run with: sudo sh $0 build $KERNCONF"
-            return 1
-        fi
-        install -m 0644 "$PGSD_REPO_CONFIG" "$PGSD_INSTALLED_CONFIG"
-        emit "  installed: $PGSD_REPO_CONFIG -> $PGSD_INSTALLED_CONFIG"
-    else
-        emit "  already in sync; nothing to do"
+    emit "Step 1/4: use $KERNCONF from $KERNCONFDIR (KERNCONFDIR; /usr/src not modified)"
+    if [ ! -f "${KERNCONFDIR}/${KERNCONF}" ]; then
+        emit "  ERROR: ${KERNCONFDIR}/${KERNCONF} not found"
+        return 1
     fi
-
-    # PGSD-DEBUG also needs the base PGSD config in the conf directory.
-    if [ "$KERNCONF" = "PGSD-DEBUG" ]; then
-        if ! cmp -s "${REPO_ROOT}/pgsd-kernel/PGSD" "${ARCH_CONF_DIR}/PGSD" 2>/dev/null; then
-            install -m 0644 "${REPO_ROOT}/pgsd-kernel/PGSD" "${ARCH_CONF_DIR}/PGSD"
-            emit "  installed: PGSD (base) -> ${ARCH_CONF_DIR}/PGSD"
-        fi
-    fi
+    emit "  config: ${KERNCONFDIR}/${KERNCONF}"
 
     # DO_CLEAN was set by the top-level argument parser.
     if [ "$DO_CLEAN" -eq 1 ]; then
@@ -488,7 +487,7 @@ phase_build() {
             emit "  ERROR: need root for make cleankernel"
             return 1
         fi
-        (cd "$SRC_DIR" && make cleankernel KERNCONF="$KERNCONF") || {
+        (cd "$SRC_DIR" && make cleankernel KERNCONF="$KERNCONF" KERNCONFDIR="$KERNCONFDIR") || {
             emit "  cleankernel failed"
             return 1
         }
@@ -530,6 +529,7 @@ phase_build() {
     # WITHOUT_MODULES list.
     (cd "$SRC_DIR" && \
         make buildkernel KERNCONF="$KERNCONF" \
+            KERNCONFDIR="$KERNCONFDIR" \
             WITHOUT_MODULES="$WITHOUT_MODULES_LIST") || {
         emit ""
         emit "  buildkernel FAILED"
@@ -645,6 +645,7 @@ phase_install() {
 
     (cd "$SRC_DIR" && \
         make installkernel KERNCONF="$KERNCONF" DESTDIR=/ \
+            KERNCONFDIR="${REPO_ROOT}/pgsd-kernel" \
             WITHOUT_MODULES="$WITHOUT_MODULES_LIST") || {
         emit ""
         emit "  installkernel FAILED"

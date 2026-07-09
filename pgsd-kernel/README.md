@@ -13,7 +13,6 @@ modules from the build.
 From the repo root on the bench:
 
 ```
-sudo install -m 0644 pgsd-kernel/PGSD /usr/src/sys/amd64/conf/PGSD
 sh pgsd-kernel/pgsd-kernel-build.sh check
 sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
 sudo sh pgsd-kernel/pgsd-kernel-build.sh install
@@ -136,14 +135,22 @@ source" means here, see `KERNEL-RECIPE.md` ("Reconstruct the source
 tree"). A plain `pkg install src` or `git.freebsd.org` checkout is
 release-level only and builds only with `PGSD_ALLOW_UNPINNED=1`.
 
-From the repository root:
+From the repository root (the build script does this for you; the raw
+commands are shown for reference):
 
 ```
-sudo install -m 0644 pgsd-kernel/PGSD /usr/src/sys/amd64/conf/PGSD
 cd /usr/src
 sudo make buildkernel KERNCONF=PGSD \
+    KERNCONFDIR=/path/to/awase/pgsd-kernel \
     WITHOUT_MODULES="hkbd ukbd hms hgame hcons hsctrl hpen hmt hconf hidmap"
 ```
+
+`KERNCONFDIR` points `make` at the PGSD config in the Awase repo, read
+in place. Do NOT copy the config into `/usr/src/sys/amd64/conf/`: the
+config is an Awase artifact, and copying it mutates the pinned source
+tree, which then fails the AD-57 cleanliness check as untracked drift.
+Prefer `sh pgsd-kernel/pgsd-kernel-build.sh build`, which sets
+`KERNCONFDIR` correctly and never touches `/usr/src`.
 
 The `WITHOUT_MODULES` argument is the build-time mechanism that
 keeps the listed `.ko` files from being produced. It must be on
