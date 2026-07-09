@@ -250,39 +250,6 @@ case "$cmd" in
       fuzz)
         SCRIPT="$REPO_ROOT/test/fuzz/fuzz-verify.sh"
         ;;
-      test-oot)
-    need_root "$cmd"
-    INPUTFS_OUT_OF_TREE=1
-    KMODDIR="$REPO_ROOT/sys/modules/inputfs"
-    OOT_MAKE_FLAGS="SYSDIR=$SRCROOT/sys"
-    echo "=== out-of-tree build test (inputfs) ==="
-    echo "  KMODDIR: $KMODDIR"
-    echo "  SYSDIR:  $SRCROOT/sys"
-    before=""
-    if [ -d "$SRCROOT/.git" ]; then
-        before="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
-    fi
-    ( cd "$KMODDIR" && make clean $OOT_MAKE_FLAGS && make $OOT_MAKE_FLAGS ) || {
-        echo "FAIL: out-of-tree build did not complete"; exit 1; }
-    OBJDIR=$(make -C "$KMODDIR" $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
-    if [ -z "$OBJDIR" ] || [ ! -f "$OBJDIR/inputfs.ko" ]; then
-        echo "FAIL: inputfs.ko not produced (OBJDIR=$OBJDIR)"; exit 1; fi
-    echo "PASS: built $OBJDIR/inputfs.ko"
-    if [ -d "$SRCROOT/.git" ]; then
-        after="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
-        if [ "$before" = "$after" ]; then
-            echo "PASS: /usr/src unchanged by the out-of-tree build"
-        else
-            echo "FAIL: /usr/src changed during the out-of-tree build."
-            echo "  status after (drift introduced by the build):"
-            printf '%s\n' "$after" | sed 's/^/    /'
-            exit 1
-        fi
-    else
-        echo "NOTE: $SRCROOT is not a git checkout; cannot verify cleanliness"
-    fi
-    echo "=== out-of-tree build test PASSED ==="
-    ;;
 
   *)
         echo "ERROR: unknown stage: $stage"
@@ -338,6 +305,40 @@ case "$cmd" in
     else
       echo "  ok  no inputfs_load in /boot/loader.conf"
     fi
+    ;;
+
+  test-oot)
+    need_root "$cmd"
+    INPUTFS_OUT_OF_TREE=1
+    KMODDIR="$REPO_ROOT/sys/modules/inputfs"
+    OOT_MAKE_FLAGS="SYSDIR=$SRCROOT/sys"
+    echo "=== out-of-tree build test (inputfs) ==="
+    echo "  KMODDIR: $KMODDIR"
+    echo "  SYSDIR:  $SRCROOT/sys"
+    before=""
+    if [ -d "$SRCROOT/.git" ]; then
+        before="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
+    fi
+    ( cd "$KMODDIR" && make clean $OOT_MAKE_FLAGS && make $OOT_MAKE_FLAGS ) || {
+        echo "FAIL: out-of-tree build did not complete"; exit 1; }
+    OBJDIR=$(make -C "$KMODDIR" $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
+    if [ -z "$OBJDIR" ] || [ ! -f "$OBJDIR/inputfs.ko" ]; then
+        echo "FAIL: inputfs.ko not produced (OBJDIR=$OBJDIR)"; exit 1; fi
+    echo "PASS: built $OBJDIR/inputfs.ko"
+    if [ -d "$SRCROOT/.git" ]; then
+        after="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
+        if [ "$before" = "$after" ]; then
+            echo "PASS: /usr/src unchanged by the out-of-tree build"
+        else
+            echo "FAIL: /usr/src changed during the out-of-tree build."
+            echo "  status after (drift introduced by the build):"
+            printf '%s\n' "$after" | sed 's/^/    /'
+            exit 1
+        fi
+    else
+        echo "NOTE: $SRCROOT is not a git checkout; cannot verify cleanliness"
+    fi
+    echo "=== out-of-tree build test PASSED ==="
     ;;
 
   *)
