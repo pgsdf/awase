@@ -219,7 +219,8 @@ pub fn main() uefi.Status {
                             const readback_ok = (name_type == 1) and env_ok and efi_map_seen;
                             var hb: [160]u8 = undefined;
                             if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
-                            ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={} rb={}", .{ pt.pml4, okpt, fb.present, readback_ok }) catch "ho=prepared";
+                            const ndesc: usize = if (mm_opt) |mm| mm.count else 0;
+                            ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={} rb={} clen={d} ndesc={d}", .{ pt.pml4, okpt, fb.present, readback_ok, ch.len, ndesc }) catch "ho=prepared";
                         } else |he| {
                             printAscii("HO: FAIL ");
                             printAscii(@errorName(he));
