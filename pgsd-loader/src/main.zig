@@ -142,9 +142,15 @@ pub fn main() uefi.Status {
                     const image_span = lr.image_end - lr.base_paddr;
                     const fb = handoff.framebuffer(bsp);
                     const envp_rel = std.mem.alignForward(u64, image_span, 4096);
-                    const env_bytes = [_]u8{ 0, 0 };
+                    // Minimal boot environment: the kernel reads
+                    // "name=value\0"... terminated by an empty string
+                    // (double NUL). vfs.root.mountfrom names the root
+                    // to mount; without it the kernel starts but stops
+                    // at mountroot. The bench root is the clean
+                    // Awase boot environment.
+                    const env_bytes = "vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
-                    @memcpy(env_stage[0..env_bytes.len], &env_bytes);
+                    @memcpy(env_stage[0..env_bytes.len], env_bytes);
                     const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
                     var chain_buf: [16384]u8 = undefined;
                     // Capture the memory map for EFI_MAP. In this
@@ -211,7 +217,10 @@ pub fn main() uefi.Status {
                             const chain_phys: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
                             const name_type = std.mem.readInt(u32, chain_phys[0..4], .little);
                             const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);  // physical
-                            const env_ok = env_phys[0] == 0 and env_phys[1] == 0;
+                            // The env now begins with the
+                            // vfs.root.mountfrom key and ends with the
+                            // double-NUL terminator; confirm both.
+                            const env_ok = env_phys[0] == 'v' and env_phys[59] == 0 and env_phys[60] == 0;
                             // Walk the chain in place and confirm the
                             // EFI_MAP record (0x9004) is present: this
                             // is what the kernel keys efi_boot on, and
@@ -241,9 +250,15 @@ pub fn main() uefi.Status {
                             const want_entry_phys = lr.staging + (lr.entry - handoff.KERNBASE) - lr.base_paddr;
                             const walk_mod_ok = walk_mod != null and walk_mod.? == want_chain_phys;
                             const walk_entry_ok = walk_entry != null and walk_entry.? == want_entry_phys;
+                            // Env presence: walk KERNBASE+envp and
+                            // confirm the first byte is 'v' (the
+                            // vfs.root.mountfrom key), so the root env
+                            // the kernel reads resolves correctly too.
+                            const walk_env = handoff.pageWalk(pt.pml4, handoff.KERNBASE + envp_rel + lr.base_paddr);
+                            const walk_env_ok = walk_env != null and @as(*const u8, @ptrFromInt(walk_env.?)).* == 'v';
                             var wl2: [96]u8 = undefined;
                             if (std.fmt.bufPrint(&wl2, "WALK: mod={} entry={} mp=0x{x} ep=0x{x}\r\n", .{ walk_mod_ok, walk_entry_ok, walk_mod orelse 0, walk_entry orelse 0 })) |m| printAscii(m) else |_| {}
-                            const readback_ok = staging_read_ok and walk_mod_ok and walk_entry_ok;
+                            const readback_ok = staging_read_ok and walk_mod_ok and walk_entry_ok and walk_env_ok;
                             var hb: [160]u8 = undefined;
                             if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
                             const ndesc: usize = if (mm_opt) |mm| mm.count else 0;
