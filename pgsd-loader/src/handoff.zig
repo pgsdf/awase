@@ -111,7 +111,7 @@ fn slot(base: u64, page: usize) [*]u64 {
 /// staging is the 2 MiB aligned dest-space anchor (the kernel image
 /// base maps here). The upper mapping covers the kernel's linked
 /// range [KERNBASE + kernbase_off, ...] onto the staging area.
-pub fn buildPageTables(bs: *uefi.tables.BootServices, staging: u64) !PageTables {
+pub fn buildPageTables(bs: *uefi.tables.BootServices, staging: u64, base_paddr: u64) !PageTables {
     const nine = bs.allocatePages(
         .{ .max_address = @as([*]align(4096) uefi.Page, @ptrFromInt(0xFFFF_F000)) },
         .loader_data,
@@ -156,14 +156,17 @@ pub fn buildPageTables(bs: *uefi.tables.BootServices, staging: u64) !PageTables 
     // Slot 510 covers KERNBASE-2GiB..KERNBASE, slot 511 covers
     // KERNBASE..top. The kernel is linked at KERNBASE (slot 511,
     // PD index 0 upward), mapped onto staging.
+    // KERNBASE is the start of PT3_u[510] (pd_u0), so the kernel's
+    // linked range KERNBASE+KVO is covered by pd_u0 for KVO in
+    // [0,1GiB) and pd_u1 for [1GiB,2GiB). elf_load places a segment
+    // at staging + (p_paddr - base_paddr) and the kernel links it at
+    // KERNBASE + p_paddr, so the mapping must be
+    // KERNBASE + KVO -> staging + KVO - base_paddr. Subtracting
+    // base_paddr is what makes the segment and metadata paths agree.
     var k: usize = 0;
     while (k < 512) : (k += 1) {
-        pd_u1[k] = (staging + @as(u64, k) * two_mib) | PG_V | PG_RW | PG_PS;
-        // Slot 510: one below, kept identity-walking staging minus
-        // 1 GiB is not meaningful; map it to staging too as a
-        // benign lower alias (only slot 511 is on the kernel's
-        // path). Leave 510 covering the gap harmlessly at staging.
-        pd_u0[k] = (staging + @as(u64, k) * two_mib) | PG_V | PG_RW | PG_PS;
+        pd_u0[k] = (staging + @as(u64, k) * two_mib - base_paddr) | PG_V | PG_RW | PG_PS;
+        pd_u1[k] = (staging + one_gib + @as(u64, k) * two_mib - base_paddr) | PG_V | PG_RW | PG_PS;
     }
 
     return .{ .pml4 = base + IDX_PML4 * 4096, .alloc_base = base, .pages = 9 };
@@ -173,14 +176,19 @@ pub fn buildPageTables(bs: *uefi.tables.BootServices, staging: u64) !PageTables 
 /// where they should, and the upper mapping's first entry walks the
 /// real staging base. Returns true if coherent.
 pub fn checkPageTables(pt: PageTables, staging: u64) bool {
+    // Structural coherence only: the PML4 entries point at the two
+    // PT3 pages, and the low 1:1 mapping resolves. The authoritative
+    // check of the kernel-range mapping is pageWalk against the real
+    // access path (used by the preflight), which supersedes the
+    // earlier fixed-offset assertions.
+    _ = staging;
     const pml4 = slot(pt.alloc_base, IDX_PML4);
     if (pml4[0] & PG_V == 0 or pml4[511] & PG_V == 0) return false;
     if ((pml4[0] & ~@as(u64, 0xfff)) != pt.alloc_base + IDX_PT3_L * 4096) return false;
     if ((pml4[511] & ~@as(u64, 0xfff)) != pt.alloc_base + IDX_PT3_U * 4096) return false;
-    const pd_u1 = slot(pt.alloc_base, IDX_PD_U1);
-    if ((pd_u1[0] & ~@as(u64, 0x1fffff)) != staging) return false;
-    if (pd_u1[0] & PG_PS == 0) return false;
-    return true;
+    // Low 1:1 sanity: virtual 0x100000 resolves to physical 0x100000.
+    const p = pageWalk(pt.pml4, 0x100000);
+    return p != null and p.? == 0x100000;
 }
 
 /// Convert an FbInfo plus pixel format into the kernel's EfiFb
@@ -203,4 +211,32 @@ pub fn efiFbFrom(fb: FbInfo) ?@import("metadata.zig").EfiFb {
         .fb_mask_blue = 0x000000ff,
         .fb_mask_reserved = 0xff000000,
     };
+}
+
+pub const KERNBASE: u64 = 0xffffffff80000000;
+
+/// Walk the built page tables in software exactly as the MMU will,
+/// returning the physical address a virtual address resolves to (or
+/// null if unmapped). The loader runs on firmware tables that map
+/// these physical structures 1:1, so each level is dereferenced
+/// directly. 2 MiB and 1 GiB leaf pages are handled. This exists to
+/// verify the kernel's real access path (KERNBASE + offset), which a
+/// direct staging read cannot check.
+pub fn pageWalk(pml4_phys: u64, vaddr: u64) ?u64 {
+    const PG_PS_bit: u64 = 1 << 7;
+    const idx4 = (vaddr >> 39) & 0x1ff;
+    const idx3 = (vaddr >> 30) & 0x1ff;
+    const idx2 = (vaddr >> 21) & 0x1ff;
+    const pml4: [*]const u64 = @ptrFromInt(pml4_phys);
+    const e4 = pml4[idx4];
+    if (e4 & PG_V == 0) return null;
+    const pdpt: [*]const u64 = @ptrFromInt(e4 & ~@as(u64, 0xfff));
+    const e3 = pdpt[idx3];
+    if (e3 & PG_V == 0) return null;
+    if (e3 & PG_PS_bit != 0) return (e3 & ~@as(u64, 0x3fffffff)) + (vaddr & 0x3fffffff);
+    const pd: [*]const u64 = @ptrFromInt(e3 & ~@as(u64, 0xfff));
+    const e2 = pd[idx2];
+    if (e2 & PG_V == 0) return null;
+    if (e2 & PG_PS_bit != 0) return (e2 & ~@as(u64, 0x1fffff)) + (vaddr & 0x1fffff);
+    return null; // we only build 2 MiB leaves in the upper range
 }

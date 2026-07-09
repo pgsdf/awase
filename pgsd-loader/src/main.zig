@@ -162,13 +162,19 @@ pub fn main() uefi.Status {
                     // ADDR is the kernel image's own relative base,
                     // which is 0 (the image begins at base_paddr);
                     // the kernel adds KERNBASE. SIZE is the span.
-                    if (metadata.buildChainFull(&chain_buf, chain_rel, .{
+                    // Kernel-visible offsets are KVO = rel +
+                    // base_paddr (the kernel adds KERNBASE and the
+                    // tables map KERNBASE+KVO -> staging+KVO-base).
+                    // The physical write stays at staging + rel.
+                    const chain_kvo = chain_rel + lr.base_paddr;
+                    const envp_kvo = envp_rel + lr.base_paddr;
+                    if (metadata.buildChainFull(&chain_buf, chain_kvo, .{
                         .name = "kernel",
-                        .addr = 0,
+                        .addr = lr.base_paddr,
                         .size = image_span,
                         .howto = 0,
-                    }, envp_rel, fw_handle, efb, map_in)) |ch| {
-                        const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
+                    }, envp_kvo, fw_handle, efb, map_in)) |ch| {
+                        const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);  // physical = staging + rel
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
                         var mb: [128]u8 = undefined;
                         if (std.fmt.bufPrint(&mb, "META: modulep=0x{x} kernend=0x{x} chainlen={d}\r\n", .{ ch.modulep, ch.kernend, ch.len })) |m| printAscii(m) else |_| {}
@@ -181,7 +187,7 @@ pub fn main() uefi.Status {
                         // the page tables and framebuffer only.
                         var ho_note: []const u8 = "ho=skip";
                         var hbuf: [112]u8 = undefined;
-                        if (handoff.buildPageTables(bsp, lr.staging)) |pt| {
+                        if (handoff.buildPageTables(bsp, lr.staging, lr.base_paddr)) |pt| {
                             const okpt = handoff.checkPageTables(pt, lr.staging);
                             // 4b preflight: verify the coordinate
                             // convention end to end while the console
@@ -199,9 +205,9 @@ pub fn main() uefi.Status {
                             // relative; physical = staging + rel,
                             // the same expression the kernel's page
                             // walk resolves KERNBASE+rel to.
-                            const chain_phys: [*]u8 = @ptrFromInt(lr.staging + ch.modulep);
+                            const chain_phys: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
                             const name_type = std.mem.readInt(u32, chain_phys[0..4], .little);
-                            const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
+                            const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);  // physical
                             const env_ok = env_phys[0] == 0 and env_phys[1] == 0;
                             // Walk the chain in place and confirm the
                             // EFI_MAP record (0x9004) is present: this
@@ -216,7 +222,25 @@ pub fn main() uefi.Status {
                                 if (wt == (0x8000 | 0x1004)) efi_map_seen = true;
                                 woff += 8 + ((wl + 7) & ~@as(usize, 7));
                             }
-                            const readback_ok = (name_type == 1) and env_ok and efi_map_seen;
+                            const staging_read_ok = (name_type == 1) and env_ok and efi_map_seen;
+
+                            // The decisive check: walk the built page
+                            // tables exactly as the kernel's MMU will,
+                            // for KERNBASE+modulep (must reach the
+                            // chain) and the kernel entry vaddr (must
+                            // reach where elf_load placed the entry
+                            // segment). The direct staging read above
+                            // cannot catch a wrong page-table anchor;
+                            // this can.
+                            const want_chain_phys = lr.staging + ch.modulep - lr.base_paddr;
+                            const walk_mod = handoff.pageWalk(pt.pml4, handoff.KERNBASE + ch.modulep);
+                            const walk_entry = handoff.pageWalk(pt.pml4, lr.entry);
+                            const want_entry_phys = lr.staging + (lr.entry - handoff.KERNBASE) - lr.base_paddr;
+                            const walk_mod_ok = walk_mod != null and walk_mod.? == want_chain_phys;
+                            const walk_entry_ok = walk_entry != null and walk_entry.? == want_entry_phys;
+                            var wl2: [96]u8 = undefined;
+                            if (std.fmt.bufPrint(&wl2, "WALK: mod={} entry={} mp=0x{x} ep=0x{x}\r\n", .{ walk_mod_ok, walk_entry_ok, walk_mod orelse 0, walk_entry orelse 0 })) |m| printAscii(m) else |_| {}
+                            const readback_ok = staging_read_ok and walk_mod_ok and walk_entry_ok;
                             var hb: [160]u8 = undefined;
                             if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
                             const ndesc: usize = if (mm_opt) |mm| mm.count else 0;
