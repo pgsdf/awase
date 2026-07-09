@@ -110,9 +110,23 @@ ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
 # prompt (interactive: offer the build at the end, unchanged).
 
 # A PGSD kernel requirement is satisfied if one is running now OR installed
-# on disk for the next boot. config -x extracts the embedded ident (the
-# PGSD config sets INCLUDE_CONFIG_FILE), so an installed-but-not-yet-booted
-# PGSD kernel counts.
+# on disk for the next boot.
+#
+# The running check (uname -i) is unconditional. The installed check reads
+# the config ident embedded in /boot/kernel/kernel via config -x, and so
+# depends on TWO assumptions that are load-bearing for this gate:
+#   1. The PGSD kernel config sets `options INCLUDE_CONFIG_FILE` (it does;
+#      see pgsd-kernel/PGSD). Without it, config -x cannot recover the
+#      ident and an installed-but-not-yet-booted PGSD kernel is not
+#      detected.
+#   2. config(8) is on PATH (it ships in FreeBSD base under /usr/sbin).
+# If the project ever changes how the kernel is built (drops
+# INCLUDE_CONFIG_FILE, strips the embedded config, or ships without
+# config(8)), this arm silently stops detecting the installed kernel.
+# The degradation is safe, not dangerous: a missed detection falls through
+# to `build` or the fail-fast gate (a possibly unnecessary rebuild or a
+# refusal), never to a false "satisfied". The running-kernel check via
+# uname -i is unaffected and remains authoritative for the common case.
 pgsd_kernel_satisfied() {
     case "$(uname -i 2>/dev/null)" in
         PGSD|PGSD-DEBUG) return 0 ;;
