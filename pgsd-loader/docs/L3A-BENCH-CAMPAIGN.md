@@ -152,6 +152,46 @@ widening the buffers. Recorded because it is the attestation
 checkpoint proving its worth: a formatting fault caught while
 still chainloading, not past the point of no console.
 
+### Increment 4b preflight metal run: CLOSED, 2026-07-08
+
+Binary 48a26d0f... at the activated order head; the verdict
+variable read back:
+
+  PASS gen=1 slot=1 elf=loaded base=0x200000 modulep=0x1a01000
+  kernend=0x1a02000 ho=prepared pml4=0x7e5c8000 ptok=true fb=true
+  rb=true
+
+rb=true is the coordinate convention proven on hardware: the
+preflight read the physical location the kernel's page walk
+resolves for modulep and found the MODINFO chain's first record,
+and read envp and found the environment terminator, on the real
+kernel through the real page tables. Every precondition for the
+handoff is now attested; only the trampoline and ExitBootServices
+remain.
+
+The relative values confirm the F5 fix on real addresses:
+modulep=0x1a01000 and kernend=0x1a02000 are image-base relative
+(the real kernel spans 0x1a00000 from base), down exactly
+0x200000 from the pre-fix 4a values, the base_paddr the bug had
+double-counted.
+
+### F5: increment 3 metadata used a coordinate anchor inconsistent with the segments and page tables (closed by the 4b preflight)
+
+The metadata chain passed modulep, envp, and kernend as raw
+dest addresses anchored at 0, while elf_load places segments at
+image-base-relative offsets and the no-copy page tables map
+KERNBASE at the image base. The kernel reads KERNBASE+modulep,
+the upper tables resolve that to staging+modulep, which is
+base_paddr (0x200000) past where the chain was actually written.
+On metal this would have been a dark screen with no console.
+Found by the 4b preflight readback (readback=false in emulation)
+before the trampoline existed, the clearest vindication so far of
+verify-then-chainload: a latent handoff bug caught at an
+attestation checkpoint rather than past the point of no console.
+Disposed by working in image-base-relative offsets throughout, one
+anchor shared by segments, page tables, and metadata; the kernel
+ADDR entry becomes 0 with SIZE the image span.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
