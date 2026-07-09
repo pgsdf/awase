@@ -158,9 +158,17 @@ EOF
 
 emit() { printf "%s\n" "$1"; }
 
+# Check-outcome counters. warn() and fail() count as they print, so
+# outcomes reported from inside helper functions (verify_pin) are
+# counted without per-call-site bookkeeping. phase_check resets both
+# at entry and is the only reader; increments from the build and
+# install phases are harmless. Initialized here for set -u.
+WARNS=0
+FAILS=0
+
 ok()   { printf "  [PASS] %s\n" "$1"; }
-warn() { printf "  [WARN] %s\n" "$1"; }
-fail() { printf "  [FAIL] %s\n" "$1"; }
+warn() { printf "  [WARN] %s\n" "$1"; WARNS=$((WARNS + 1)); }
+fail() { printf "  [FAIL] %s\n" "$1"; FAILS=$((FAILS + 1)); }
 note() { printf "         %s\n" "$1"; }
 hdr()  { printf "\n=== %s\n" "$1"; }
 
@@ -238,17 +246,20 @@ verify_pin() {
     # SRC_DIR is not a git checkout (release tarball etc). Commit-level
     # provenance is unavailable; fall back to the release cross-check,
     # which is weaker (cannot detect local modification). This is a
-    # degraded mode: warn even on a match, because the Git-backed model
-    # (AD-57 amendment) expects a clone of the fork.
+    # degraded mode: report exactly once, severity keyed on the
+    # override, because the Git-backed model (AD-57 amendment) expects
+    # a clone of the fork.
     run_vk="$(uname -K 2>/dev/null)"
     run_rel="$(freebsd-version -k 2>/dev/null)"
     if [ "$run_vk" = "$pin_vk" ] || [ "$run_rel" = "$pin_release" ]; then
-        warn "/usr/src is not a git checkout; release cross-check matches ($pin_release / $pin_vk) but commit-level provenance is unavailable. AD-57 expects a clone of $(pin_field base_repository); reproducibility is release-level only here."
-        if [ "$allow" = "1" ]; then return 0; fi
-        # Degraded but matching: do not hard-fail solely for not being git
-        # if the release matches, but make the gap explicit. Treat as a
-        # soft failure so the operator must opt in.
-        fail "AD-57 expects a Git checkout of the fork for commit-level provenance; present /usr/src is not git. Set PGSD_ALLOW_UNPINNED=1 to build at release-level reproducibility only."
+        if [ "$allow" = "1" ]; then
+            warn "/usr/src is not a git checkout; release cross-check matches ($pin_release / $pin_vk) but commit-level provenance is unavailable; PGSD_ALLOW_UNPINNED set, proceeding at release-level reproducibility only"
+            return 0
+        fi
+        # Degraded but matching: the release cross-check passes, but
+        # AD-57 wants commit-level provenance. Enforced unless the
+        # operator opts in via PGSD_ALLOW_UNPINNED=1.
+        fail "/usr/src is not a git checkout; release cross-check matches ($pin_release / $pin_vk) but AD-57 expects a clone of $(pin_field base_repository) for commit-level provenance. Set PGSD_ALLOW_UNPINNED=1 to build at release-level reproducibility only."
         return 1
     fi
 
@@ -318,8 +329,8 @@ phase_check() {
     hdr "PGSD kernel build environment check ($KERNCONF)"
     emit ""
 
-    fails=0
-    warns=0
+    WARNS=0
+    FAILS=0
 
     # Repo presence
     if [ -f "$PGSD_REPO_CONFIG" ]; then
@@ -327,7 +338,6 @@ phase_check() {
     else
         fail "missing repo config: $PGSD_REPO_CONFIG"
         note "set UTF_REPO=/path/to/UTF if running from elsewhere"
-        fails=$((fails + 1))
     fi
 
     # PGSD-DEBUG depends on PGSD also being present in the repo.
@@ -336,7 +346,6 @@ phase_check() {
             ok "PGSD (base config) present in repo (required by PGSD-DEBUG include)"
         else
             fail "PGSD-DEBUG requires PGSD config to also be present"
-            fails=$((fails + 1))
         fi
     fi
 
@@ -345,21 +354,20 @@ phase_check() {
         ok "/usr/src present and intact"
     else
         fail "/usr/src missing or incomplete"
-        fails=$((fails + 1))
     fi
 
     # AD-57: verify the source tree matches the recorded pin. Identity is
     # the immutable commit in the fork; the pin file is canonical. Fail by
     # default on mismatch; PGSD_ALLOW_UNPINNED=1 downgrades to a warning
     # for deliberate unpinned investigation (which is not reproducible).
-    verify_pin || fails=$((fails + 1))
+    # verify_pin reports through warn/fail, which count as they print.
+    verify_pin || :
 
     # Conf directory writable for install -m
     if [ -d "$ARCH_CONF_DIR" ]; then
         ok "$ARCH_CONF_DIR exists"
     else
         fail "$ARCH_CONF_DIR missing"
-        fails=$((fails + 1))
     fi
 
     # Config source. The PGSD config is an Awase artifact and stays in
@@ -372,14 +380,12 @@ phase_check() {
         ok "$KERNCONF config source: $PGSD_REPO_CONFIG (read via KERNCONFDIR)"
     else
         fail "missing repo config: $PGSD_REPO_CONFIG"
-        fails=$((fails + 1))
     fi
     if [ -f "$PGSD_INSTALLED_CONFIG" ]; then
         warn "$PGSD_INSTALLED_CONFIG exists but is no longer used"
         note "the build reads $KERNCONF from pgsd-kernel/ via KERNCONFDIR;"
         note "this in-tree copy is stale and, being untracked in the fork,"
         note "will show as pin drift. Remove it: rm -f $PGSD_INSTALLED_CONFIG"
-        warns=$((warns + 1))
     fi
 
     # Existing /usr/obj build tree
@@ -423,20 +429,19 @@ phase_check() {
         warn "sshd does not appear to be running"
         note "no recovery path if the new kernel has problems booting"
         note "fix with: sudo service sshd start"
-        warns=$((warns + 1))
     fi
 
     # Summary
     emit ""
     hdr "Summary"
-    emit "  WARN: $warns"
-    emit "  FAIL: $fails"
+    emit "  WARN: $WARNS"
+    emit "  FAIL: $FAILS"
     emit ""
-    if [ $fails -gt 0 ]; then
+    if [ "$FAILS" -gt 0 ]; then
         emit "Pre-flight FAILED. Fix [FAIL] items before running 'build'."
         return 1
     fi
-    if [ $warns -gt 0 ]; then
+    if [ "$WARNS" -gt 0 ]; then
         emit "Pre-flight passed with warnings. Review [WARN] items, then:"
     else
         emit "Pre-flight passed. To proceed:"
