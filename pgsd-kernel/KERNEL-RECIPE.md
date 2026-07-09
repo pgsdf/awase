@@ -27,16 +27,37 @@ provenance.
 
 ## Reconstruct the source tree
 
-On the bench:
+The simplest way is to let the installer provision it. `sh install.sh`
+reads FREEBSD-PIN, clones the fork on its `base_branch` (`releng/15.1`),
+checks out the pinned `delta_commit`, and chowns `/usr/src` to you. Do
+this by hand only if you want to see the steps or place the tree
+somewhere other than `/usr/src`.
 
-    # Clone the fork at the pinned commit into /usr/src (or elsewhere and
-    # point SRC_DIR at it).
-    git clone https://github.com/pgsdf/freebsd-src /usr/src
-    git -C /usr/src checkout <delta_commit from FREEBSD-PIN>
+By hand, on the bench (values from FREEBSD-PIN; substitute the current
+ones rather than copying these):
+
+    # Clone the fork on the pinned branch, then pin to the exact commit.
+    # The branch (base_branch, releng/15.1) selects the starting point;
+    # the commit (delta_commit) fixes identity and is what the pin check
+    # enforces. Do not use --single-branch: a future delta_commit may
+    # live on a differently named fork branch, and a full clone keeps the
+    # commit checkout working regardless.
+    git clone --branch releng/15.1 https://github.com/pgsdf/freebsd-src /usr/src
+    git -C /usr/src checkout 96841ea08dcfa84b954a32dc5ae1a26c28966cf4
+    sudo chown -R "$(id -u):$(id -g)" /usr/src
+    git config --global --add safe.directory /usr/src
 
     # Confirm the tree satisfies the pin (also run automatically by the
     # build check below).
-    git -C /usr/src rev-parse HEAD     # must equal delta_commit
+    git -C /usr/src rev-parse HEAD       # must equal delta_commit
+    git -C /usr/src describe --tags      # release/15.1.0 (provenance)
+    uname -K                             # 1501000, matches freebsd_version_k
+
+A pkgbase release tree (`pkg install src`) or a plain
+`git.freebsd.org` checkout is release-level source, not the pinned
+fork; it satisfies the release cross-check but fails the AD-57 commit
+pin. Build against it only with PGSD_ALLOW_UNPINNED=1, accepting
+release-level reproducibility.
 
 ## Build the PGSD kernel
 

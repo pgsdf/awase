@@ -126,9 +126,15 @@ this re-merge calculation. See "Why this kernel exists" above.
 
 ## Build
 
-Requires the FreeBSD source tree at `/usr/src` matching the running
-release. If you do not have it, install via `git` from
-`https://git.freebsd.org/src.git` or via `pkg install src`.
+Requires the FreeBSD source tree at `/usr/src`. Per AD-57 this must be
+the pinned fork (a git clone of `https://github.com/pgsdf/freebsd-src`
+on `releng/15.1`, checked out at the commit in `FREEBSD-PIN`), not a
+pkgbase release tree: the build check enforces the commit pin. The
+easiest way to provision it is `sh install.sh`, which clones and pins
+`/usr/src` for you; to do it by hand, or to understand what "correct
+source" means here, see `KERNEL-RECIPE.md` ("Reconstruct the source
+tree"). A plain `pkg install src` or `git.freebsd.org` checkout is
+release-level only and builds only with `PGSD_ALLOW_UNPINNED=1`.
 
 From the repository root:
 
