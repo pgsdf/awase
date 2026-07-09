@@ -167,3 +167,146 @@ test "chain layout and kernend self-consistency" {
     }
     try std.testing.expect(found == r.kernend);
 }
+
+// EFI metadata records (increment 4b). Constants and struct layouts
+// as the L3a.1 verification pass recorded them against the bench
+// sys/x86/include/metadata.h and sys/sys/linker.h.
+const MODINFOMD_FW_HANDLE: u32 = 0x000c;
+const MODINFOMD_EFI_MAP: u32 = 0x1004;
+const MODINFOMD_EFI_FB: u32 = 0x1005;
+
+// struct efi_map_header: memory_size, descriptor_size,
+// descriptor_version; the descriptor array follows, the whole
+// payload header padded to 16 bytes before the descriptors.
+const EfiMapHeader = extern struct {
+    memory_size: u64,
+    descriptor_size: u64,
+    descriptor_version: u32,
+};
+
+// struct efi_fb, nine u32/u64 fields ending fb_mask_reserved.
+pub const EfiFb = extern struct {
+    fb_addr: u64,
+    fb_size: u64,
+    fb_height: u32,
+    fb_width: u32,
+    fb_stride: u32,
+    fb_mask_red: u32,
+    fb_mask_green: u32,
+    fb_mask_blue: u32,
+    fb_mask_reserved: u32,
+};
+
+pub const EfiMapInput = struct {
+    /// The raw descriptor array bytes (memory_size).
+    descriptors: []const u8,
+    descriptor_size: u64,
+    descriptor_version: u32,
+};
+
+/// Build the full chain including the EFI records the kernel needs,
+/// inserted before MODINFO_END: FW_HANDLE (the system table), EFI_FB
+/// (the framebuffer), and EFI_MAP (the memory map, whose presence is
+/// how the kernel detects an EFI boot, contract 5.3). All addresses
+/// remain image-base relative (the 4b preflight convention). The
+/// EFI_MAP payload is a 16-byte-padded header followed by the
+/// descriptor bytes. KERNEND is two-pass self-consistent over the
+/// whole enlarged chain.
+pub fn buildChainFull(
+    buf: []u8,
+    chain_base_rel: u64,
+    kernel: KernelEntry,
+    envp_rel: u64,
+    fw_handle: u64,
+    fb: ?EfiFb,
+    map: EfiMapInput,
+) !ChainResult {
+    var w = ChainWriter.init(buf, chain_base_rel);
+    try w.record(MODINFO_NAME, kernel.name);
+    try w.record(MODINFO_TYPE, kernel_type);
+    try w.recordU64(MODINFO_ADDR, kernel.addr);
+    try w.recordU64(MODINFO_SIZE, kernel.size);
+    try w.recordU32(MODINFO_METADATA | MODINFOMD_HOWTO, kernel.howto);
+    try w.recordU64(MODINFO_METADATA | MODINFOMD_ENVP, envp_rel);
+    const kernend_off = try w.recordU64Patchable(MODINFO_METADATA | MODINFOMD_KERNEND, 0);
+    try w.recordU64(MODINFO_METADATA | MODINFOMD_MODULEP, chain_base_rel);
+    try w.recordU64(MODINFO_METADATA | MODINFOMD_FW_HANDLE, fw_handle);
+    if (fb) |f| {
+        try w.record(MODINFO_METADATA | MODINFOMD_EFI_FB, std.mem.asBytes(&f));
+    }
+    // EFI_MAP: 16-byte-padded header then descriptors.
+    {
+        // Header: memory_size at 0, descriptor_size at 8,
+        // descriptor_version at 16 (three fields, C offsets 0/8/16
+        // in the extern struct). The descriptors begin after the
+        // header padded to efisz = (sizeof + 0xf) & ~0xf. sizeof the
+        // struct is 24 (u64,u64,u32 padded to 8), so efisz = 32.
+        // This pad value is the one item not re-confirmable in this
+        // environment; the ledger flags a bench grep of bootinfo.c
+        // efisz before the metal run.
+        const hdr_pad = 32;
+        var hdr = [_]u8{0} ** hdr_pad;
+        std.mem.writeInt(u64, hdr[0..8], map.descriptors.len, .little);
+        std.mem.writeInt(u64, hdr[8..16], map.descriptor_size, .little);
+        std.mem.writeInt(u32, hdr[16..20], map.descriptor_version, .little);
+        // The record payload is header(16) ++ descriptors; write it
+        // in two steps via a manual record so we do not need a
+        // contiguous temp buffer for potentially large maps.
+        const total = hdr_pad + map.descriptors.len;
+        const need = 8 + ((total + 7) & ~@as(usize, 7));
+        if (w.len + need > w.buf.len) return error.ChainOverflow;
+        std.mem.writeInt(u32, w.buf[w.len..][0..4], MODINFO_METADATA | MODINFOMD_EFI_MAP, .little);
+        std.mem.writeInt(u32, w.buf[w.len + 4 ..][0..4], @intCast(total), .little);
+        @memcpy(w.buf[w.len + 8 ..][0..hdr_pad], &hdr);
+        @memcpy(w.buf[w.len + 8 + hdr_pad ..][0..map.descriptors.len], map.descriptors);
+        var pad = w.len + 8 + total;
+        while (pad < w.len + need) : (pad += 1) w.buf[pad] = 0;
+        w.len += need;
+    }
+    try w.record(MODINFO_END, &.{});
+
+    const raw_end = chain_base_rel + w.len;
+    const kernend = std.mem.alignForward(u64, raw_end, 4096);
+    std.mem.writeInt(u64, buf[kernend_off..][0..8], kernend, .little);
+    return .{ .modulep = chain_base_rel, .kernend = kernend, .len = w.len };
+}
+
+test "full chain includes EFI records before END with self-consistent kernend" {
+    var buf: [4096]u8 = undefined;
+    var descs = [_]u8{0} ** 96;
+    const r = try buildChainFull(&buf, 0x6000, .{
+        .name = "kernel",
+        .addr = 0,
+        .size = 0x1a00000,
+        .howto = 0,
+    }, 0x5000, 0xdeadbeef, EfiFb{
+        .fb_addr = 0x80000000,
+        .fb_size = 0x100000,
+        .fb_height = 900,
+        .fb_width = 1440,
+        .fb_stride = 1440,
+        .fb_mask_red = 0x00ff0000,
+        .fb_mask_green = 0x0000ff00,
+        .fb_mask_blue = 0x000000ff,
+        .fb_mask_reserved = 0xff000000,
+    }, .{ .descriptors = &descs, .descriptor_size = 48, .descriptor_version = 1 });
+    // First record NAME.
+    try std.testing.expect(std.mem.readInt(u32, buf[0..4], .little) == MODINFO_NAME);
+    // Walk to confirm EFI_MAP present and END last.
+    var off: usize = 0;
+    var saw_map = false;
+    var saw_fb = false;
+    var last_type: u32 = 0xffff;
+    while (off + 8 <= r.len) {
+        const t = std.mem.readInt(u32, buf[off..][0..4], .little);
+        const l = std.mem.readInt(u32, buf[off + 4 ..][0..4], .little);
+        if (t == (MODINFO_METADATA | MODINFOMD_EFI_MAP)) saw_map = true;
+        if (t == (MODINFO_METADATA | MODINFOMD_EFI_FB)) saw_fb = true;
+        last_type = t;
+        off += 8 + ((l + 7) & ~@as(usize, 7));
+    }
+    try std.testing.expect(saw_map);
+    try std.testing.expect(saw_fb);
+    try std.testing.expect(last_type == MODINFO_END);
+    try std.testing.expect(r.kernend % 4096 == 0);
+}
