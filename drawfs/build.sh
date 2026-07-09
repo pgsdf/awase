@@ -38,11 +38,10 @@ MODDEST="$SRCROOT/sys/modules/drawfs"
 # (../../dev/drawfs) already resolves inside the repo's self-contained
 # sys/ layout, and bsd.kmod.mk builds out-of-tree given SYSDIR.
 #
-# Default OFF: this path is unvalidated on real FreeBSD until the bench
-# confirms it, so the in-tree rsync path remains the default and the
-# install verb is still available as a fallback. Validate on the bench,
-# then flip the default and roll to inputfs/audiofs.
-DRAWFS_OUT_OF_TREE="${DRAWFS_OUT_OF_TREE:-0}"
+# Default ON: validated on the bench (drawfs test-oot passed, building
+# out-of-tree with /usr/src unchanged). Set DRAWFS_OUT_OF_TREE=0 to fall
+# back to the legacy in-tree rsync build if ever needed.
+DRAWFS_OUT_OF_TREE="${DRAWFS_OUT_OF_TREE:-1}"
 if [ "$DRAWFS_OUT_OF_TREE" = "1" ]; then
     KMODDIR="$REPO_ROOT/sys/modules/drawfs"
     # SYSDIR lets the kmod framework find kernel headers without the

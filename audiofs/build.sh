@@ -42,7 +42,24 @@ SRCROOT=${SRCROOT:-/usr/src}
 
 DEVDEST="$SRCROOT/sys/dev/audiofs"
 MODDEST="$SRCROOT/sys/modules/audiofs"
-KMODDIR="$MODDEST"
+
+# Out-of-tree build: build the module in place from the Awase repo with
+# SYSDIR pointing at the pinned kernel source, instead of rsyncing the
+# sources into /usr/src and building there. Keeps /usr/src a faithful,
+# unmodified checkout of the pinned revision (audiofs is a project
+# artifact, not part of the FreeBSD tree). The in-repo Makefile's
+# relative .PATH (../../dev/audiofs) resolves inside the repo's
+# self-contained sys/ layout, and bsd.kmod.mk builds out-of-tree given
+# SYSDIR. Default ON; set AUDIOFS_OUT_OF_TREE=0 for the legacy
+# in-tree rsync build. Validate a change with: sudo ./build.sh test-oot
+AUDIOFS_OUT_OF_TREE="${AUDIOFS_OUT_OF_TREE:-1}"
+if [ "$AUDIOFS_OUT_OF_TREE" = "1" ]; then
+    KMODDIR="$REPO_ROOT/sys/modules/audiofs"
+    OOT_MAKE_FLAGS="SYSDIR=$SRCROOT/sys"
+else
+    KMODDIR="$MODDEST"
+    OOT_MAKE_FLAGS=""
+fi
 
 BANNER="[audiofs kernel module] [${UTF_OS:-unknown}]"
 
@@ -95,6 +112,12 @@ case "$cmd" in
 
   install)
     need_root "$cmd"
+    if [ "$AUDIOFS_OUT_OF_TREE" = "1" ]; then
+        echo "Out-of-tree build: skipping source install into $SRCROOT"
+        echo "  (audiofs sources stay in the repo; /usr/src is not modified)"
+        echo "OK: install (no-op, out-of-tree)"
+        exit 0
+    fi
     echo "Installing audiofs sources into $SRCROOT"
     echo "$BANNER"
     mkdir -p "$DEVDEST" "$MODDEST"
@@ -107,13 +130,13 @@ case "$cmd" in
     need_root "$cmd"
     echo "Building kernel module in $KMODDIR"
     echo "$BANNER"
-    ( cd "$KMODDIR" && make clean && make )
+    ( cd "$KMODDIR" && make clean $OOT_MAKE_FLAGS && make $OOT_MAKE_FLAGS )
     echo "OK: build"
     ;;
 
   load)
     need_root "$cmd"
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR)
+    OBJDIR=$(make -C "$KMODDIR" $OOT_MAKE_FLAGS -V .OBJDIR)
     KO="$OBJDIR/audiofs.ko"
     if [ ! -f "$KO" ]; then
       echo "ERROR: missing $KO"
@@ -134,7 +157,7 @@ case "$cmd" in
     KO=""
 
     # Try make install first (cleanest approach)
-    if ( cd "$KMODDIR" && make install ) 2>/dev/null; then
+    if ( cd "$KMODDIR" && make $OOT_MAKE_FLAGS install ) 2>/dev/null; then
         echo "OK: deploy (via make install)"
         kldxref /boot/modules
         echo ""
@@ -145,7 +168,7 @@ case "$cmd" in
     fi
 
     # Fall back to locating the .ko manually
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "")
+    OBJDIR=$(make -C "$KMODDIR" $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
     if [ -n "$OBJDIR" ] && [ -f "$OBJDIR/audiofs.ko" ]; then
         KO="$OBJDIR/audiofs.ko"
     fi
@@ -213,7 +236,7 @@ case "$cmd" in
     ls -l "$DEVDEST/audiofs.c" 2>/dev/null || echo "  not found"
     echo
     echo "Module OBJDIR:"
-    OBJDIR=$(make -C "$KMODDIR" -V .OBJDIR 2>/dev/null || echo "unknown")
+    OBJDIR=$(make -C "$KMODDIR" $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "unknown")
     echo "  $OBJDIR"
     echo "Built module:"
     ls -l "$OBJDIR/audiofs.ko" 2>/dev/null || echo "  not found - run: sudo ./build.sh build"
@@ -238,6 +261,40 @@ case "$cmd" in
     else
       echo "  ok  no snd_hda module loaded"
     fi
+    ;;
+
+  test-oot)
+    need_root "$cmd"
+    AUDIOFS_OUT_OF_TREE=1
+    KMODDIR="$REPO_ROOT/sys/modules/audiofs"
+    OOT_MAKE_FLAGS="SYSDIR=$SRCROOT/sys"
+    echo "=== out-of-tree build test (audiofs) ==="
+    echo "  KMODDIR: $KMODDIR"
+    echo "  SYSDIR:  $SRCROOT/sys"
+    before=""
+    if [ -d "$SRCROOT/.git" ]; then
+        before="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
+    fi
+    ( cd "$KMODDIR" && make clean $OOT_MAKE_FLAGS && make $OOT_MAKE_FLAGS ) || {
+        echo "FAIL: out-of-tree build did not complete"; exit 1; }
+    OBJDIR=$(make -C "$KMODDIR" $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
+    if [ -z "$OBJDIR" ] || [ ! -f "$OBJDIR/audiofs.ko" ]; then
+        echo "FAIL: audiofs.ko not produced (OBJDIR=$OBJDIR)"; exit 1; fi
+    echo "PASS: built $OBJDIR/audiofs.ko"
+    if [ -d "$SRCROOT/.git" ]; then
+        after="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
+        if [ "$before" = "$after" ]; then
+            echo "PASS: /usr/src unchanged by the out-of-tree build"
+        else
+            echo "FAIL: /usr/src changed during the out-of-tree build."
+            echo "  status after (drift introduced by the build):"
+            printf '%s\n' "$after" | sed 's/^/    /'
+            exit 1
+        fi
+    else
+        echo "NOTE: $SRCROOT is not a git checkout; cannot verify cleanliness"
+    fi
+    echo "=== out-of-tree build test PASSED ==="
     ;;
 
   *)
