@@ -182,7 +182,17 @@ pub fn openSlotFile(
 }
 
 pub fn armed(file_path: ?*const uefi.protocol.DevicePath) bool {
-    const want = "pgsd-loader-bas.efi";
+    return armedAs(file_path, "pgsd-loader-bas.efi");
+}
+
+/// Boot arming is a DISTINCT file name so the safe attest-and-
+/// chainload cycle (-bas.efi) never attempts a transfer; only a
+/// loader deployed as -boot.efi crosses ExitBootServices.
+pub fn bootArmed(file_path: ?*const uefi.protocol.DevicePath) bool {
+    return armedAs(file_path, "pgsd-loader-boot.efi");
+}
+
+fn armedAs(file_path: ?*const uefi.protocol.DevicePath, want: []const u8) bool {
     var node: *const uefi.protocol.DevicePath = file_path orelse return false;
     var last_name: ?[]const u16 = null;
     while (true) {

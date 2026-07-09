@@ -51,8 +51,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
     };
     P.put(img[64..120], 0x1000, 0xffffffff80200000, 0x200000, 0x40, 0x40);
     P.put(img[120..176], 0x2000, 0xffffffff80204000, 0x204000, 0x20, 0x100);
-    // Deterministic payloads.
-    for (img[0x1000..0x1040], 0..) |*b, i| b.* = @intCast(i & 0xff);
+    // Entry code (segment 0 at file offset 0x1000): write KOK to
+    // COM1 then hlt loop. A correct trampoline jumps here and this
+    // runs, proving control transfer under emulation. Raw port I/O
+    // needs no memory mapping, so it works post-ExitBootServices.
+    const entry_code = [_]u8{
+        0xBA, 0xF8, 0x03, 0x00, 0x00, // mov $0x3f8, %edx
+        0xB0, 0x4B, 0xEE, // mov $'K', %al ; out %al, %dx
+        0xB0, 0x4F, 0xEE, // mov $'O', %al ; out
+        0xB0, 0x4B, 0xEE, // mov $'K', %al ; out
+        0xF4, // hlt
+        0xEB, 0xFD, // jmp .-1 (loop on hlt)
+    };
+    @memcpy(img[0x1000 .. 0x1000 + entry_code.len], &entry_code);
+    for (img[0x1000 + entry_code.len .. 0x1040], 0..) |*b, i| b.* = @intCast(i & 0xff);
     for (img[0x2000..0x2020], 0..) |*b, i| b.* = @intCast((i * 7) & 0xff);
 
     const out_len: usize = if (truncate) 0x1800 else img.len;
