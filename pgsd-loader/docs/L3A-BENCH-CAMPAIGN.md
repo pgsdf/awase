@@ -258,6 +258,50 @@ The lesson generalized: a check that does not exercise the path
 the kernel uses can pass while the path is broken; the walk now
 supersedes the staging read as the authoritative mapping check.
 
+### F7: metal transfer reset at the Apple logo; transfer reverted pending diagnosis
+
+The first real metal boot attempt (loader deployed as -boot.efi,
+armed at the boot-order head, binary a95e050a) power-cycled the
+bench at the Apple logo with no kernel text ever appearing, and
+the machine could not be returned to a bootable state; the
+operator chose to reinstall FreeBSD to recover the environment.
+
+What is known: the transfer mechanism is proven correct in
+emulation (the KOK serial proof: cr3 switch, handoff stack, and
+jump all execute and reach the kernel entry), and every handoff
+precondition was verified on this hardware along the kernel's real
+access path (elf load, metadata chain, EFI records from the real
+map, page tables walked for both modulep and entry, the root env,
+all rb=true mod=true entry=true on metal). The reset therefore
+occurs at or immediately after the transfer, not in the attested
+preparation.
+
+What is NOT known: the exact fault location. The BOOT_ATTEMPT
+breadcrumb written to the verdict variable before ExitBootServices
+was never read back, because the machine could not be brought up
+to read it; so whether the reset is inside the trampoline (a cr3
+triple-fault) or in the kernel's first instructions is
+unconfirmed. The reset-at-logo-no-text signature is consistent
+with a triple-fault during or just after the cr3 load, which would
+mean a page-table detail correct in OVMF but wrong on this
+firmware (for example the low 1:1 not covering the loader's
+execution address, or the image loaded at or above 4 GiB despite
+the check).
+
+Disposition: the transfer (4b-final) and the root env are reverted
+so the loader returns to the walk-verified attest-and-chainload
+state, which is safe: it never crosses ExitBootServices. The
+transfer work remains in history and is re-introducible once the
+metal fault is diagnosed. Before any re-attempt: recover the
+BOOT_ATTEMPT breadcrumb from a boot that survives long enough to
+read the variable, or add pre-exit instrumentation that survives a
+reset (for example writing progress markers to the verdict
+variable at each step of the trampoline setup, or attempting the
+transfer first under a serial-console configuration if the
+hardware can expose one). A copy-regime trampoline, or a review of
+the low 1:1 mapping against the actual loader image base on this
+firmware, are the leading hypotheses to check.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
