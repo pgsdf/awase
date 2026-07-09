@@ -192,6 +192,36 @@ Disposed by working in image-base-relative offsets throughout, one
 anchor shared by segments, page tables, and metadata; the kernel
 ADDR entry becomes 0 with SIZE the image span.
 
+### Increment 4b-records metal run: CLOSED, 2026-07-08
+
+Binary 989084cf... at the activated order head; the verdict
+variable read back:
+
+  PASS gen=1 slot=1 elf=loaded base=0x200000 modulep=0x1a01000
+  kernend=0x1a02000 ho=prepared pml4=0x7e5c6000 ptok=true fb=true
+  rb=true clen=2512 ndesc=47
+
+The full metadata chain including the EFI records is built and
+readback-verified on hardware. rb=true confirms NAME first, the
+environment terminator, and the EFI_MAP record all present at the
+address the kernel's page walk resolves. The chain-size question
+the first records run raised is answered with data: the real
+machine has 47 memory descriptors (Apple firmware is far simpler
+than OVMF's ~132), so the chain is 2512 bytes; at chain base
+0x1a01000 that ends at 0x1a019d0 and page-rounds to 0x1a02000,
+exactly the reported kernend. The value that looked unchanged was
+correct, and is now explained rather than inferred. clen and
+ndesc were added to the verdict specifically to close this before
+4b-final crosses ExitBootServices on the chain.
+
+Every precondition for the handoff is attested on hardware with no
+inferred value remaining: slot, kernel image, metadata chain with
+self-consistent KERNEND, EFI records from the real map, coherent
+page tables, framebuffer, and the coordinate convention. Only
+4b-final remains: the final map capture whose key
+ExitBootServices consumes, the exit itself, and the salq
+trampoline.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
