@@ -10,6 +10,7 @@
 #   sh install.sh --yes            # non-interactive; assume yes for prompts
 #   sh install.sh --yes --build-kernel  # non-interactive, incl. the PGSD kernel (30-60 min)
 #   sh install.sh --yes --skip-kernel   # non-interactive userland only (staging; not yet runnable)
+#   sh install.sh --provision-src  # (re)clone the pinned fork into /usr/src (destructive; opt-in)
 #   sh install.sh --allow-semadraw-term  # proceed even if launched from semadraw-term
 #
 # Awase requires the PGSD kernel (GENERIC leaves FreeBSD VT and Awase
@@ -39,6 +40,7 @@ CHECK_ONLY=0
 ASSUME_YES=0
 BUILD_KERNEL=0
 SKIP_KERNEL=0
+PROVISION_SRC=0
 ALLOW_SEMADRAW_TERM=0
 
 # Detect OS early so all downstream messages and the drawfs build inherit
@@ -68,10 +70,12 @@ while [ $# -gt 0 ]; do
             BUILD_KERNEL=1; shift ;;
         --skip-kernel)
             SKIP_KERNEL=1; shift ;;
+        --provision-src)
+            PROVISION_SRC=1; shift ;;
         --allow-semadraw-term)
             ALLOW_SEMADRAW_TERM=1; shift ;;
         --help|-h)
-            sed -n '2,19p' "$0" | sed 's/^# \?//'
+            sed -n '2,20p' "$0" | sed 's/^# \?//'
             exit 0 ;;
         *)
             echo "unknown argument: $1" >&2; exit 1 ;;
@@ -84,6 +88,7 @@ PREFIX="${AWASE_PREFIX:-$PREFIX}"
 ASSUME_YES="${AWASE_ASSUME_YES:-$ASSUME_YES}"
 BUILD_KERNEL="${AWASE_BUILD_KERNEL:-$BUILD_KERNEL}"
 SKIP_KERNEL="${AWASE_SKIP_KERNEL:-$SKIP_KERNEL}"
+PROVISION_SRC="${AWASE_PROVISION_SRC:-$PROVISION_SRC}"
 ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
 
 # ============================================================================
@@ -674,30 +679,53 @@ provision_usr_src() {
 
     if [ -e /usr/src ] && [ -n "$(ls -A /usr/src 2>/dev/null)" ]; then
         echo "  -- /usr/src exists and is non-empty but is not a git checkout"
-        echo "     (likely pkgbase release source). Per AD-57 the source must"
-        echo "     be the pinned fork. Replacing it removes the current"
-        echo "     /usr/src, which is destructive."
+        echo "     (likely pkgbase release source, or a fresh dataset). Per"
+        echo "     AD-57 the source must be the pinned fork."
+        # Provisioning is OPT-IN: replacing /usr/src is destructive and
+        # slow (a multi-GiB clone), and on a dedicated dataset /usr/src is
+        # a mountpoint. A routine install must never silently wipe it as a
+        # side effect. Require --provision-src (even with --yes) before
+        # touching an existing tree.
+        if [ "$PROVISION_SRC" -ne 1 ]; then
+            echo "     NOT provisioning: pass --provision-src to replace it."
+            echo "     Until /usr/src is the pinned fork, the kernel build's"
+            echo "     AD-57 pin check will fail. To provision by hand see"
+            echo "     pgsd-kernel/KERNEL-RECIPE.md."
+            return 0
+        fi
+        # --provision-src given: still confirm interactively unless --yes.
         replace=0
         if [ "$ASSUME_YES" -eq 1 ]; then
             replace=1
         elif [ -t 0 ] && [ -t 1 ]; then
-            printf "     Remove /usr/src and clone the pinned fork? [y/N]: "
+            printf "     --provision-src set. Replace /usr/src now? [y/N]: "
             read -r ans
             case "$ans" in [Yy]*) replace=1 ;; esac
+        fi
+        if [ "$replace" -ne 1 ]; then
+            echo "     skip: /usr/src left unchanged."
+            return 0
+        fi
+        # Mountpoint-safe removal: if /usr/src is its own mount (a ZFS
+        # dataset or nullfs), rm -rf /usr/src fails with Device busy and
+        # would leave the tree indeterminate. Empty the mount's CONTENTS
+        # instead of removing the mountpoint, then clone into the mount.
+        if mount | grep -q " /usr/src "; then
+            echo "  -- /usr/src is a separate mount; emptying its contents"
+            if ! priv sh -c 'rm -rf /usr/src/..?* /usr/src/.[!.]* /usr/src/* 2>/dev/null; true'; then
+                echo "  WARN: could not empty /usr/src; left unchanged." >&2
+                return 0
+            fi
+            if [ -n "$(ls -A /usr/src 2>/dev/null)" ]; then
+                echo "  WARN: /usr/src not empty after cleanup; left unchanged." >&2
+                return 0
+            fi
         else
-            echo "     WARN: non-interactive and --yes not given; not replacing." >&2
-            echo "           remove /usr/src and re-run, or pass --yes." >&2
-            return 0
-        fi
-        if [ "$replace" -eq 0 ]; then
-            echo "     skip: /usr/src left unchanged; kernel build will fail the"
-            echo "           AD-57 pin check until /usr/src is the pinned fork."
-            return 0
-        fi
-        echo "  -- removing existing /usr/src"
-        if ! priv rm -rf /usr/src; then
-            echo "  WARN: could not remove /usr/src; left unchanged." >&2
-            return 0
+            echo "  -- removing existing /usr/src"
+            if ! priv rm -rf /usr/src; then
+                echo "  WARN: could not remove /usr/src; left unchanged." >&2
+                return 0
+            fi
         fi
     fi
 
@@ -920,6 +948,7 @@ build_sub "semasound" "semasound"
         AWASE_ASSUME_YES="$ASSUME_YES" \
         AWASE_BUILD_KERNEL="$BUILD_KERNEL" \
         AWASE_SKIP_KERNEL="$SKIP_KERNEL" \
+        AWASE_PROVISION_SRC="$PROVISION_SRC" \
         AWASE_KERNEL_PLAN="$KERNEL_PLAN" \
         AWASE_KERNCONF="${AWASE_KERNCONF:-PGSD}" \
         AWASE_ALLOW_SEMADRAW_TERM="$ALLOW_SEMADRAW_TERM" \
