@@ -111,9 +111,9 @@ pub fn main() uefi.Status {
             // handoff contract, attest, free. Runs only when the
             // slot carries an artifact named kernel; a slot
             // without one is scaffolding, reported and skipped.
-            var vb: [160]u8 = undefined;
+            var vb: [224]u8 = undefined;
             var elf_note: []const u8 = "elf=skip";
-            var enbuf: [96]u8 = undefined;
+            var enbuf: [176]u8 = undefined;
             if (bas_boot.openSlotFile(device_handle, res.slot, "kernel")) |sf| {
                 const bsp = uefi.system_table.boot_services.?;
                 if (elf_load.loadKernel(bsp, sf.file, printAscii)) |lr| {
@@ -155,7 +155,7 @@ pub fn main() uefi.Status {
                         // key must be the final one), so 4a validates
                         // the page tables and framebuffer only.
                         var ho_note: []const u8 = "ho=skip";
-                        var hbuf: [80]u8 = undefined;
+                        var hbuf: [112]u8 = undefined;
                         const fb = handoff.framebuffer(bsp);
                         if (handoff.buildPageTables(bsp, lr.staging)) |pt| {
                             const okpt = handoff.checkPageTables(pt, lr.staging);
