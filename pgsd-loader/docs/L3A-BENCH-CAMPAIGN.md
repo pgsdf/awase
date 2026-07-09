@@ -125,6 +125,33 @@ modulep and kernend the increment 4 trampoline hands the kernel;
 both are far below the 4 GiB ceiling the salq handoff convention
 requires.
 
+### Increment 4a metal run: CLOSED, 2026-07-08
+
+Binary at the activated order head; the verdict variable read
+back:
+
+  PASS gen=1 slot=1 elf=loaded base=0x200000 modulep=0x1c01000
+  kernend=0x1c02000 ho=prepared pml4=0x7e5c9000 ptok=true fb=true
+
+Every piece of handoff state short of ExitBootServices is now
+proven on hardware. The nine-page no-copy tables built at
+pml4=0x7e5c9000 (below 4 GiB), the coherence check passing on the
+real staging base (PML4[0] and PML4[511] correct, the upper
+mapping walking staging with the page-size bit), and the Apple
+panel's framebuffer detected through GOP. The pml4 address
+differs from emulation (0xdfc3000) because the real firmware's
+free-memory layout differs, as expected; the coherence is
+invariant, the address is not.
+
+One finding on the way, F4: the first 4a cycle recorded the
+fallback note elf=loaded meta=built ho=built because the elf_note
+buffer was 96 bytes and the real detail string is 106, so
+bufPrint returned NoSpaceLeft and the catch default was written.
+The work was correct; only the report truncated. Disposed by
+widening the buffers. Recorded because it is the attestation
+checkpoint proving its worth: a formatting fault caught while
+still chainloading, not past the point of no console.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
