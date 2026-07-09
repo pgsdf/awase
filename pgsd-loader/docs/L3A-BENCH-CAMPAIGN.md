@@ -222,6 +222,42 @@ page tables, framebuffer, and the coordinate convention. Only
 ExitBootServices consumes, the exit itself, and the salq
 trampoline.
 
+### Increment 4b page-walk metal run: CLOSED, 2026-07-08
+
+Binary 2b30a016... at the activated order head; the verdict
+variable read back:
+
+  PASS gen=1 slot=1 elf=loaded base=0x200000 modulep=0x1c01000
+  kernend=0x1c02000 ho=prepared pml4=0x7e5c5000 ptok=true fb=true
+  rb=true clen=2512 ndesc=47
+
+modulep=0x1c01000 is the KVO value, exactly 0x200000 above the
+pre-F6 0x1a01000, the signature of the design A anchor fix; the
+smoke page walk modulep and page walk entry checks both pass on
+the real kernel's addresses. The software MMU walk confirmed that
+KERNBASE+modulep resolves to the chain and the entry vaddr
+resolves to where elf_load placed the entry segment. Every handoff
+precondition is now verified along the kernel's real access path,
+not merely at the staging offset.
+
+### F6: page tables mapped the kernel range without the base_paddr offset (closed by the page-walk preflight)
+
+The page tables mapped KERNBASE+KVO to staging+KVO, while
+elf_load places segments at staging + (p_paddr - base_paddr), so
+the kernel would have jumped to its entry and executed 0x200000
+past its own code, a dark screen with no console. Worse than F5
+and invisible to every prior check: the rb=true readback read
+staging+modulep directly and never exercised the page tables. A
+software page walk of the real access path returned mod=false
+entry=false immediately. Fixed by design A, matching the stock
+anchor: the upper tables map KERNBASE+KVO to
+staging + KVO - base_paddr, kernel-visible offsets are
+KVO = rel + base_paddr with ADDR = base_paddr, physical writes
+stay at staging + rel. The walk then returns mod=true entry=true.
+The lesson generalized: a check that does not exercise the path
+the kernel uses can pass while the path is broken; the walk now
+supersedes the staging read as the authoritative mapping check.
+
 INCREMENT 1 METAL RUN: CLOSED, 2026-07-08, four cycles, findings
 F1 through F3 produced and disposed. The read side of
 BOOT-ARTIFACT-STORE 0.3 is proven on the bench through all three
