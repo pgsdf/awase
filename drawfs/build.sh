@@ -28,7 +28,30 @@ SRCROOT=${SRCROOT:-/usr/src}
 
 DEVDEST="$SRCROOT/sys/dev/drawfs"
 MODDEST="$SRCROOT/sys/modules/drawfs"
-KMODDIR="$MODDEST"
+
+# Out-of-tree build (PROTOTYPE, opt-in). When DRAWFS_OUT_OF_TREE=1, build
+# the module in place from the Awase repo with SYSDIR pointing at the
+# pinned kernel source, instead of rsyncing the sources into /usr/src and
+# building there. This keeps /usr/src a faithful, unmodified checkout of
+# the pinned revision (Awase modules are project artifacts, not part of
+# the FreeBSD tree). The in-repo Makefile's relative .PATH
+# (../../dev/drawfs) already resolves inside the repo's self-contained
+# sys/ layout, and bsd.kmod.mk builds out-of-tree given SYSDIR.
+#
+# Default OFF: this path is unvalidated on real FreeBSD until the bench
+# confirms it, so the in-tree rsync path remains the default and the
+# install verb is still available as a fallback. Validate on the bench,
+# then flip the default and roll to inputfs/audiofs.
+DRAWFS_OUT_OF_TREE="${DRAWFS_OUT_OF_TREE:-0}"
+if [ "$DRAWFS_OUT_OF_TREE" = "1" ]; then
+    KMODDIR="$REPO_ROOT/sys/modules/drawfs"
+    # SYSDIR lets the kmod framework find kernel headers without the
+    # module living inside the source tree. Appended to the make flags.
+    OOT_MAKE_FLAGS="SYSDIR=$SRCROOT/sys"
+else
+    KMODDIR="$MODDEST"
+    OOT_MAKE_FLAGS=""
+fi
 
 # ---------------------------------------------------------------------------
 # DRM gating
@@ -113,6 +136,12 @@ case "$cmd" in
 
   install)
     need_root "$cmd"
+    if [ "$DRAWFS_OUT_OF_TREE" = "1" ]; then
+        echo "Out-of-tree build: skipping source install into $SRCROOT"
+        echo "  (Awase module sources stay in the repo; /usr/src is not modified)"
+        echo "OK: install (no-op, out-of-tree)"
+        exit 0
+    fi
     echo "Installing drawfs sources into $SRCROOT"
     echo "$DRM_BANNER"
     mkdir -p "$DEVDEST" "$MODDEST"
@@ -126,14 +155,15 @@ case "$cmd" in
     echo "Building kernel module in $KMODDIR"
     echo "$DRM_BANNER"
     # DRM_MAKE_FLAGS is intentionally unquoted: empty string must vanish,
-    # and "DRAWFS_DRM_ENABLED=1" must be a single argv entry.
-    ( cd "$KMODDIR" && make clean && make $DRM_MAKE_FLAGS )
+    # and "DRAWFS_DRM_ENABLED=1" must be a single argv entry. OOT_MAKE_FLAGS
+    # carries SYSDIR for the out-of-tree build (empty in-tree).
+    ( cd "$KMODDIR" && make clean $OOT_MAKE_FLAGS && make $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS )
     echo "OK: build"
     ;;
 
   load)
     need_root "$cmd"
-    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS -V .OBJDIR)
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS -V .OBJDIR)
     KO="$OBJDIR/drawfs.ko"
     if [ ! -f "$KO" ]; then
       echo "ERROR: missing $KO"
@@ -155,7 +185,7 @@ case "$cmd" in
     KO=""
 
     # Try make install first (cleanest approach)
-    if ( cd "$KMODDIR" && make $DRM_MAKE_FLAGS install ) 2>/dev/null; then
+    if ( cd "$KMODDIR" && make $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS install ) 2>/dev/null; then
         echo "OK: deploy (via make install)"
         kldxref /boot/modules
         echo ""
@@ -165,7 +195,7 @@ case "$cmd" in
     fi
 
     # Fall back to locating the .ko manually
-    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
     if [ -n "$OBJDIR" ] && [ -f "$OBJDIR/drawfs.ko" ]; then
         KO="$OBJDIR/drawfs.ko"
     fi
@@ -314,7 +344,7 @@ case "$cmd" in
     fi
     echo
     echo "Module OBJDIR:"
-    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "unknown")
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "unknown")
     echo "  $OBJDIR"
     echo "Built module:"
     ls -l "$OBJDIR/drawfs.ko" 2>/dev/null || echo "  not found — run: sudo ./build.sh build"
@@ -322,6 +352,44 @@ case "$cmd" in
     ls -l /boot/modules/drawfs.ko 2>/dev/null || echo "  not found — run: sudo ./build.sh deploy"
     echo "Loaded:"
     kldstat 2>/dev/null | grep drawfs || echo "  not loaded"
+    ;;
+
+  test-oot)
+    # Bench validation of the out-of-tree build (this is the real proof;
+    # container hosts cannot run the FreeBSD kmod build). Forces the
+    # out-of-tree path, builds, checks the .ko was produced, and confirms
+    # /usr/src was not modified. Run as: sudo ./build.sh test-oot
+    need_root "$cmd"
+    DRAWFS_OUT_OF_TREE=1
+    KMODDIR="$REPO_ROOT/sys/modules/drawfs"
+    OOT_MAKE_FLAGS="SYSDIR=$SRCROOT/sys"
+    echo "=== out-of-tree build test (drawfs) ==="
+    echo "  KMODDIR: $KMODDIR"
+    echo "  SYSDIR:  $SRCROOT/sys"
+    before=""
+    if [ -d "$SRCROOT/.git" ]; then
+        before="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
+    fi
+    ( cd "$KMODDIR" && make clean $OOT_MAKE_FLAGS && make $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS ) || {
+        echo "FAIL: out-of-tree build did not complete"; exit 1; }
+    OBJDIR=$(make -C "$KMODDIR" $DRM_MAKE_FLAGS $OOT_MAKE_FLAGS -V .OBJDIR 2>/dev/null || echo "")
+    if [ -z "$OBJDIR" ] || [ ! -f "$OBJDIR/drawfs.ko" ]; then
+        echo "FAIL: drawfs.ko not produced (OBJDIR=$OBJDIR)"; exit 1; fi
+    echo "PASS: built $OBJDIR/drawfs.ko"
+    if [ -d "$SRCROOT/.git" ]; then
+        after="$(git -C "$SRCROOT" status --short 2>/dev/null | sort)"
+        if [ "$before" = "$after" ]; then
+            echo "PASS: /usr/src unchanged by the out-of-tree build"
+        else
+            echo "FAIL: /usr/src changed during the out-of-tree build."
+            echo "  status after (drift introduced by the build):"
+            printf '%s\n' "$after" | sed 's/^/    /'
+            exit 1
+        fi
+    else
+        echo "NOTE: $SRCROOT is not a git checkout; cannot verify cleanliness"
+    fi
+    echo "=== out-of-tree build test PASSED ==="
     ;;
 
   *)
