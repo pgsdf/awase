@@ -583,10 +583,29 @@ provision_usr_src() {
     echo "     repo:   $src_repo"
     echo "     branch: ${src_branch:-(default)}"
     echo "     commit: $src_commit"
-    if ! priv git clone "$src_repo" /usr/src; then
-        echo "  WARN: git clone of $src_repo failed; /usr/src not provisioned" >&2
-        echo "        check network and that git is installed." >&2
-        return 0
+    # Clone the pinned fork, using base_branch (releng/15.1) for the
+    # initial checkout so the working branch is the intended one. The
+    # commit-pin checkout below then lands on the exact canonical
+    # commit, which is authoritative per AD-57; the branch selects the
+    # starting point, the commit fixes identity. All refs are fetched
+    # (no --single-branch) so the commit checkout still succeeds if a
+    # future delta_commit lives on a differently named fork branch. If
+    # the branch clone fails (branch absent, older git), fall back to a
+    # plain clone; the commit checkout pins identity either way.
+    cloned=0
+    if [ -n "$src_branch" ]; then
+        if priv git clone --branch "$src_branch" "$src_repo" /usr/src; then
+            cloned=1
+        else
+            echo "  -- branch clone of '$src_branch' failed; trying a plain clone" >&2
+        fi
+    fi
+    if [ "$cloned" -eq 0 ]; then
+        if ! priv git clone "$src_repo" /usr/src; then
+            echo "  WARN: git clone of $src_repo failed; /usr/src not provisioned" >&2
+            echo "        check network and that git is installed." >&2
+            return 0
+        fi
     fi
     if ! priv git -C /usr/src checkout --quiet "$src_commit"; then
         echo "  WARN: clone succeeded but checkout of the pinned commit failed" >&2
