@@ -182,3 +182,25 @@ pub fn checkPageTables(pt: PageTables, staging: u64) bool {
     if (pd_u1[0] & PG_PS == 0) return false;
     return true;
 }
+
+/// Convert an FbInfo plus pixel format into the kernel's EfiFb
+/// record. Masks come from the GOP pixel format; blt-only formats
+/// have no linear framebuffer and are reported as absent by
+/// framebuffer() already.
+pub fn efiFbFrom(fb: FbInfo) ?@import("metadata.zig").EfiFb {
+    if (!fb.present) return null;
+    return .{
+        .fb_addr = fb.base,
+        .fb_size = fb.size,
+        .fb_height = fb.height,
+        .fb_width = fb.width,
+        .fb_stride = fb.stride,
+        // Default 8-bit BGRX masks (the common GOP format on this
+        // class of firmware); a later increment may read the exact
+        // PixelBitmask for bit_mask-format modes.
+        .fb_mask_red = 0x00ff0000,
+        .fb_mask_green = 0x0000ff00,
+        .fb_mask_blue = 0x000000ff,
+        .fb_mask_reserved = 0xff000000,
+    };
+}

@@ -137,21 +137,37 @@ pub fn main() uefi.Status {
                     // and the ADDR entry) is therefore relative to
                     // base_paddr, exactly as the loaded segments are.
                     const image_span = lr.image_end - lr.base_paddr;
+                    const fb = handoff.framebuffer(bsp);
                     const envp_rel = std.mem.alignForward(u64, image_span, 4096);
                     const env_bytes = [_]u8{ 0, 0 };
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
                     @memcpy(env_stage[0..env_bytes.len], &env_bytes);
                     const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
-                    var chain_buf: [1024]u8 = undefined;
+                    var chain_buf: [16384]u8 = undefined;
+                    // Capture the memory map for EFI_MAP. In this
+                    // attestable increment the map is captured during
+                    // a run that still chainloads, so it proves the
+                    // record format and sizing; 4b-final re-captures
+                    // the final map (whose key ExitBootServices
+                    // needs) into the same generously sized slot.
+                    const fw_handle: u64 = @intFromPtr(uefi.system_table);
+                    const efb = handoff.efiFbFrom(fb);
+                    const mm_opt: ?handoff.MemMap = handoff.captureMemoryMap(bsp) catch null;
+                    if (mm_opt == null) printAscii("HO: memory map capture failed; EFI_MAP empty\r\n");
+                    const map_in: metadata.EfiMapInput = if (mm_opt) |mm| .{
+                        .descriptors = mm.buffer[0 .. mm.count * mm.descriptor_size],
+                        .descriptor_size = mm.descriptor_size,
+                        .descriptor_version = mm.descriptor_version,
+                    } else .{ .descriptors = &.{}, .descriptor_size = 0, .descriptor_version = 0 };
                     // ADDR is the kernel image's own relative base,
                     // which is 0 (the image begins at base_paddr);
                     // the kernel adds KERNBASE. SIZE is the span.
-                    if (metadata.buildChain(&chain_buf, chain_rel, .{
+                    if (metadata.buildChainFull(&chain_buf, chain_rel, .{
                         .name = "kernel",
                         .addr = 0,
                         .size = image_span,
                         .howto = 0,
-                    }, envp_rel)) |ch| {
+                    }, envp_rel, fw_handle, efb, map_in)) |ch| {
                         const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
                         var mb: [128]u8 = undefined;
@@ -165,7 +181,6 @@ pub fn main() uefi.Status {
                         // the page tables and framebuffer only.
                         var ho_note: []const u8 = "ho=skip";
                         var hbuf: [112]u8 = undefined;
-                        const fb = handoff.framebuffer(bsp);
                         if (handoff.buildPageTables(bsp, lr.staging)) |pt| {
                             const okpt = handoff.checkPageTables(pt, lr.staging);
                             // 4b preflight: verify the coordinate
@@ -188,7 +203,20 @@ pub fn main() uefi.Status {
                             const name_type = std.mem.readInt(u32, chain_phys[0..4], .little);
                             const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
                             const env_ok = env_phys[0] == 0 and env_phys[1] == 0;
-                            const readback_ok = (name_type == 1) and env_ok;
+                            // Walk the chain in place and confirm the
+                            // EFI_MAP record (0x9004) is present: this
+                            // is what the kernel keys efi_boot on, and
+                            // it is at staging+chain, the exact bytes
+                            // the kernel's page walk resolves.
+                            var efi_map_seen = false;
+                            var woff: usize = 0;
+                            while (woff + 8 <= ch.len) {
+                                const wt = std.mem.readInt(u32, chain_phys[woff..][0..4], .little);
+                                const wl = std.mem.readInt(u32, chain_phys[woff + 4 ..][0..4], .little);
+                                if (wt == (0x8000 | 0x1004)) efi_map_seen = true;
+                                woff += 8 + ((wl + 7) & ~@as(usize, 7));
+                            }
+                            const readback_ok = (name_type == 1) and env_ok and efi_map_seen;
                             var hb: [160]u8 = undefined;
                             if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
                             ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={} rb={}", .{ pt.pml4, okpt, fb.present, readback_ok }) catch "ho=prepared";

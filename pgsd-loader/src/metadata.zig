@@ -173,6 +173,9 @@ test "chain layout and kernend self-consistency" {
 // sys/x86/include/metadata.h and sys/sys/linker.h.
 const MODINFOMD_FW_HANDLE: u32 = 0x000c;
 const MODINFOMD_EFI_MAP: u32 = 0x1004;
+// EFI_MAP is added WITHOUT MODINFOMD_NOCOPY: bench bootinfo.c line
+// 323 adds it as plain MODINFOMD_EFI_MAP. The record type is thus
+// MODINFO_METADATA | MODINFOMD_EFI_MAP = 0x9004.
 const MODINFOMD_EFI_FB: u32 = 0x1005;
 
 // struct efi_map_header: memory_size, descriptor_size,
@@ -237,13 +240,14 @@ pub fn buildChainFull(
     // EFI_MAP: 16-byte-padded header then descriptors.
     {
         // Header: memory_size at 0, descriptor_size at 8,
-        // descriptor_version at 16 (three fields, C offsets 0/8/16
-        // in the extern struct). The descriptors begin after the
-        // header padded to efisz = (sizeof + 0xf) & ~0xf. sizeof the
-        // struct is 24 (u64,u64,u32 padded to 8), so efisz = 32.
-        // This pad value is the one item not re-confirmable in this
-        // environment; the ledger flags a bench grep of bootinfo.c
-        // efisz before the metal run.
+        // descriptor_version at 16 (three fields, C offsets 0/8/16).
+        // Descriptors begin after the header padded to efisz =
+        // (sizeof(struct efi_map_header) + 0xf) & ~0xf; the struct
+        // is 24 bytes so efisz = 32. CONFIRMED against bench
+        // bootinfo.c line 228 and metadata.h. memory_size is the
+        // descriptor bytes only; the record length is efisz + that,
+        // matching file_addmetadata(kfp, MODINFOMD_EFI_MAP,
+        // efisz + sz, ...) at bootinfo.c line 323.
         const hdr_pad = 32;
         var hdr = [_]u8{0} ** hdr_pad;
         std.mem.writeInt(u64, hdr[0..8], map.descriptors.len, .little);
