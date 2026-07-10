@@ -22,4 +22,14 @@ bench, per the operator sequencing that created this venue, and
 every requirement in it traces to a ratified document or a
 recorded bench observation.
 
+ADR 0002 (the Awase artifact contract) is ratified 2026-07-10:
+building Awase and installing PGSD as independent systems
+communicating only through a published artifact contract; the
+Publish, Don't Infer and Authority Owns Truth principles as project
+law; manifest and inventory as distinct abstractions with identity as
+a content hash over filesystem contents; authority factoring between
+producer facts and consumer policy; convergence on the Axiom artifact
+contract; and a five-milestone, format-first migration whose first
+increment separates the kernel build from install.sh.
+
 This README carries no decisions.
