@@ -17,6 +17,12 @@ const elf_load = @import("elf_load.zig");
 const metadata = @import("metadata.zig");
 const handoff = @import("handoff.zig");
 
+// FreeBSD sys/reboot.h: RB_SERIAL selects the serial console at
+// kernel init, before the kenv console= is fully in effect. The PGSD
+// kernel has no framebuffer console, so serial is the only console;
+// set it in boothowto so the kernel does not come up console-less.
+const RB_SERIAL: u32 = 0x1000;
+
 // Vendor GUID for PGSD boot-evidence variables (generated for this
 // project; recorded in the L3a campaign ledger). The armed test
 // path writes its verdict here because this platform's console is
@@ -146,9 +152,14 @@ pub fn main() uefi.Status {
                     // "name=value\0"... terminated by an empty string
                     // (double NUL). vfs.root.mountfrom names the root
                     // to mount; without it the kernel starts but stops
-                    // at mountroot. The bench root is the clean
-                    // Awase boot environment.
-                    const env_bytes = "vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
+                    // at mountroot. console=comconsole selects the
+                    // serial console: the PGSD kernel drops the
+                    // framebuffer/vt console (that is its purpose,
+                    // freeing the display for Awase), so without a
+                    // console kenv the kernel boots to a console that
+                    // is not there and appears silent. The bench root
+                    // is the clean Awase boot environment.
+                    const env_bytes = "console=comconsole\x00comconsole_speed=115200\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
                     @memcpy(env_stage[0..env_bytes.len], env_bytes);
                     const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
@@ -181,7 +192,7 @@ pub fn main() uefi.Status {
                         .name = "kernel",
                         .addr = lr.base_paddr,
                         .size = image_span,
-                        .howto = 0,
+                        .howto = RB_SERIAL,
                     }, envp_kvo, fw_handle, efb, map_in)) |ch| {
                         const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);  // physical = staging + rel
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
@@ -217,10 +228,12 @@ pub fn main() uefi.Status {
                             const chain_phys: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
                             const name_type = std.mem.readInt(u32, chain_phys[0..4], .little);
                             const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);  // physical
-                            // The env now begins with the
-                            // vfs.root.mountfrom key and ends with the
-                            // double-NUL terminator; confirm both.
-                            const env_ok = env_phys[0] == 'v' and env_phys[59] == 0 and env_phys[60] == 0;
+                            // The env begins with the console= key and
+                            // ends with the double-NUL terminator;
+                            // confirm both. The terminator position is
+                            // derived from env_bytes.len so this stays
+                            // correct if the env content changes.
+                            const env_ok = env_phys[0] == 'c' and env_phys[env_bytes.len - 2] == 0 and env_phys[env_bytes.len - 1] == 0;
                             // Walk the chain in place and confirm the
                             // EFI_MAP record (0x9004) is present: this
                             // is what the kernel keys efi_boot on, and
@@ -251,11 +264,11 @@ pub fn main() uefi.Status {
                             const walk_mod_ok = walk_mod != null and walk_mod.? == want_chain_phys;
                             const walk_entry_ok = walk_entry != null and walk_entry.? == want_entry_phys;
                             // Env presence: walk KERNBASE+envp and
-                            // confirm the first byte is 'v' (the
-                            // vfs.root.mountfrom key), so the root env
-                            // the kernel reads resolves correctly too.
+                            // confirm the first byte is 'c' (the
+                            // console= key that now leads the env), so
+                            // the env the kernel reads resolves too.
                             const walk_env = handoff.pageWalk(pt.pml4, handoff.KERNBASE + envp_rel + lr.base_paddr);
-                            const walk_env_ok = walk_env != null and @as(*const u8, @ptrFromInt(walk_env.?)).* == 'v';
+                            const walk_env_ok = walk_env != null and @as(*const u8, @ptrFromInt(walk_env.?)).* == 'c';
                             var wl2: [96]u8 = undefined;
                             if (std.fmt.bufPrint(&wl2, "WALK: mod={} entry={} mp=0x{x} ep=0x{x}\r\n", .{ walk_mod_ok, walk_entry_ok, walk_mod orelse 0, walk_entry orelse 0 })) |m| printAscii(m) else |_| {}
                             const readback_ok = staging_read_ok and walk_mod_ok and walk_entry_ok and walk_env_ok;
@@ -316,7 +329,7 @@ pub fn main() uefi.Status {
                                             .name = "kernel",
                                             .addr = lr.base_paddr,
                                             .size = image_span,
-                                            .howto = 0,
+                                            .howto = RB_SERIAL,
                                         }, envp_rel + lr.base_paddr, fw_handle, efb, .{
                                             .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
                                             .descriptor_size = fmap.descriptor_size,
