@@ -54,6 +54,132 @@ unbreakable invariant while allowing opt-in DRM for users who want it.
 
 ---
 
+## Project status
+
+Moved here from `README.md` 2026-07-10 for reader clarity: the README
+carries orientation, this file carries status. The component table
+and the dated chronicle below are maintained here from now on.
+
+### Component status
+
+| Component | Status |
+| --- | --- |
+| drawfs | Phase 1 complete. Phase 2 (EFI framebuffer) complete. DRM/KMS skeleton, opt-in only. |
+| semadraw | drawfs backend operational. semadraw-term functional on bare metal and X11. |
+| semasound | Complete (F.5, ADRs 0021/0024-0028): mixing, format adaptation and election, named targets, Phase 12 policy parity with reference-counted ducking, state publication, s6 supervision. Boot-started. Predecessor semaaud retired (F.6, ADR 0029). |
+| semainput | `semainputd` daemon retired 2026-05-08 (AD-2a Phase 3). Only `libsemainput` remains, used by semadrawd. The Stage E cutover is done (see the inputfs row). |
+| inputfs | Complete and in production (Stages A through E; AD-2 closed 2026-05-17; parser hardened by AD-9). The sole input path; no evdev in the tree. |
+| audiofs | Stage F complete (F.0 through F.6, ADRs 0001-0029): class-matched PCI HDA driver, full output bring-up, data path, kernel clock writer, format negotiation. snd(4) removed in full (Option A). F.3.f (HDMI) deferred behind an Awase display capability. Complete and maintained under ADR 0030 (change classes K/B/P/T/R; production suite mode). |
+| shared/ | Protocol constants, generator, event schema, session identity, clock interface: all complete. |
+| chronofs | Complete. Audio-driven frame scheduler operational. |
+
+**The substrate is complete and in service.** Input runs on inputfs
+alone (AD-2 closed 2026-05-17), audio on audiofs and semasound alone
+(F.6 closed 2026-06-05), and the clock on the audiofs kernel writer,
+all of it supervised from boot. The open substrate-level audio work
+proceeds under ADR 0030's maintained end-state; the open AD items are
+in `BACKLOG.md`; and the upper layers (NDE, LT, the rest of SM) are
+the next frontier, by choice of priority. The installation and
+packaging path is moving under project ADR 0002 to a published
+artifact contract converging on Axiom: milestone 1 (kernel
+separation) landed and was bench-verified 2026-07-10; the remaining
+milestones are tracked in `BACKLOG.md` under ADR 0002.
+
+### Current state (2026-07-10)
+
+What is built and verified:
+
+- The **installation architecture** is moving under ADR 0002 (ratified
+  2026-07-10) to a producer/consumer split joined by a published
+  artifact contract. Milestone 1 is landed and bench-verified:
+  `install.sh` installs the userland only and detects the kernel
+  state; the PGSD kernel is built and installed separately per
+  `pgsd-kernel/KERNEL-RECIPE.md`; and the bench runs the pinned PGSD
+  kernel, its commit hash visible in `uname`. Milestone 2 (the Awase
+  build staging Axiom-format artifact sets with per-file inventory)
+  is next.
+- **chronofs** is complete (C-1 through C-5 closed): the clock
+  module, event-stream buffers, resolver, audio-driven frame
+  scheduler, and `chrono_dump`. The temporal layer is done.
+- **inputfs** is the production input substrate. AD-2 closed
+  2026-05-17: the legacy `semainputd` daemon is retired, Phase 2.5
+  is verified on bare-metal hardware, and `semadrawd` reads
+  `inputfs` directly. The input cutover is done, not pending.
+- **drawfs**, **semadraw**, and the **shared/** infrastructure
+  (event schema, session identity, clock region, protocol
+  constants) are in place. **semaaud** is retired (F.6, ADR 0029,
+  2026-06-04); its successor `semasound` is the installed, enabled,
+  boot-supervised audio broker (F.5 complete, ADRs 0021/0024-0028),
+  and install.sh reaps leftover semaaud artifacts from upgraded
+  systems. See AD-3 in `BACKLOG.md`.
+- The **inputfs gesture library** (`libsemainput`) now carries the
+  reusable input semantics; that move is recorded and in progress.
+- The **audiofs** kernel substrate is up. Commits 1 through 6g
+  landed 2026-05-21: a class-matched PCI HDA driver, full
+  HDA-spec output bring-up, and an audible test signal through the
+  Apple iMac internal speaker at module load. The same series
+  removed the `snd(4)` framework from the PGSD kernel in full
+  (Option A). The decision owner un-gated AD-3 on 2026-05-20;
+  spec-compliant bring-up, verified by hardware readback, then
+  discharged the gate empirically. The full Stage F data path
+  followed: F.1 through F.4 and F.3.e were bench-verified by
+  2026-06-01, ADRs 0022/0023 resolved the DMA-boundary hum, and
+  F.3.f (HDMI) is deferred behind an Awase-provided display
+  capability.
+
+What is decided and partly done:
+
+- **audiofs userspace** (the `semasound` daemon) is done. F.5 is
+  complete (mixing, format adaptation and election, named targets,
+  Phase 12 policy parity with reference-counted ducking, state
+  publication, s6 supervision; ADRs 0021/0024-0028), and semaaud is
+  retired under F.6 (ADR 0029).
+- **audiofs is now the clock writer** as of F.4 (ADR 0018, accepted
+  2026-06-01, bench-verified on pgsd-bare-metal): the kernel
+  publishes `/var/run/sema/clock` through a wired shared mapping of
+  the file, replacing semaaud's userland writer. The wire format is
+  unchanged (ADR 0003). `shared/CLOCK.md` carries the
+  writer-transition note, and keeps its `ClockWriter` only as a test
+  fixture. semaaud's retirement (F.6) completed 2026-06-04 (ADR
+  0029).
+
+What is deliberately not yet started:
+
+- The desktop environment and application ecosystem (NDE, the
+  semantic desktop layer; ratified semantic-native 2026-06-12, LT-3
+  retired). These waited on a stable substrate, and the
+  substrate is now stable: the input cutover closed 2026-05-17
+  (AD-2) and the audio cutover closed 2026-06-05 (F.6, ADR 0029).
+  Nothing now blocks the upper layers; they are unstarted
+  by choice of priority, not by any dependency.
+
+The substrate work that this list used to enumerate is done:
+semasound runs against audiofs (F.5), the input cutover is executed
+(AD-2), and the legacy daemons are retired (semainputd 2026-05-08,
+semaaud 2026-06-05). AD-3 sits at its maintained end-state under ADR
+0030: stewardship and scope are ratified, change classes K/B/P/T/R
+and the takeover protocol govern all later audio work, and the
+production suite mode is proven against the supervised broker. F.3.f
+(HDMI) stays a live deferred entry. `BACKLOG.md` tracks the other
+open AD items; `BACKLOG-history.md` holds the completed chronicle.
+
+Session management has begun to build on that stable base. The
+`pgsd-sessiond` graphical login already runs supervised at boot
+(SM-1.9). Since 2026-06-05 the secure-session design has landed: the
+screen-lock daemon (SM-2, ADR 0010) and idle-and-power management
+(SM-3, ADR 0009) were accepted 2026-06-09, both resting on a
+compositor that can enforce a lock. That compositor primitive is
+D-10 (semadraw session-lock mode, ADR 0012, accepted 2026-06-09);
+its first protocol constants have landed, but the lock state machine
+and enforcement are not yet built, so SM-2 and SM-3 implementation
+waits on it. The idle side already has its first piece in service:
+D-11 (ADR 0013) publishes the last-input time through an
+`idle_query`/`idle_reply` exchange, implemented and bench-verified on
+pgsd-bare-metal and closed 2026-06-09. See `## SM: Session
+Management` and the semadraw D-10 and D-11 entries in `BACKLOG.md`.
+
+---
+
 ## Current theme: make DRM strictly optional
 
 The goal is that the DRM-less swap path remains the unbreakable default
