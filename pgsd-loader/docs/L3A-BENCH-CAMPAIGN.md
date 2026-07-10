@@ -343,3 +343,33 @@ Consequences for the F7 hypothesis list:
   loader has not run since the reinstall: pgsd-loader is not in the
   bench boot path. Step 3 deployment, when reached, is a deliberate
   deploy.sh act under ADR 0005 Decision 4, not a leftover arming.
+
+#### F7 step 2 emulation (ADR 0005 Decision 1.2): the handoff contract holds
+
+The transfer was re-landed with the 4c fail-closed rebuild and the
+reset-surviving markers, and smoke pass 8 (the contract kernel) was
+run under QEMU/OVMF. Result: HOK.
+
+The contract kernel's entry reads modulep from the handoff stack the
+way btext does, forms KERNBASE+modulep, dereferences it through the
+kernel's own upper page tables, and emits HOK only when the leading
+metadata record is MODINFO_NAME. HOK therefore proves the loader's
+whole side of the handoff is coherent through the kernel MMU: the
+stack layout btext reads, the modulep value, and the upper mapping
+that resolves KERNBASE+modulep to the chain. The serial also shows
+WALK mod=true entry=true and readback=true from the pre-exit
+attestation, consistent with the transfer path. A control run with
+the default (KOK) kernel emits KOK and not HOK, confirming HOK is
+contract-gated rather than incidental.
+
+What this closes and what it does not: the mechanism half of F7's
+fault band (already narrowed by step 1's address evidence) is now
+positively demonstrated to hand over a coherent state, not merely to
+reach the entry. What remains unproven in emulation is the real
+FreeBSD kernel's own early code against this handoff, which is smoke
+pass 9 (PGSD_REAL_KERNEL), authoritative only on the bench per ADR
+0001 Decision 7. A pass 9 success would reach the FreeBSD banner and
+isolate any remaining fault to platform-specific behavior or
+firmware-dependent assumptions; a failure now reproduces in an
+environment with serial and QEMU diagnostics rather than blind on
+metal. Step 3 (metal) follows pass 9 under ADR 0005 Decision 4.
