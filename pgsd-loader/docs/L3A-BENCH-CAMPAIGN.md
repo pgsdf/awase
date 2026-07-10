@@ -373,3 +373,57 @@ isolate any remaining fault to platform-specific behavior or
 firmware-dependent assumptions; a failure now reproduces in an
 environment with serial and QEMU diagnostics rather than blind on
 metal. Step 3 (metal) follows pass 9 under ADR 0005 Decision 4.
+
+#### F7 step 2 bench status (2026-07-10): harness blocked before the launcher path
+
+Serial capture is functioning (approximately 25 KB captured from a
+foreground bench run). The log shows pgsd-loader 0.1.0,
+CHAINLOAD TARGET REACHED, and chainloaded loader returned: success
+before OVMF retries boot and enters the Boot Manager. This
+demonstrates that the L0 chainload path executes successfully on the
+current bench configuration.
+
+The remaining launcher-driven smoke passes (3 onward, including the
+pass 8 contract check and the pass 9 real-kernel run) have not yet
+been exercised on the bench, because the bench OVMF appears to boot
+via its existing Boot0002 "UEFI QEMU HARDDISK" path instead of
+entering the launcher-controlled flow the smoke harness expects. The
+scripted run reported all passes failing with an empty captured log;
+the foreground run shows why: the firmware auto-booted BOOTX64.EFI
+(the L0 chainload scenario) rather than letting the launcher start a
+nested loader binary, so passes that depend on the launcher never
+received their setup.
+
+Scope of what is and is not shown:
+
+- Observed on the bench: the L0 chainload path executes
+  (pgsd-loader runs, reaches the chainload target, receives a
+  successful return); serial capture works.
+- Observed in the development sandbox only (Ubuntu OVMF under QEMU),
+  not yet reproduced under the bench edk2-qemu firmware: smoke pass
+  8 returns HOK, the handoff contract check. Because the firmware is
+  the variable now in question, this result does not yet transfer to
+  the bench.
+- Not yet exercised anywhere on the bench: the launcher-driven
+  passes, and therefore pass 9 (the real pinned kernel). The current
+  evidence does not implicate the F7 transfer mechanism, because the
+  launcher path has not been exercised on this bench; F7 step 2
+  remains open, now blocked on harness/firmware boot selection rather
+  than on any observed loader or mechanism defect.
+
+Working hypothesis: this is a bench-specific harness/OVMF
+interaction affecting initial boot selection, not a loader or F7
+mechanism defect.
+
+Next work, in order:
+
+1. Run the pass 3 ESP in the foreground and capture complete serial
+   output (does the option-launcher start at all under this
+   firmware).
+2. Determine how the bench edk2-qemu OVMF selects its initial boot
+   target, and why BOOTX64.EFI auto-boots ahead of the launcher
+   flow (candidates: virtual-FAT boot priority, a shadowing
+   "UEFI QEMU HARDDISK" entry, -boot options).
+3. Adjust the QEMU invocation or ESP presentation so the
+   launcher-controlled path executes; reproduce pass 8 (HOK) on the
+   bench firmware as the gate, then resume the pass 9 investigation.
