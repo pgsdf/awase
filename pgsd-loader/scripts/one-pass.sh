@@ -119,7 +119,7 @@ echo "one-pass: serial below, also teed to $LOG"
 echo "------------------------------------------------------------"
 # Foreground: serial on the terminal AND teed. No 2>/dev/null, so
 # QEMU's own errors (firmware load, accel) are visible too.
-timeout 60 "$QEMU" -machine q35 -m 256 -nographic \
+timeout 60 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
     -drive if=pflash,format=raw,file="$ESP.vars" \
     -drive format=raw,file=fat:rw:"$ESP" \

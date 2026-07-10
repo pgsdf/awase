@@ -30,5 +30,16 @@ pub fn main() uefi.Status {
         }
         bs.stall(1_000_000) catch {};
     }
-    return .success;
+
+    // Emulation hygiene: the whole point of this stand-in is to
+    // print its markers and end the run. Returning .success hands
+    // control back to the firmware, which under some OVMF builds
+    // (the bench edk2-qemu port among them) falls through to the
+    // interactive Boot Manager and repaints a full-screen menu over
+    // serial, burying the markers in cursor-positioning escapes and
+    // defeating the captured-log grep. Shut the machine down instead
+    // so the serial ends exactly at the markers. This is
+    // emulation-only; the stand-in is never deployed to hardware.
+    // resetSystem is noreturn: the machine powers off here.
+    uefi.system_table.runtime_services.resetSystem(.shutdown, .success, null);
 }

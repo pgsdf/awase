@@ -54,7 +54,7 @@ sh "$PROJ_DIR/build.sh" tools
 
 run() {
     cp "$OVMF_VARS" "$ESP.vars"
-    timeout 60 "$QEMU" -machine q35 -m 256 -nographic \
+    timeout 60 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
         -drive if=pflash,format=raw,file="$ESP.vars" \
         -drive format=raw,file=fat:rw:"$ESP" \
