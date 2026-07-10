@@ -156,4 +156,81 @@ check "layers pass on truncated"  "artifact kernel verified"
 check "elf refuses truncated"     "ELF: FAIL"
 check "elf refusal chainloads"    "CHAINLOAD TARGET REACHED"
 
+# Pass 7: the kernel handoff transfer. boot-launcher starts the
+# loader under its -boot.efi name, which attests and then crosses
+# ExitBootServices and jumps to the kernel entry. The fake kernel's
+# entry writes KOK to COM1, so KOK in the serial stream proves the
+# cr3 switch, handoff stack, and jump all worked. No chainload
+# occurs: the transfer replaces it.
+cp "$PROJ_DIR/zig-out/bin/boot-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
+cp "$PROJ_DIR/zig-out/bin/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-boot.efi"
+"$PROJ_DIR/zig-out/bin/mk-fake-kernel" "$ESP/EFI/pgsd/bas/slots/1/kernel"
+{
+    echo "PGSD-BAS-MANIFEST 1"
+    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
+} > "$ESP/EFI/pgsd/bas/slots/1/manifest"
+"$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
+    "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
+run
+check "kernel entry reached"      "KOK"
+
+# Pass 8: the handoff CONTRACT (ADR 0005 step 2, portable variant).
+# Same armed transfer as pass 7, but the fake kernel is built in
+# contract mode: its entry reads modulep off the handoff stack the
+# way btext does, follows KERNBASE+modulep through the kernel's own
+# upper mapping, and emits HOK only if the leading metadata record
+# is MODINFO_NAME. This exercises the loader's side of the handoff
+# contract (stack layout, modulep value, upper page tables), not
+# just that control reached the entry. HOK proves the chain was
+# reachable through the kernel's mapping; HBAD would mean a wrong
+# modulep or upper map; neither (a fault) means the dereference
+# itself faulted. Runs in any environment; no real kernel needed.
+"$PROJ_DIR/zig-out/bin/mk-fake-kernel" "$ESP/EFI/pgsd/bas/slots/1/kernel" contract
+{
+    echo "PGSD-BAS-MANIFEST 1"
+    echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
+} > "$ESP/EFI/pgsd/bas/slots/1/manifest"
+"$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
+    "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
+run
+check "handoff contract holds"    "HOK"
+
+# Pass 9: the REAL kernel (ADR 0005 step 2, authoritative variant).
+# Gated on PGSD_REAL_KERNEL pointing at a FreeBSD kernel ELF; on the
+# bench, the AD-57 pinned /boot/kernel/kernel. The armed transfer
+# runs against the real kernel and the serial log is checked for the
+# FreeBSD copyright banner. This is the experiment F7 needs: the
+# first time the real kernel's own first instructions execute
+# through this transfer. Skipped when the variable is unset, so the
+# suite still runs to completion in environments without the pinned
+# kernel (this run is authoritative only on the bench per ADR 0001
+# Decision 7; elsewhere it is iteration).
+if [ -n "${PGSD_REAL_KERNEL:-}" ]; then
+    if [ ! -f "$PGSD_REAL_KERNEL" ]; then
+        echo "FAIL real kernel: PGSD_REAL_KERNEL not found: $PGSD_REAL_KERNEL"
+        fails=$((fails+1))
+    else
+        cp "$PGSD_REAL_KERNEL" "$ESP/EFI/pgsd/bas/slots/1/kernel"
+        {
+            echo "PGSD-BAS-MANIFEST 1"
+            echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
+        } > "$ESP/EFI/pgsd/bas/slots/1/manifest"
+        "$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
+            "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
+        run
+        # The FreeBSD kernel's first console line is the copyright.
+        # Absent it, dump the tail so a mountroot-stage or earlier
+        # stop is visible rather than a bare FAIL.
+        if grep -qa "Copyright (c) 1992" "$LOG"; then
+            echo "ok   real kernel reached kernel text (banner on serial)"
+        else
+            echo "FAIL real kernel: no FreeBSD banner on serial"
+            echo "---- serial tail ----"; tail -20 "$LOG"; echo "---------------------"
+            fails=$((fails+1))
+        fi
+    fi
+else
+    echo "skip real kernel (pass 9): set PGSD_REAL_KERNEL to the pinned kernel to run"
+fi
+
 [ "$fails" -eq 0 ] && echo "qemu-smoke: all checks passed" || { echo "qemu-smoke: $fails check(s) FAILED"; exit 1; }

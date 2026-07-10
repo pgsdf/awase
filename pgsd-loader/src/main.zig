@@ -104,7 +104,10 @@ pub fn main() uefi.Status {
     // the active slot through all three integrity layers and
     // reports; control transfer is a later increment, so it
     // chainloads regardless, keeping every armed boot bootable.
-    if (bas_boot.armed(self_image.file_path)) {
+    // Either armed name runs the attestation path; only the -boot
+    // name additionally attempts the transfer (gated below on
+    // bootArmed). A -bas run attests and chainloads as before.
+    if (bas_boot.armed(self_image.file_path) or bas_boot.bootArmed(self_image.file_path)) {
         print("pgsd-loader: BAS verification mode (L3a.2 increment 1)\r\n");
         if (bas_boot.verifyActiveSlot(device_handle, printAscii)) |res| {
             // Increment 2: load the verified kernel image per the
@@ -139,9 +142,15 @@ pub fn main() uefi.Status {
                     const image_span = lr.image_end - lr.base_paddr;
                     const fb = handoff.framebuffer(bsp);
                     const envp_rel = std.mem.alignForward(u64, image_span, 4096);
-                    const env_bytes = [_]u8{ 0, 0 };
+                    // Minimal boot environment: the kernel reads
+                    // "name=value\0"... terminated by an empty string
+                    // (double NUL). vfs.root.mountfrom names the root
+                    // to mount; without it the kernel starts but stops
+                    // at mountroot. The bench root is the clean
+                    // Awase boot environment.
+                    const env_bytes = "vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
-                    @memcpy(env_stage[0..env_bytes.len], &env_bytes);
+                    @memcpy(env_stage[0..env_bytes.len], env_bytes);
                     const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
                     var chain_buf: [16384]u8 = undefined;
                     // Capture the memory map for EFI_MAP. In this
@@ -208,7 +217,10 @@ pub fn main() uefi.Status {
                             const chain_phys: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
                             const name_type = std.mem.readInt(u32, chain_phys[0..4], .little);
                             const env_phys: [*]u8 = @ptrFromInt(lr.staging + envp_rel);  // physical
-                            const env_ok = env_phys[0] == 0 and env_phys[1] == 0;
+                            // The env now begins with the
+                            // vfs.root.mountfrom key and ends with the
+                            // double-NUL terminator; confirm both.
+                            const env_ok = env_phys[0] == 'v' and env_phys[59] == 0 and env_phys[60] == 0;
                             // Walk the chain in place and confirm the
                             // EFI_MAP record (0x9004) is present: this
                             // is what the kernel keys efi_boot on, and
@@ -238,13 +250,110 @@ pub fn main() uefi.Status {
                             const want_entry_phys = lr.staging + (lr.entry - handoff.KERNBASE) - lr.base_paddr;
                             const walk_mod_ok = walk_mod != null and walk_mod.? == want_chain_phys;
                             const walk_entry_ok = walk_entry != null and walk_entry.? == want_entry_phys;
+                            // Env presence: walk KERNBASE+envp and
+                            // confirm the first byte is 'v' (the
+                            // vfs.root.mountfrom key), so the root env
+                            // the kernel reads resolves correctly too.
+                            const walk_env = handoff.pageWalk(pt.pml4, handoff.KERNBASE + envp_rel + lr.base_paddr);
+                            const walk_env_ok = walk_env != null and @as(*const u8, @ptrFromInt(walk_env.?)).* == 'v';
                             var wl2: [96]u8 = undefined;
                             if (std.fmt.bufPrint(&wl2, "WALK: mod={} entry={} mp=0x{x} ep=0x{x}\r\n", .{ walk_mod_ok, walk_entry_ok, walk_mod orelse 0, walk_entry orelse 0 })) |m| printAscii(m) else |_| {}
-                            const readback_ok = staging_read_ok and walk_mod_ok and walk_entry_ok;
+                            const readback_ok = staging_read_ok and walk_mod_ok and walk_entry_ok and walk_env_ok;
                             var hb: [160]u8 = undefined;
                             if (std.fmt.bufPrint(&hb, "HO: pml4=0x{x} pt_ok={} fb={} readback={}\r\n", .{ pt.pml4, okpt, fb.present, readback_ok })) |m| printAscii(m) else |_| {}
                             const ndesc: usize = if (mm_opt) |mm| mm.count else 0;
                             ho_note = std.fmt.bufPrint(&hbuf, "ho=prepared pml4=0x{x} ptok={} fb={} rb={} clen={d} ndesc={d}", .{ pt.pml4, okpt, fb.present, readback_ok, ch.len, ndesc }) catch "ho=prepared";
+
+                            // 4b-final: the boot attempt. Gated on
+                            // bootArmed (a distinct -boot.efi name) AND
+                            // every attestation passing, so a -bas.efi
+                            // run or any failed check still chainloads.
+                            // Past ExitBootServices there is no console
+                            // and no fallback within this boot.
+                            if (readback_ok and bas_boot.bootArmed(self_image.file_path)) {
+                                const tramp = handoff.transferAddr();
+                                if (tramp >= 0x1_0000_0000) {
+                                    // The transfer code must be below
+                                    // 4 GiB to stay mapped by the low
+                                    // 1:1 after the cr3 load; if not,
+                                    // abort to the chainload.
+                                    var tb: [64]u8 = undefined;
+                                    ho_note = std.fmt.bufPrint(&tb, "boot=ABORT tramp_high=0x{x}", .{tramp}) catch "boot=ABORT";
+                                } else if (handoff.buildHandoffStack(bsp, ch.modulep, ch.kernend)) |hrsp| {
+                                    // Record the attempt BEFORE exit:
+                                    // if the transfer hangs, the next
+                                    // (fallback) boot reads this and we
+                                    // know we reached the jump.
+                                    var ab: [160]u8 = undefined;
+                                    const av = std.fmt.bufPrint(&ab, "BOOT_ATTEMPT entry=0x{x} pml4=0x{x} tramp=0x{x} rsp=0x{x}", .{ lr.entry, pt.pml4, tramp, hrsp }) catch "BOOT_ATTEMPT";
+                                    recordVerdict(av);
+                                    // Final map capture + EFI_MAP
+                                    // rebuild + ExitBootServices, with
+                                    // the retry the map race requires.
+                                    // ADR 0005 Decision 4: NVRAM markers
+                                    // through this region survive a
+                                    // reset, so a metal fault after the
+                                    // BOOT_ATTEMPT breadcrumb localizes
+                                    // to the last marker written. The
+                                    // markers are best-effort: a failed
+                                    // post-exit write is information,
+                                    // not a step to retry.
+                                    var tries: u8 = 0;
+                                    while (tries < 3) : (tries += 1) {
+                                        const fmap = handoff.captureMemoryMap(bsp) catch break;
+                                        recordVerdict("MARK_MAP_CAPTURED");
+                                        // Rebuild the chain with the
+                                        // final map so EFI_MAP is the
+                                        // one whose key we exit on.
+                                        // ADR 0005 Decision 3: fail
+                                        // closed. A failed rebuild means
+                                        // the kernel would receive a
+                                        // stale map; record and abort to
+                                        // chainload rather than exit
+                                        // boot services on it.
+                                        if (metadata.buildChainFull(&chain_buf, chain_rel + lr.base_paddr, .{
+                                            .name = "kernel",
+                                            .addr = lr.base_paddr,
+                                            .size = image_span,
+                                            .howto = 0,
+                                        }, envp_rel + lr.base_paddr, fw_handle, efb, .{
+                                            .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
+                                            .descriptor_size = fmap.descriptor_size,
+                                            .descriptor_version = fmap.descriptor_version,
+                                        })) |fch| {
+                                            const cs: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
+                                            @memcpy(cs[0..fch.len], chain_buf[0..fch.len]);
+                                        } else |_| {
+                                            recordVerdict("MARK_REBUILD_FAILED abort=chainload");
+                                            ho_note = "boot=REBUILD_FAILED";
+                                            break;
+                                        }
+                                        recordVerdict("MARK_CHAIN_REBUILT");
+                                        bsp.exitBootServices(uefi.handle, fmap.key) catch continue;
+                                        // Past ExitBootServices: no boot
+                                        // services, no console. One
+                                        // marker here, in physical mode
+                                        // before the cr3 load, partitions
+                                        // the fault: present means EBS
+                                        // returned and the fault is in
+                                        // the trampoline or the kernel;
+                                        // absent (with MARK_CHAIN_REBUILT
+                                        // present) means EBS itself reset.
+                                        recordVerdict("MARK_EXITED_BOOTSERVICES");
+                                        handoff.transferToKernel(lr.entry, pt.pml4, hrsp);
+                                    }
+                                    // All exit attempts failed, or the
+                                    // rebuild failed closed: fall through
+                                    // and chainload (boot services still
+                                    // active). REBUILD_FAILED sets its
+                                    // own note above; only overwrite when
+                                    // the loop exhausted its exit tries.
+                                    if (!std.mem.eql(u8, ho_note, "boot=REBUILD_FAILED"))
+                                        ho_note = "boot=EXIT_FAILED";
+                                } else |_| {
+                                    ho_note = "boot=stack_alloc_failed";
+                                }
+                            }
                         } else |he| {
                             printAscii("HO: FAIL ");
                             printAscii(@errorName(he));

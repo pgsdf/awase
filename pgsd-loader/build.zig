@@ -101,4 +101,15 @@ pub fn build(b: *std.Build) void {
     tgt_step.dependOn(&b.addInstallArtifact(tgt, .{}).step);
     tgt_step.dependOn(&b.addInstallArtifact(launcher, .{}).step);
     tgt_step.dependOn(&b.addInstallArtifact(bas_launcher, .{}).step);
+
+    const boot_launcher = b.addExecutable(.{
+        .name = "boot-launcher",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/boot_launcher.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    boot_launcher.subsystem = .efi_application;
+    tgt_step.dependOn(&b.addInstallArtifact(boot_launcher, .{}).step);
 }
