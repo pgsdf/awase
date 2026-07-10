@@ -177,6 +177,64 @@ GDBEOF
         done
         echo "gdb-transfer: serial log at $LOG"
         ;;
+    deepstep)
+        # Single-step many instructions from the kernel entry, showing
+        # each rip, to find the instruction where free execution would
+        # fault. trace showed rip pinned at the entry across free-run
+        # samples: a reset loop (fault a few instructions in ->
+        # triple-fault -> reset -> firmware -> loader -> re-enter). The
+        # step mode stopped at 4 instructions, before the faulting one.
+        # This walks far enough to see it. Single-stepping suppresses
+        # async triggers, so a fault here is a synchronous one (a bad
+        # memory access, a bad descriptor load); if deepstep runs clean
+        # to N instructions but free-run resets, the trigger is async
+        # (an interrupt/NMI/SMI through an IDT not yet installed).
+        command -v gdb >/dev/null 2>&1 || { echo "gdb-transfer: gdb not found; pkg install gdb" >&2; exit 1; }
+        stage
+        timeout 60 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+            -drive if=pflash,format=raw,file="$VARS" \
+            -drive format=raw,file=fat:rw:"$ESP" \
+            -net none >/dev/null 2>&1 || true
+        TRAMP=$(strings "$VARS" | grep -aoE 'clipc=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
+        [ -n "$TRAMP" ] || { echo "gdb-transfer: no clipc discovered" >&2; exit 1; }
+        echo "gdb-transfer: deepstep from cli=$TRAMP"
+        stage
+        cat > /tmp/pgsd-gdb.cmds << GDBEOF
+set pagination off
+set confirm off
+target remote localhost:1234
+hbreak *$TRAMP
+continue
+# into the kernel: cli/cr3/rsp/jmp
+stepi
+stepi
+stepi
+stepi
+echo \n=== stepping kernel locore; watch for rip leaving the kernel range ===\n
+set \$k = 0
+while \$k < 60
+  set \$k = \$k + 1
+  printf "%02d rip=0x%lx  ", \$k, \$rip
+  x/1i \$rip
+  stepi
+end
+echo \n=== end of deepstep ===\n
+info registers rip rsp rax rbx rcx rdx rsi rdi
+detach
+quit
+GDBEOF
+        "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+            -drive if=pflash,format=raw,file="$VARS" \
+            -drive format=raw,file=fat:rw:"$ESP" \
+            -net none -S -gdb tcp::1234 > "$LOG" 2>&1 &
+        QPID=$!
+        sleep 1
+        gdb -q -x /tmp/pgsd-gdb.cmds 2>&1 | grep -aE 'rip=|===|:\t' || true
+        kill "$QPID" 2>/dev/null || true
+        echo "gdb-transfer: serial log at $LOG"
+        ;;
     trace)
         # Like step, but after reaching the kernel entry, let it run
         # under gdb and periodically sample rip to see where early
