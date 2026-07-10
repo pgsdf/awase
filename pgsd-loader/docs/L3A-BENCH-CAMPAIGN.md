@@ -474,3 +474,42 @@ Consequences:
 - Metal (ADR 0005 step 3) is not required to make progress and
   should wait until the emulation fault is understood and a fix is
   in hand, then confirm on the bench under Decision 4 discipline.
+
+#### F7 resolved at the handoff (2026-07-10): the real kernel executes through the transfer
+
+A gdb single-step of the transfer-armed real pinned kernel
+(/boot/kernel/kernel) under QEMU, breaking at the labelled cli of the
+trampoline, shows the handoff is correct end to end:
+
+    cli
+    mov -> cr3   : cr3 changes 0xf801000 -> 0xe335000 (= HO pml4),
+                   the next instruction fetch succeeds (rip advances),
+                   so the trampoline stays mapped across the switch
+    mov -> rsp   : rsp = 0xe334f00
+    jmp  *rcx    : rip = 0xffffffff80383000, the real kernel entry
+
+The real kernel's own first instructions then execute:
+
+    0xffffffff80383000: push $0x2 ; popf      (set RFLAGS = 0x2)
+                        mov %rsp,%rbp
+                        mov $0xffffffff81970000,%rsp   (kernel stack)
+
+and rip climbs 0x383000 -> 0x38300d with rsp switching to the
+kernel's own bootstrap stack. This is FreeBSD amd64 locore running.
+
+This eliminates every loader-side F7 hypothesis by direct
+observation: not image-high, not trampoline-unmapped, not a register
+spill across the stack switch, not an incoherent handoff. The
+pinned-register trampoline hands control to the real kernel, which
+takes its own stack and proceeds. The mechanism half of F7 is
+closed.
+
+What remains: pass 9 still shows no Copyright banner, but the step
+proves the kernel is executing past the handoff, so any remaining
+stop is later in kernel bring-up (before cninit, which is where the
+banner originates), not at the transfer. The step harness detaches
+and kills QEMU four instructions in, so it never let the kernel run
+free to cninit. The next experiment is gdb-transfer.sh run: boot the
+real kernel and let it run without freezing, serial captured, to see
+whether the banner appears or where bring-up stops. That is a kernel
+bring-up question, downstream of everything the loader owns.

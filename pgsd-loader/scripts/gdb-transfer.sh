@@ -177,8 +177,30 @@ GDBEOF
         done
         echo "gdb-transfer: serial log at $LOG"
         ;;
+    run)
+        # Free run: boot the transfer-armed real kernel and let it run
+        # without gdb, serial captured, to see how far kernel bring-up
+        # gets past the (proven-correct) handoff. The step mode freezes
+        # the kernel four instructions in; this lets it reach cninit
+        # and the copyright banner if it is going to.
+        stage
+        echo "gdb-transfer: free run; serial to $LOG"
+        echo "------------------------------------------------------------"
+        timeout 90 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+            -drive if=pflash,format=raw,file="$VARS" \
+            -drive format=raw,file=fat:rw:"$ESP" \
+            -net none 2>&1 | tr -d '\r' | tee "$LOG" || true
+        echo "------------------------------------------------------------"
+        if grep -qa "Copyright (c) 1992" "$LOG"; then
+            echo "gdb-transfer: FreeBSD banner reached"
+        else
+            echo "gdb-transfer: no banner; markers:"
+            strings "$VARS" | grep -aE 'MARK_|BOOT_ATTEMPT' | tail -4 || true
+        fi
+        ;;
     *)
-        echo "gdb-transfer: unknown mode '$MODE' (discover|step)" >&2
+        echo "gdb-transfer: unknown mode '$MODE' (discover|step|run)" >&2
         exit 2
         ;;
 esac
