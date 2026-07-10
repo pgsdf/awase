@@ -427,3 +427,50 @@ Next work, in order:
 3. Adjust the QEMU invocation or ESP presentation so the
    launcher-controlled path executes; reproduce pass 8 (HOK) on the
    bench firmware as the gate, then resume the pass 9 investigation.
+
+#### F7 step 2 result (2026-07-10): fault isolated past ExitBootServices
+
+The transfer-armed pass 9 (boot-launcher -> pgsd-loader-boot.efi)
+ran against the real pinned kernel (/boot/kernel/kernel, 28699776
+bytes) under QEMU/OVMF. No FreeBSD banner, but the post-HO NVRAM
+markers give the verdict:
+
+    BOOT_ATTEMPT entry=0xffffffff80383000 pml4=0xe335000
+                 tramp=0xe299fa0 rsp=0xe334f00
+    MARK_MAP_CAPTURED
+    MARK_CHAIN_REBUILT
+    MARK_EXITED_BOOTSERVICES
+
+Every loader stage succeeded, including ExitBootServices. The
+fail-closed rebuild did not fire; the map-key retry did not exhaust;
+the 5824-byte real-kernel chain rebuilt cleanly. The last marker is
+MARK_EXITED_BOOTSERVICES, written in physical mode immediately after
+EBS returned and before the cr3 load. Nothing follows it because
+nothing can: after the cr3 switch there is no NVRAM. The banner
+never appeared.
+
+Per ADR 0005 Decision 4, this partitions the fault unambiguously:
+the failure is in the trampoline or the kernel's first instructions,
+after a fully successful ExitBootServices. Everything the loader is
+responsible for (verify, load, map, walk, capture, rebuild, exit) is
+now positively demonstrated correct against the real kernel, and the
+pass 8 HOK result already showed the handoff state is coherent
+through the kernel MMU. The remaining band is the instructions from
+post-EBS through the cr3 load, the trampoline jump, and btext's
+first instructions.
+
+Consequences:
+
+- F7 reproduces in emulation. The metal signature (clean to the
+  logo, then silent) and this QEMU run match: clean through EBS,
+  silent after. F7 is no longer Apple-firmware-specific and no
+  longer needs the bench to diagnose.
+- The next experiment is a gdb-attached QEMU run (-s -S): break at
+  tramp, single-step the cr3 load and the jump, and observe where
+  the fault occurs. Candidates narrowed by the evidence: the low 1:1
+  mapping's coverage of the trampoline's own execution address after
+  the cr3 switch, or btext's first instructions against the handoff
+  (the handoff contents themselves are HOK-validated).
+- Metal (ADR 0005 step 3) is not required to make progress and
+  should wait until the emulation fault is understood and a fix is
+  in hand, then confirm on the bench under Decision 4 discipline.
