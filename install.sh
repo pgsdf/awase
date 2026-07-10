@@ -8,15 +8,19 @@
 #   sh install.sh --check          # verify dependencies only
 #   sh install.sh --uninstall      # remove installed files
 #   sh install.sh --yes            # non-interactive; assume yes for prompts
-#   sh install.sh --yes --build-kernel  # non-interactive, incl. the PGSD kernel (30-60 min)
-#   sh install.sh --yes --skip-kernel   # non-interactive userland only (staging; not yet runnable)
+#   sh install.sh --yes --skip-kernel   # non-interactive userland only (staged; not yet runnable)
 #   sh install.sh --provision-src  # (re)clone the pinned fork into /usr/src (destructive; opt-in)
 #   sh install.sh --allow-semadraw-term  # proceed even if launched from semadraw-term
 #
 # Awase requires the PGSD kernel (GENERIC leaves FreeBSD VT and Awase
-# competing for the display). A non-interactive run on GENERIC therefore
-# fails unless a PGSD kernel is already present, or --build-kernel or
-# --skip-kernel is given. An interactive run offers the build at the end.
+# competing for the display), but install.sh installs the userland only:
+# the kernel is built and installed separately, operator-invoked, per
+# pgsd-kernel/KERNEL-RECIPE.md (ADR 0002 milestone 1). A non-interactive
+# run on GENERIC fails fast unless a PGSD kernel is already present or
+# --skip-kernel acknowledges a staged, not yet runnable install; an
+# interactive run completes and prints a prominent GENERIC notice.
+# Deploy userland BEFORE installing the kernel: the kernel's AD-8
+# closure check expects drawfs.ko from this install.
 #
 # Installed binaries:
 #   $PREFIX/bin/semadrawd     : semantic rendering compositor
@@ -38,7 +42,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UNINSTALL=0
 CHECK_ONLY=0
 ASSUME_YES=0
-BUILD_KERNEL=0
 SKIP_KERNEL=0
 PROVISION_SRC=0
 ALLOW_SEMADRAW_TERM=0
@@ -66,8 +69,6 @@ while [ $# -gt 0 ]; do
             CHECK_ONLY=1; shift ;;
         --yes|-y)
             ASSUME_YES=1; shift ;;
-        --build-kernel)
-            BUILD_KERNEL=1; shift ;;
         --skip-kernel)
             SKIP_KERNEL=1; shift ;;
         --provision-src)
@@ -75,7 +76,7 @@ while [ $# -gt 0 ]; do
         --allow-semadraw-term)
             ALLOW_SEMADRAW_TERM=1; shift ;;
         --help|-h)
-            sed -n '2,20p' "$0" | sed 's/^# \?//'
+            sed -n '2,23p' "$0" | sed 's/^# \?//'
             exit 0 ;;
         *)
             echo "unknown argument: $1" >&2; exit 1 ;;
@@ -86,7 +87,6 @@ done
 # arrive through the environment, since the re-exec carries no argv.
 PREFIX="${AWASE_PREFIX:-$PREFIX}"
 ASSUME_YES="${AWASE_ASSUME_YES:-$ASSUME_YES}"
-BUILD_KERNEL="${AWASE_BUILD_KERNEL:-$BUILD_KERNEL}"
 SKIP_KERNEL="${AWASE_SKIP_KERNEL:-$SKIP_KERNEL}"
 PROVISION_SRC="${AWASE_PROVISION_SRC:-$PROVISION_SRC}"
 ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
@@ -102,17 +102,21 @@ ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
 # staged files. The installer's success criterion is therefore "the system
 # can run Awase", not "files were copied".
 #
-# The kernel is built LAST (after the userland deploy) because the PGSD
-# kernel drops the framebuffer console and pgsd-kernel-build.sh's AD-8
-# check refuses to install it until drawfs.ko is on disk. But the DECISION
-# is made HERE, before anything changes, so a non-interactive run that
-# could only finish in a non-functional state fails fast instead of
-# deploying and then reporting a success the system cannot honor.
+# install.sh does not build kernels (ADR 0002 milestone 1): the PGSD
+# kernel lifecycle is owned by pgsd-kernel-build.sh, operator-invoked per
+# pgsd-kernel/KERNEL-RECIPE.md, run AFTER the userland deploy (the
+# kernel's AD-8 closure check refuses to install until drawfs.ko is on
+# disk). The DECISION about this run is still made HERE, before anything
+# changes, so a non-interactive run that could only finish in a
+# non-functional state fails fast instead of deploying and then reporting
+# a success the system cannot honor. The gate detects and informs; it
+# never executes.
 #
-# KERNEL_PLAN is one of: satisfied (a PGSD kernel is already running or
-# installed for next boot; nothing to build), build (build+install at the
-# end), skip (staging: deploy userland, leave GENERIC, say so loudly), or
-# prompt (interactive: offer the build at the end, unchanged).
+# KERNEL_PLAN is one of: none (uninstall or check runs; the gate does not
+# apply), satisfied (a PGSD kernel is already running or installed for
+# next boot), skip (staging acknowledged: deploy userland, leave GENERIC,
+# say so loudly), or notice (interactive on GENERIC: complete the install
+# and print a prominent notice at the end).
 
 # A PGSD kernel requirement is satisfied if one is running now OR installed
 # on disk for the next boot.
@@ -129,8 +133,8 @@ ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
 # INCLUDE_CONFIG_FILE, strips the embedded config, or ships without
 # config(8)), this arm silently stops detecting the installed kernel.
 # The degradation is safe, not dangerous: a missed detection falls through
-# to `build` or the fail-fast gate (a possibly unnecessary rebuild or a
-# refusal), never to a false "satisfied". The running-kernel check via
+# to the fail-fast gate or the notice (a refusal or an unnecessary
+# notice), never to a false "satisfied". The running-kernel check via
 # uname -i is unaffected and remains authoritative for the common case.
 pgsd_kernel_satisfied() {
     case "$(uname -i 2>/dev/null)" in
@@ -152,51 +156,48 @@ else
     _noninteractive=0
 fi
 
-if [ "$SKIP_KERNEL" -eq 1 ] && [ "$BUILD_KERNEL" -eq 1 ]; then
-    echo "ERROR: --skip-kernel and --build-kernel are mutually exclusive." >&2
-    exit 2
-fi
-
-if pgsd_kernel_satisfied; then
+if [ -n "${AWASE_KERNEL_PLAN:-}" ]; then
+    # Re-exec pass: the decision was made in the first pass; honor it.
+    KERNEL_PLAN="$AWASE_KERNEL_PLAN"
+elif [ "$UNINSTALL" -eq 1 ] || [ "$CHECK_ONLY" -eq 1 ]; then
+    # The gate's success criterion ("the system can run Awase") does not
+    # apply to uninstall or dependency-check runs; do not refuse them on
+    # GENERIC. (Previously a non-interactive --uninstall on a GENERIC
+    # machine exited 3 here before removing anything.)
+    KERNEL_PLAN=none
+elif pgsd_kernel_satisfied; then
     KERNEL_PLAN=satisfied
-elif [ "$BUILD_KERNEL" -eq 1 ]; then
-    KERNEL_PLAN=build
 elif [ "$SKIP_KERNEL" -eq 1 ]; then
     KERNEL_PLAN=skip
 elif [ "$_noninteractive" -eq 1 ]; then
-    # Non-interactive, GENERIC, no explicit kernel intent: refuse before
-    # changing anything, rather than deploy and report a success the
-    # system cannot honor.
+    # Non-interactive, GENERIC, no acknowledgment: refuse before changing
+    # anything, rather than deploy and report a success the system cannot
+    # honor.
     echo "" >&2
     echo "ERROR: Awase requires the PGSD kernel, and this machine is running" >&2
     echo "       GENERIC (no PGSD kernel is installed for the next boot)." >&2
     echo "" >&2
-    echo "       A non-interactive install (--yes) does NOT compile a kernel:" >&2
-    echo "       the build takes 30 to 60 minutes and the PGSD kernel drops the" >&2
-    echo "       framebuffer console, so it is never started unattended by" >&2
-    echo "       default. On GENERIC, FreeBSD's VT subsystem and Awase would" >&2
-    echo "       both claim the display, so the result would not be a working" >&2
-    echo "       Awase system." >&2
+    echo "       install.sh does not build kernels (ADR 0002): the PGSD kernel" >&2
+    echo "       is built and installed separately, operator-invoked, per" >&2
+    echo "       pgsd-kernel/KERNEL-RECIPE.md. On GENERIC, FreeBSD's VT" >&2
+    echo "       subsystem and Awase both claim the display, so completing" >&2
+    echo "       this install would report a success the system cannot honor." >&2
     echo "" >&2
-    echo "       Choose one:" >&2
-    echo "         sh install.sh --yes --build-kernel   build + install the PGSD" >&2
-    echo "                                              kernel unattended (long)" >&2
-    echo "         sh install.sh --yes --skip-kernel    install userland only and" >&2
-    echo "                                              build the kernel yourself" >&2
-    echo "                                              later (staging; not yet" >&2
-    echo "                                              a runnable Awase system)" >&2
-    echo "         sh install.sh                        interactive: offers the" >&2
-    echo "                                              kernel build at the end" >&2
-    echo "" >&2
-    echo "       Or build the kernel directly:" >&2
+    echo "       The working order (userland first: the kernel's AD-8 closure" >&2
+    echo "       check expects drawfs.ko from this install):" >&2
+    echo "         sh pgsd-kernel/pgsd-kernel-build.sh check PGSD" >&2
+    echo "         sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean PGSD" >&2
+    echo "         sh install.sh --yes --skip-kernel" >&2
     echo "         sudo sh pgsd-kernel/pgsd-kernel-build.sh install PGSD" >&2
-    echo "       (after deploying userland, so the AD-8 closure check passes)." >&2
+    echo "         shutdown -r now" >&2
+    echo "" >&2
+    echo "       --skip-kernel acknowledges the staged, not yet runnable state" >&2
+    echo "       and lets a non-interactive run proceed." >&2
     exit 3
 else
-    KERNEL_PLAN=prompt
+    KERNEL_PLAN=notice
 fi
 export AWASE_KERNEL_PLAN="$KERNEL_PLAN"
-KERNEL_PLAN="${AWASE_KERNEL_PLAN:-$KERNEL_PLAN}"
 
 # ============================================================================
 # Privilege model (ADR shared 0005: unprivileged-first installation)
@@ -946,11 +947,9 @@ build_sub "semasound" "semasound"
         AWASE_PHASE=deploy \
         AWASE_PREFIX="$PREFIX" \
         AWASE_ASSUME_YES="$ASSUME_YES" \
-        AWASE_BUILD_KERNEL="$BUILD_KERNEL" \
         AWASE_SKIP_KERNEL="$SKIP_KERNEL" \
         AWASE_PROVISION_SRC="$PROVISION_SRC" \
         AWASE_KERNEL_PLAN="$KERNEL_PLAN" \
-        AWASE_KERNCONF="${AWASE_KERNCONF:-PGSD}" \
         AWASE_ALLOW_SEMADRAW_TERM="$ALLOW_SEMADRAW_TERM" \
         "$PRIV" /bin/sh "$SCRIPT_DIR/$(basename "$0")"
     echo "ERROR: could not elevate via $PRIV. Is mac_do loaded (or use PRIV=sudo)?" >&2
@@ -2664,197 +2663,54 @@ EOF
 fi
 
 # ============================================================================
-# PGSD kernel: offer a checkpointed build as the final install activity
+# PGSD kernel status (ADR 0002: detect and inform; never build)
 # ============================================================================
 #
-# Runs last, after the full deploy above (drawfs.ko, drawfs_load, inputfs,
-# binaries, services). The PGSD kernel (KERNCONF ident PGSD/PGSD-DEBUG) removes
-# the HID and console drivers that contend with inputfs and drawfs; GENERIC
-# works but input may be limited and the framebuffer contended (INSTALL.md
-# Step 5.5).
-#
-# The offer is placed here, at the end, for a hard reason: the PGSD kernel drops
-# the in-tree framebuffer console, so a machine that boots it with no drawfs.ko
-# present comes up dark. pgsd-kernel-build.sh's AD-8 closure check enforces that
-# invariant and refuses to install the kernel until drawfs.ko is deployed.
-# Deploying everything first, then building the kernel, satisfies the invariant
-# and lets the operator reboot straight into a ready system with no second
-# install pass (ADR 0005 kernel-offer amendment, 2026-06-18).
-#
-# install.sh delegates entirely to pgsd-kernel-build.sh, the single source of
-# truth for source-tree validation, AD-8 closure, recovery checks, and build
-# flags, and preserves its check/build/install checkpoints, so a check warning
-# or a failed world/kernel build stops for inspection. It never compiles a
-# kernel in non-interactive mode. This phase already runs as root (the $PRIV
-# re-exec), so the build delegates directly without a further priv hop.
+# install.sh does not build or install kernels. The PGSD kernel lifecycle
+# is owned by pgsd-kernel-build.sh, operator-invoked per
+# pgsd-kernel/KERNEL-RECIPE.md; the recipe runs AFTER this deploy because
+# the kernel's AD-8 closure check expects drawfs.ko from the deploy above.
+# This section only reports where the run leaves the system: complete on
+# a PGSD kernel, or staged on GENERIC pending the kernel steps.
 
-# yes/no prompt: bsddialog when available (real newlines, --cr-wrap), else a
-# plain read. Returns 0 for yes.
-kernel_prompt_yesno() {
-    if command -v bsddialog >/dev/null 2>&1; then
-        if bsddialog --cr-wrap --title "$1" --yes-label "Yes" --no-label "No" \
-                     --yesno "$2" 0 0; then
-            return 0
-        fi
-        return 1
-    fi
-    printf '%s\n\n' "$2" >&2
-    printf "Proceed? [y/N]: " >&2
-    if [ -r /dev/tty ]; then read -r _kp < /dev/tty || _kp=""; else read -r _kp || _kp=""; fi
-    case "$_kp" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
-}
-
-# Inline confirmation that preserves the terminal output above it for the
-# operator to inspect (the whole point of the per-phase checkpoints). Default
-# No; requires an explicit yes. Returns 0 for yes.
-kernel_confirm() {
-    printf '%s [y/N]: ' "$1" >&2
-    if [ -r /dev/tty ]; then read -r _kc < /dev/tty || _kc=""; else read -r _kc || _kc=""; fi
-    case "$_kc" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
-}
-
-KERNEL_PLAN="${AWASE_KERNEL_PLAN:-prompt}"
-KERNCONF="${AWASE_KERNCONF:-PGSD}"
-KBUILD="$SCRIPT_DIR/pgsd-kernel/pgsd-kernel-build.sh"
-
-# Build+install the PGSD kernel non-interactively (the --build-kernel and
-# unattended paths). Runs check first; any failure is fatal so an
-# unattended run never claims success on a half-built kernel.
-kernel_build_unattended() {
-    if [ ! -f "$KBUILD" ]; then
-        echo "ERROR: $KBUILD not found; cannot build the PGSD kernel." >&2
-        return 1
-    fi
-    echo ""
-    echo "=== PGSD kernel: environment check ($KERNCONF) ==="
-    if ! sh "$KBUILD" check "$KERNCONF"; then
-        echo "ERROR: PGSD kernel pre-flight check failed (see output above)." >&2
-        echo "       Commonly /usr/src is not the AD-57 pinned fork; provision it" >&2
-        echo "       (sh install.sh clones it, or see pgsd-kernel/KERNEL-RECIPE.md)." >&2
-        return 1
-    fi
-    echo ""
-    echo "=== PGSD kernel: build ($KERNCONF) - this takes 30-60 minutes ==="
-    if ! sh "$KBUILD" build --clean "$KERNCONF"; then
-        echo "ERROR: PGSD kernel build failed (see output above)." >&2
-        return 1
-    fi
-    echo ""
-    echo "=== PGSD kernel: install ($KERNCONF) ==="
-    if ! sh "$KBUILD" install "$KERNCONF"; then
-        echo "ERROR: PGSD kernel install failed (see output above)." >&2
-        echo "       Do NOT reboot into PGSD until resolved; GENERIC still boots." >&2
-        return 1
-    fi
-    return 0
-}
+KERNEL_PLAN="${AWASE_KERNEL_PLAN:-notice}"
 
 if [ "$KERNEL_PLAN" = "satisfied" ]; then
     echo ""
-    echo "PGSD kernel already present (running or installed for next boot);"
-    echo "no kernel build needed."
-elif [ "$KERNEL_PLAN" = "build" ]; then
-    if kernel_build_unattended; then
-        echo ""
-        echo "============================================================"
-        echo "Awase installation complete, and the PGSD kernel is installed."
-        echo ""
-        echo "Reboot into the new kernel:"
-        echo "  shutdown -r now"
-        echo "============================================================"
-    else
-        echo "ERROR: the PGSD kernel was requested (--build-kernel) but could" >&2
-        echo "       not be built or installed. Awase is NOT yet runnable: the" >&2
-        echo "       userland is deployed but the machine is still on GENERIC." >&2
-        exit 1
-    fi
-elif [ "$KERNEL_PLAN" = "skip" ]; then
+    echo "PGSD kernel already present (running or installed for next boot)."
+else
     echo ""
     echo "============================================================"
     echo "Userland installed."
-    echo "PGSD kernel: NOT installed (requested via --skip-kernel)."
-    echo ""
-    echo "Awase will NOT function until a compatible PGSD kernel is built"
-    echo "and installed: on GENERIC, FreeBSD's VT subsystem and Awase"
-    echo "compete for the display. This is an intentionally staged, and"
-    echo "not yet runnable, installation."
-    echo ""
-    echo "Build the kernel when ready (after this userland deploy, so the"
-    echo "AD-8 closure check passes):"
-    echo "  sudo sh pgsd-kernel/pgsd-kernel-build.sh install PGSD"
-    echo "============================================================"
-elif [ "$KERNEL_PLAN" = "prompt" ]; then
-    # Interactive: offer the build at the end, unchanged.
-    if [ ! -f "$KBUILD" ]; then
-        echo ""
-        echo "Running GENERIC kernel; $KBUILD not found, skipping kernel build."
-    elif kernel_prompt_yesno "Awase installer: PGSD kernel" "Awase is installed. You are running the GENERIC kernel.
-
-The PGSD kernel is recommended for full Awase support: it removes the HID and console drivers that otherwise claim the devices inputfs and drawfs need. Building it now:
-
-  - takes roughly 30 to 60 minutes
-  - happens after this completed install, so drawfs.ko is already in place and the kernel's AD-8 closure check will pass
-  - requires a reboot afterwards, straight into a ready system; no second install pass is needed
-
-Build and install the PGSD kernel now? Choosing No leaves you on GENERIC."; then
-        echo ""
-        sh "$KBUILD" check "$KERNCONF" || true
-        echo ""
-        if kernel_confirm "Check complete; review the output above. Proceed to BUILD ($KERNCONF)?"; then
-            echo ""
-            echo "=== PGSD kernel: build ($KERNCONF) - this takes 30-60 minutes ==="
-            if ! sh "$KBUILD" build --clean "$KERNCONF"; then
-                echo "ERROR: PGSD kernel build failed (see output above)." >&2
-                echo "       Awase itself is installed and runs on GENERIC; resolve" >&2
-                echo "       the build and rebuild the kernel later." >&2
-                exit 1
-            fi
-            echo ""
-            if kernel_confirm "Build complete; review the output above. Proceed to INSTALL ($KERNCONF)?"; then
-                echo ""
-                echo "=== PGSD kernel: install ($KERNCONF) ==="
-                if ! sh "$KBUILD" install "$KERNCONF"; then
-                    echo "ERROR: PGSD kernel install failed (see output above)." >&2
-                    echo "       Do NOT reboot into PGSD until resolved; GENERIC still" >&2
-                    echo "       boots. See pgsd-kernel/README.md." >&2
-                    exit 1
-                fi
-                echo ""
-                echo "============================================================"
-                echo "Awase installation complete, and the PGSD kernel is installed."
-                echo ""
-                echo "Reboot into the new kernel:"
-                echo "  shutdown -r now"
-                echo ""
-                echo "drawfs loads at boot (loader.conf); inputfs and the daemons"
-                echo "start at boot (rc.conf); the system comes up at the"
-                echo "pgsd-sessiond graphical login."
-                echo "============================================================"
-                exit 0
-            else
-                echo "Install phase skipped; the built kernel is staged but not active."
-                echo "Leaving you on GENERIC; install the kernel and reboot later for PGSD."
-            fi
-        else
-            echo "Kernel build not started. Leaving you on GENERIC."
-        fi
+    if [ "$KERNEL_PLAN" = "skip" ]; then
+        echo "PGSD kernel: NOT installed (acknowledged via --skip-kernel)."
     else
-        echo ""
-        echo "Continuing on GENERIC kernel (PGSD recommended; see pgsd-kernel/README.md)."
+        echo "PGSD kernel: NOT installed (this machine is on GENERIC)."
     fi
+    echo ""
+    echo "Awase will NOT function until the PGSD kernel is installed: on"
+    echo "GENERIC, FreeBSD's VT subsystem and Awase compete for the"
+    echo "display. This is a staged, not yet runnable, installation."
+    echo ""
+    echo "Finish now that the userland is deployed; see"
+    echo "pgsd-kernel/KERNEL-RECIPE.md (skip steps already done):"
+    echo "  sh pgsd-kernel/pgsd-kernel-build.sh check PGSD"
+    echo "  sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean PGSD"
+    echo "  sudo sh pgsd-kernel/pgsd-kernel-build.sh install PGSD"
+    echo "  shutdown -r now"
+    echo "============================================================"
 fi
-
 
 # ============================================================================
 # Summary
 # ============================================================================
 
 echo ""
-if [ "$KERNEL_PLAN" = "skip" ]; then
-    echo "=== Awase userland installed (STAGED; PGSD kernel not yet built) ==="
-    echo "    This is not yet a runnable Awase system; see the note above."
-else
+if [ "$KERNEL_PLAN" = "satisfied" ]; then
     echo "=== Awase installation complete ==="
+else
+    echo "=== Awase userland installed (STAGED; PGSD kernel pending) ==="
+    echo "    This is not yet a runnable Awase system; see the note above."
 fi
 echo ""
 echo "Installed binaries:"
