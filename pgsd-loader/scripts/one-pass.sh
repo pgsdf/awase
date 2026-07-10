@@ -96,9 +96,12 @@ case "$PASS" in
     real)
         [ -n "${PGSD_REAL_KERNEL:-}" ] || { echo "one-pass: set PGSD_REAL_KERNEL for the real pass" >&2; exit 2; }
         [ -f "$PGSD_REAL_KERNEL" ] || { echo "one-pass: PGSD_REAL_KERNEL not found: $PGSD_REAL_KERNEL" >&2; exit 2; }
+        # Transfer-arming path: boot-launcher -> pgsd-loader-boot.efi
+        # crosses ExitBootServices and runs the trampoline. (The
+        # -bas.efi name would only verify-and-chainload.)
         mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/pgsd/bas/slots/1" "$ESP/EFI/freebsd"
-        cp "$B/bas-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
-        cp "$B/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-bas.efi"
+        cp "$B/boot-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
+        cp "$B/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-boot.efi"
         cp "$B/chainload-target.efi" "$ESP/EFI/freebsd/loader.efi"
         cp "$PGSD_REAL_KERNEL" "$ESP/EFI/pgsd/bas/slots/1/kernel"
         stage_bas
@@ -111,7 +114,9 @@ case "$PASS" in
 esac
 
 cp "$OVMF_VARS" "$ESP.vars"
-cleanup() { rm -rf "$ESP" "$ESP.vars"; }
+KEEP_VARS="/tmp/pgsd-onepass.vars"
+cp "$OVMF_VARS" "$KEEP_VARS"
+cleanup() { cp "$ESP.vars" "$KEEP_VARS" 2>/dev/null || true; rm -rf "$ESP" "$ESP.vars"; }
 trap cleanup EXIT INT TERM
 
 echo "one-pass: $PASS  (OVMF_CODE=$OVMF_CODE)"
@@ -126,3 +131,7 @@ timeout 60 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
     -net none 2>&1 | tee "$LOG" || true
 echo "------------------------------------------------------------"
 echo "one-pass: done; log at $LOG"
+# The transfer path crosses ExitBootServices, after which markers go
+# to NVRAM (the OVMF vars image), not serial. Surface them.
+echo "one-pass: post-HO markers in emulated NVRAM (if any):"
+strings "$KEEP_VARS" 2>/dev/null | grep -aE 'MARK_|BOOT_ATTEMPT' | tail -5 || true

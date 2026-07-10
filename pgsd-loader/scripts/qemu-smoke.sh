@@ -195,37 +195,51 @@ check "kernel entry reached"      "KOK"
 run
 check "handoff contract holds"    "HOK"
 
-# Pass 9: the REAL kernel (ADR 0005 step 2, authoritative variant).
-# Gated on PGSD_REAL_KERNEL pointing at a FreeBSD kernel ELF; on the
-# bench, the AD-57 pinned /boot/kernel/kernel. The armed transfer
-# runs against the real kernel and the serial log is checked for the
-# FreeBSD copyright banner. This is the experiment F7 needs: the
-# first time the real kernel's own first instructions execute
-# through this transfer. Skipped when the variable is unset, so the
-# suite still runs to completion in environments without the pinned
-# kernel (this run is authoritative only on the bench per ADR 0001
-# Decision 7; elsewhere it is iteration).
+# Pass 9: the REAL kernel through the TRANSFER (ADR 0005 step 2,
+# authoritative variant). Gated on PGSD_REAL_KERNEL pointing at a
+# FreeBSD kernel ELF; on the bench, the AD-57 pinned
+# /boot/kernel/kernel. This must use the transfer-arming path
+# (boot-launcher -> pgsd-loader-boot.efi), NOT the verify-only BAS
+# path (bas-launcher -> pgsd-loader-bas.efi) that passes 4 through 8
+# use: only a loader deployed as -boot.efi crosses ExitBootServices
+# and runs the trampoline. Staged fresh here so pass 8's verify-only
+# ESP is not inherited. This is the experiment F7 needs: the first
+# time the real kernel's own first instructions execute through the
+# transfer. Skipped when the variable is unset (authoritative only
+# on the bench per ADR 0001 Decision 7; elsewhere iteration).
 if [ -n "${PGSD_REAL_KERNEL:-}" ]; then
     if [ ! -f "$PGSD_REAL_KERNEL" ]; then
         echo "FAIL real kernel: PGSD_REAL_KERNEL not found: $PGSD_REAL_KERNEL"
         fails=$((fails+1))
     else
+        rm -rf "$ESP"
+        mkdir -p "$ESP/EFI/BOOT" "$ESP/EFI/pgsd/bas/slots/1" "$ESP/EFI/freebsd"
+        cp "$PROJ_DIR/zig-out/bin/boot-launcher.efi" "$ESP/EFI/BOOT/BOOTX64.EFI"
+        cp "$PROJ_DIR/zig-out/bin/pgsd-loader.efi" "$ESP/EFI/pgsd/pgsd-loader-boot.efi"
+        cp "$PROJ_DIR/zig-out/bin/chainload-target.efi" "$ESP/EFI/freebsd/loader.efi"
         cp "$PGSD_REAL_KERNEL" "$ESP/EFI/pgsd/bas/slots/1/kernel"
         {
             echo "PGSD-BAS-MANIFEST 1"
             echo "$(hashf "$ESP/EFI/pgsd/bas/slots/1/kernel") $(wc -c < "$ESP/EFI/pgsd/bas/slots/1/kernel" | tr -d ' ') kernel"
         } > "$ESP/EFI/pgsd/bas/slots/1/manifest"
+        "$PROJ_DIR/zig-out/bin/bas-selector" init "$ESP/EFI/pgsd/bas/selector" >/dev/null
         "$PROJ_DIR/zig-out/bin/bas-selector" commit "$ESP/EFI/pgsd/bas/selector" 1 \
             "$(hashf "$ESP/EFI/pgsd/bas/slots/1/manifest")" >/dev/null
         run
         # The FreeBSD kernel's first console line is the copyright.
         # Absent it, dump the tail so a mountroot-stage or earlier
-        # stop is visible rather than a bare FAIL.
+        # stop is visible rather than a bare FAIL. Because this path
+        # crosses ExitBootServices, the post-HO markers live in the
+        # OVMF vars image, not on serial; read them from "$ESP.vars"
+        # with strings(1) if the banner is absent.
         if grep -qa "Copyright (c) 1992" "$LOG"; then
             echo "ok   real kernel reached kernel text (banner on serial)"
         else
             echo "FAIL real kernel: no FreeBSD banner on serial"
             echo "---- serial tail ----"; tail -20 "$LOG"; echo "---------------------"
+            echo "---- post-HO markers in emulated NVRAM ----"
+            strings "$ESP.vars" 2>/dev/null | grep -aE 'MARK_|BOOT_ATTEMPT' | tail -5 || true
+            echo "-------------------------------------------"
             fails=$((fails+1))
         fi
     fi
