@@ -78,12 +78,12 @@ alone (AD-2 closed 2026-05-17), audio on audiofs and semasound alone
 (F.6 closed 2026-06-05), and the clock on the audiofs kernel writer,
 all of it supervised from boot. The open substrate-level audio work
 proceeds under ADR 0030's maintained end-state; the open AD items are
-in `BACKLOG.md`; and the upper layers (NDE, LT, the rest of SM) are
+tracked below in this file; and the upper layers (NDE, LT, the rest of SM) are
 the next frontier, by choice of priority. The installation and
 packaging path is moving under project ADR 0002 to a published
 artifact contract converging on Axiom: milestone 1 (kernel
 separation) landed and was bench-verified 2026-07-10; the remaining
-milestones are tracked in `BACKLOG.md` under ADR 0002.
+milestones are tracked under the ADR 0002 entry below.
 
 ### Current state (2026-07-10)
 
@@ -111,7 +111,7 @@ What is built and verified:
   2026-06-04); its successor `semasound` is the installed, enabled,
   boot-supervised audio broker (F.5 complete, ADRs 0021/0024-0028),
   and install.sh reaps leftover semaaud artifacts from upgraded
-  systems. See AD-3 in `BACKLOG.md`.
+  systems. See the AD-3 entry below.
 - The **inputfs gesture library** (`libsemainput`) now carries the
   reusable input semantics; that move is recorded and in progress.
 - The **audiofs** kernel substrate is up. Commits 1 through 6g
@@ -160,8 +160,8 @@ semaaud 2026-06-05). AD-3 sits at its maintained end-state under ADR
 0030: stewardship and scope are ratified, change classes K/B/P/T/R
 and the takeover protocol govern all later audio work, and the
 production suite mode is proven against the supervised broker. F.3.f
-(HDMI) stays a live deferred entry. `BACKLOG.md` tracks the other
-open AD items; `BACKLOG-history.md` holds the completed chronicle.
+(HDMI) stays a live deferred entry. The other open AD items are
+tracked below; `BACKLOG-history.md` holds the completed chronicle.
 
 Session management has begun to build on that stable base. The
 `pgsd-sessiond` graphical login already runs supervised at boot
@@ -176,7 +176,7 @@ waits on it. The idle side already has its first piece in service:
 D-11 (ADR 0013) publishes the last-input time through an
 `idle_query`/`idle_reply` exchange, implemented and bench-verified on
 pgsd-bare-metal and closed 2026-06-09. See `## SM: Session
-Management` and the semadraw D-10 and D-11 entries in `BACKLOG.md`.
+Management` and the semadraw D-10 and D-11 entries below.
 
 ---
 
