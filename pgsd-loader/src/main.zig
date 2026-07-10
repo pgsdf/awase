@@ -272,6 +272,7 @@ pub fn main() uefi.Status {
                             // and no fallback within this boot.
                             if (readback_ok and bas_boot.bootArmed(self_image.file_path)) {
                                 const tramp = handoff.transferAddr();
+                                const clipc = handoff.transferCliAddr();
                                 if (tramp >= 0x1_0000_0000) {
                                     // The transfer code must be below
                                     // 4 GiB to stay mapped by the low
@@ -284,8 +285,8 @@ pub fn main() uefi.Status {
                                     // if the transfer hangs, the next
                                     // (fallback) boot reads this and we
                                     // know we reached the jump.
-                                    var ab: [160]u8 = undefined;
-                                    const av = std.fmt.bufPrint(&ab, "BOOT_ATTEMPT entry=0x{x} pml4=0x{x} tramp=0x{x} rsp=0x{x}", .{ lr.entry, pt.pml4, tramp, hrsp }) catch "BOOT_ATTEMPT";
+                                    var ab: [200]u8 = undefined;
+                                    const av = std.fmt.bufPrint(&ab, "BOOT_ATTEMPT entry=0x{x} pml4=0x{x} tramp=0x{x} clipc=0x{x} rsp=0x{x} imgbase=0x{x}", .{ lr.entry, pt.pml4, tramp, clipc, hrsp, @intFromPtr(self_image.image_base) }) catch "BOOT_ATTEMPT";
                                     recordVerdict(av);
                                     // Final map capture + EFI_MAP
                                     // rebuild + ExitBootServices, with

@@ -282,6 +282,8 @@ pub fn buildHandoffStack(bs: *uefi.tables.BootServices, modulep: u64, kernend: u
 // asm from being reordered against the surrounding stores.
 pub fn transferToKernel(entry: u64, pagetable: u64, handoff_rsp: u64) noreturn {
     asm volatile (
+        \\ .globl pgsd_tramp_cli
+        \\ pgsd_tramp_cli:
         \\ cli
         \\ movq %[pt], %%cr3
         \\ movq %[sp], %%rsp
@@ -292,6 +294,16 @@ pub fn transferToKernel(entry: u64, pagetable: u64, handoff_rsp: u64) noreturn {
           [sp] "{r8}" (handoff_rsp),
         : .{ .memory = true });
     unreachable;
+}
+
+// Address of the cli that opens the trampoline, for the breadcrumb
+// and the gdb-step harness. transferAddr() returns &transferToKernel,
+// which under -ODebug is the function prologue (push rbp; ...), not
+// the cli; breaking there steps frame setup, not the switch. This
+// returns the cli itself.
+extern const pgsd_tramp_cli: u8;
+pub fn transferCliAddr() u64 {
+    return @intFromPtr(&pgsd_tramp_cli);
 }
 
 /// Address of the transfer code, for the caller's below-4-GiB check.

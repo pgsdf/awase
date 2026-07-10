@@ -94,62 +94,87 @@ case "$MODE" in
             -net none 2>&1 | tr -d '\r' > "$LOG" || true
         echo "gdb-transfer: markers this run:"
         strings "$VARS" | grep -aE 'BOOT_ATTEMPT|MARK_' | tail -6 || true
-        TRAMP=$(strings "$VARS" | grep -aoE 'tramp=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
+        TRAMP=$(strings "$VARS" | grep -aoE 'clipc=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
         echo ""
         [ -n "$TRAMP" ] && echo "gdb-transfer: trampoline address = $TRAMP" \
             && echo "gdb-transfer: next: sh scripts/gdb-transfer.sh step $TRAMP" \
             || echo "gdb-transfer: no tramp= recorded (transfer path not reached?)"
         ;;
     step)
-        TRAMP="${2:-}"
-        [ -n "$TRAMP" ] || { echo "gdb-transfer: step needs the trampoline address (run discover first)" >&2; exit 2; }
         command -v gdb >/dev/null 2>&1 || { echo "gdb-transfer: gdb not found; pkg install gdb" >&2; exit 1; }
-        stage
-        cat > /tmp/pgsd-gdb.cmds << GDBEOF
-# Single-step the trampoline. TRAMP is the runtime address of
-# transferToKernel: cli / mov %cr3 / mov %rsp / jmpq *entry.
+        # Self-discovering: the trampoline runtime address depends on
+        # where the firmware placed the PE image this boot, so an
+        # address from an earlier run can be stale. Discover it now,
+        # in this invocation, then break at it. If the breakpoint does
+        # not land on the cli that opens the trampoline, the image
+        # relocated between the discover boot and the step boot;
+        # retry a few times before giving up.
+        TRAMP="${2:-}"
+        tries=0
+        while [ "$tries" -lt 4 ]; do
+            tries=$((tries + 1))
+            if [ -z "$TRAMP" ]; then
+                stage
+                timeout 60 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+                    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+                    -drive if=pflash,format=raw,file="$VARS" \
+                    -drive format=raw,file=fat:rw:"$ESP" \
+                    -net none >/dev/null 2>&1 || true
+                TRAMP=$(strings "$VARS" | grep -aoE 'clipc=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
+                [ -n "$TRAMP" ] || { echo "gdb-transfer: transfer path not reached (no tramp); check PGSD_REAL_KERNEL and arming" >&2; exit 1; }
+                echo "gdb-transfer: discovered trampoline = $TRAMP (attempt $tries)"
+            fi
+            stage
+            cat > /tmp/pgsd-gdb.cmds << GDBEOF
 set pagination off
 set confirm off
 target remote localhost:1234
-# Hardware breakpoint: the address is not in any file symbol table
-# (it is the running PE image), so break by raw address.
 hbreak *$TRAMP
 continue
-echo \n=== reached trampoline entry ===\n
+echo \n=== reached breakpoint; first instruction must be 'cli' ===\n
+x/1i $TRAMP
 info registers rip rsp cr3
-x/4i $TRAMP
-echo \n=== step 1: after cli ===\n
+echo \n=== step: cli ===\n
 stepi
-info registers rip
-echo \n=== step 2: after mov->cr3 (now on kernel page tables) ===\n
+echo \n=== step: mov->cr3 (watch cr3 change) ===\n
 stepi
 info registers rip cr3
-echo \n(if rip advanced past here, the post-cr3 instruction fetch succeeded)\n
-echo \n=== step 3: after mov->rsp ===\n
+echo \n=== step: mov->rsp ===\n
 stepi
 info registers rip rsp
-echo \n=== step 4: the jmp to kernel entry ===\n
+echo \n=== step: jmp to kernel entry (rip should become the kernel entry) ===\n
 stepi
 info registers rip
-echo \n=== now at kernel first instruction; step a few ===\n
+echo \n=== kernel first instructions ===\n
+x/4i \$rip
 stepi
 stepi
 stepi
-info registers rip rsp rdi rsi
-echo \n=== done. if rip is 0 or nonsense, the fault is here ===\n
+stepi
+info registers rip rsp rdi rsi rcx rdx
+echo \n=== if rip is 0/nonsense or unchanged, the fault is at the step above ===\n
 detach
 quit
 GDBEOF
-        echo "gdb-transfer: launching qemu (halted) + gdb; break at $TRAMP"
-        "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
-            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-            -drive if=pflash,format=raw,file="$VARS" \
-            -drive format=raw,file=fat:rw:"$ESP" \
-            -net none -S -gdb tcp::1234 > "$LOG" 2>&1 &
-        QPID=$!
-        sleep 1
-        gdb -q -x /tmp/pgsd-gdb.cmds || true
-        kill "$QPID" 2>/dev/null || true
+            echo "gdb-transfer: qemu (halted) + gdb; break at $TRAMP"
+            "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+                -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+                -drive if=pflash,format=raw,file="$VARS" \
+                -drive format=raw,file=fat:rw:"$ESP" \
+                -net none -S -gdb tcp::1234 > "$LOG" 2>&1 &
+            QPID=$!
+            sleep 1
+            gdb -q -x /tmp/pgsd-gdb.cmds 2>&1 | tee /tmp/pgsd-gdb.out
+            kill "$QPID" 2>/dev/null || true
+            # Did the breakpoint land on cli? cli is opcode fa; gdb
+            # prints it as "cli" in the x/1i line.
+            if grep -qaE ':\s+cli' /tmp/pgsd-gdb.out || grep -qaE '\bcli\b$' /tmp/pgsd-gdb.out; then
+                echo "gdb-transfer: breakpoint landed on the trampoline (cli confirmed)"
+                break
+            fi
+            echo "gdb-transfer: breakpoint did NOT land on cli (image relocated?); rediscovering..."
+            TRAMP=""
+        done
         echo "gdb-transfer: serial log at $LOG"
         ;;
     *)
