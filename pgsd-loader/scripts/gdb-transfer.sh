@@ -254,6 +254,7 @@ GDBEOF
         ENTRY=$(strings "$VARS" | grep -aoE 'entry=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
         [ -n "$TRAMP" ] || { echo "gdb-transfer: no clipc discovered" >&2; exit 1; }
         echo "gdb-transfer: trace; cli=$TRAMP entry=$ENTRY"
+        KERNEL_ELF="$PGSD_REAL_KERNEL"
         stage
         cat > /tmp/pgsd-gdb.cmds << GDBEOF
 set pagination off
@@ -267,20 +268,30 @@ stepi
 stepi
 stepi
 info registers rip
-echo \n=== kernel entered; letting it run free, then interrupting to sample ===\n
-# Free-run and interrupt a few times to see where rip settles. If it
-# is the same address across samples, the kernel is spinning/wedged
-# there; if rip is 0 or garbage, it faulted.
-shell sleep 2
-interrupt
+echo \n=== kernel entered; setting landmark breakpoints ===\n
+# Load the kernel's symbols so we can break at named early-boot
+# functions and see how far hammer_time gets. The kernel runs a long
+# silent stretch before cninit (console init), so "no serial" alone
+# does not localize the stop; these landmarks do. Breakpoints that
+# are hit print progress; the last one reached before the machine
+# faults/resets is the boundary.
+file $KERNEL_ELF
+break hammer_time
+break native_parse_preload_data
+break getmemsize
+break init_param1
+break cninit
+# temporary breakpoints so a hit does not require continue plumbing
+commands
+silent
+printf "LANDMARK: reached %s\n", \$pc
+continue
+end
+continue
+echo \n=== if no LANDMARK lines printed, the fault is before hammer_time in btext locore ===\n
 info registers rip
-shell sleep 2
-interrupt
-info registers rip
-shell sleep 2
-interrupt
-info registers rip rsp
-echo \n=== if rip repeats, that is where bring-up wedges ===\n
+detach
+quit
 detach
 quit
 GDBEOF
