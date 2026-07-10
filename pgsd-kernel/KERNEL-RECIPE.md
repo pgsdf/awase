@@ -61,6 +61,12 @@ release-level reproducibility.
 
 ## Build the PGSD kernel
 
+This recipe is the sole kernel path: `install.sh` detects and reports
+the kernel state but never builds or installs one (ADR 0002
+milestone 1). Run the `install` phase only after `sh install.sh` has
+deployed the userland; the AD-8 closure check refuses to install the
+kernel until `/boot/modules/drawfs.ko` is on disk.
+
     sh pgsd-kernel/pgsd-kernel-build.sh check     # verifies the pin
     sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
     sudo sh pgsd-kernel/pgsd-kernel-build.sh install

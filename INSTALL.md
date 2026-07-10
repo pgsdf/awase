@@ -10,8 +10,10 @@ installer can elevate, mount `/var/run` as tmpfs, install build
 dependencies, build awase userland, install awase, load kernel
 modules manually (not from loader.conf), start daemons. `install.sh`
 runs as a regular user and elevates privileged steps through `mdo`
-itself; it is not run under `sudo`. On a GENERIC kernel it also offers
-to build and install the PGSD kernel (Step 5.5).
+itself; it is not run under `sudo`. It does not build the PGSD
+kernel: that is a separate, operator-invoked step (Step 5.5, per
+ADR 0002), and on GENERIC the installer detects the missing kernel
+and says so.
 
 ## Prerequisites
 
@@ -24,8 +26,8 @@ to build and install the PGSD kernel (Step 5.5).
   commands before doing any work.
 - The `/usr/src` tree if you intend to build the PGSD kernel
   (see `pgsd-kernel/README.md`). Optional for first install;
-  GENERIC works for most Awase testing, and `install.sh` offers
-  to build the PGSD kernel for you (Step 5.5).
+  GENERIC works for staging, but the system is not runnable
+  until the PGSD kernel is installed (Step 5.5).
 
 ## Step 0: Provision `mac_do` elevation
 
@@ -323,34 +325,34 @@ install (for example, you are bringing up Awase on a remote bench
 that you will only access over SSH for kernel-module testing),
 you can skip this step and stay on GENERIC.
 
-**Offered by `install.sh`.** When you run `install.sh` on a GENERIC
-kernel (Step 6), it detects this with `uname -i` and offers to build
-and install the PGSD kernel for you. If you accept, it runs the
-existing `pgsd-kernel/pgsd-kernel-build.sh` phases with an operator
-confirmation between each one (`check`, then `build --clean`, then
-`install`), so a check warning or a failed world/kernel build stops
-for inspection rather than scrolling past inside the larger install.
-After the kernel is installed the installer stops and asks you to
-reboot into the new kernel and rerun `install.sh` to finish. The
-offer appears only in interactive runs; under `--yes` or a
-non-terminal run it prints that GENERIC is in use and the kernel
-build is skipped, then continues, so an unattended run never starts
-a 30-60 minute compile. The default config is `PGSD`; set
-`AWASE_KERNCONF=PGSD-DEBUG` to build the debug variant instead.
+**Not built by `install.sh` (ADR 0002).** The installer detects the
+kernel state and informs; it never builds or installs a kernel. On
+GENERIC, a non-interactive run (`--yes`) fails fast (exit 3) unless
+`--skip-kernel` acknowledges a staged, not yet runnable install; an
+interactive run completes the userland deploy and prints a prominent
+notice pointing here. The kernel lifecycle belongs to
+`pgsd-kernel-build.sh`, operator-invoked, phase by phase; see
+`pgsd-kernel/KERNEL-RECIPE.md`.
 
-If you decline the offer, or choose to stay on GENERIC, the install
-continues on GENERIC (supported, just not preferred) and does not
-prompt again.
+**Ordering.** Run the kernel `install` phase only after Step 6 has
+deployed the userland: the kernel's AD-8 closure check refuses to
+install until `/boot/modules/drawfs.ko` is on disk (a PGSD kernel
+booting with no drawfs.ko comes up dark). The `check` phase and the
+30-60 minute `build` phase can run at any time before that.
 
-**Quickstart (manual).** To build the kernel yourself, outside the
-installer:
+**Quickstart.** The kernel steps, in the working order around
+Step 6:
 
 ```
 sh pgsd-kernel/pgsd-kernel-build.sh check
 mdo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
+sh install.sh                                # Step 6 (deploys drawfs.ko)
 mdo sh pgsd-kernel/pgsd-kernel-build.sh install
 mdo shutdown -r now
 ```
+
+The default config is `PGSD`; pass `PGSD-DEBUG` as the phase argument
+to build the debug variant instead.
 
 Plan 30-60 minutes for the build. See `pgsd-kernel/README.md`
 for what each step does, the pkgbase versus source-built install
@@ -359,11 +361,10 @@ development, and recovery procedures if a build or boot goes
 wrong. Read it before running the commands if this is your
 first PGSD build.
 
-Whether you let `install.sh` drive it or run the commands by hand,
-`pgsd-kernel-build.sh` remains the single source of truth for
-source-tree validation, AD-8 closure, recovery checks, and build
-flags; `install.sh` only sequences the phases and preserves their
-checkpoints.
+`pgsd-kernel-build.sh` is the single source of truth for source-tree
+validation, AD-8 closure, recovery checks, and build flags.
+`install.sh` neither sequences nor runs its phases; it only detects
+whether a PGSD kernel is present and reports (ADR 0002 milestone 1).
 
 ## Step 6 — Install (system-wide)
 
@@ -384,8 +385,10 @@ This is the canonical install path. It:
 
 1. Runs an elevation preflight, then installs missing dependencies
    (each elevated independently).
-2. On a GENERIC kernel, offers to build and install the PGSD kernel
-   (Step 5.5), stopping for a reboot if you accept.
+2. On a GENERIC kernel with no PGSD kernel installed for next boot,
+   decides up front: non-interactive runs fail fast (exit 3) unless
+   `--skip-kernel` acknowledges the staged state; interactive runs
+   complete and print a notice pointing at Step 5.5.
 3. Clears stale build artifacts (`clean.sh --force`) and repairs any
    root-owned `sdk/` toolchain left by an older `sudo`-based install,
    then builds the userland unprivileged.
