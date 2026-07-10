@@ -270,6 +270,16 @@ pub fn buildHandoffStack(bs: *uefi.tables.BootServices, modulep: u64, kernend: u
 /// is a nop in no-copy, so it is omitted. After the cr3 load the next
 /// instructions are fetched through the new tables' low 1:1 mapping,
 /// and the jump target is the kernel's linked entry in the upper map.
+// Callable, but with the three values pinned to explicit registers
+// as asm inputs so none is sourced from a %rbp-relative stack slot
+// across the stack switch. The earlier form used "r" constraints,
+// which the -ODebug allocator happened to satisfy with live
+// registers; pinning to rcx/rdx/r8 (and reading rsp from a register,
+// never memory) makes that guarantee explicit rather than
+// incidental, so a reload from the old frame after "movq -> rsp"
+// cannot occur. r9 is a scratch to stage the new rsp, keeping the
+// three inputs untouched until used. The clobber of memory keeps the
+// asm from being reordered against the surrounding stores.
 pub fn transferToKernel(entry: u64, pagetable: u64, handoff_rsp: u64) noreturn {
     asm volatile (
         \\ cli
@@ -277,9 +287,9 @@ pub fn transferToKernel(entry: u64, pagetable: u64, handoff_rsp: u64) noreturn {
         \\ movq %[sp], %%rsp
         \\ jmpq *%[entry]
         :
-        : [entry] "r" (entry),
-          [pt] "r" (pagetable),
-          [sp] "r" (handoff_rsp),
+        : [entry] "{rcx}" (entry),
+          [pt] "{rdx}" (pagetable),
+          [sp] "{r8}" (handoff_rsp),
         : .{ .memory = true });
     unreachable;
 }
