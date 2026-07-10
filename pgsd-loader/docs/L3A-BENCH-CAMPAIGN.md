@@ -315,3 +315,31 @@ Adequate for scaffolding where the operator controls the cycle;
 any campaign automation that reads it must pair the read with
 the cycle that wrote it, and a timestamp or nonce field is the
 upgrade if that pairing ever gets fragile.
+
+#### F7 step 1 evidence (ADR 0005 Decision 1.1): the breadcrumb survived
+
+Read back 2026-07-10 on the reinstalled bench, fourteen days and one
+FreeBSD reinstall after the fatal attempt (NVRAM is not disk):
+
+    BOOT_ATTEMPT entry=0xffffffff80383000 pml4=0x7e5c4000
+                 tramp=0x7e5f7ed0 rsp=0x7e5c3f00
+
+Consequences for the F7 hypothesis list:
+
+- Both address hypotheses named at F7 are eliminated by the fatal
+  attempt's own values: the transfer code ran from 0x7e5f7ed0,
+  below 4 GiB and covered by the low 1:1 (the image was not loaded
+  high on this firmware), and pml4 and rsp are likewise below
+  4 GiB, 4 KiB aligned (no stray cr3 low bits), with the stack page
+  adjacent to the table pages exactly as allocated.
+- The remaining fault space is therefore: the unreported region
+  between the breadcrumb write and the jump (final map capture,
+  chain rebuild, the ExitBootServices retry loop), and the kernel's
+  first instructions, which have never executed through this
+  transfer anywhere (the KOK proof used the fake kernel by design).
+  Both are exercised by ADR 0005 step 2, the real-kernel emulation
+  run, which proceeds next.
+- The variable still holding BOOT_ATTEMPT also shows the safe
+  loader has not run since the reinstall: pgsd-loader is not in the
+  bench boot path. Step 3 deployment, when reached, is a deliberate
+  deploy.sh act under ADR 0005 Decision 4, not a leftover arming.
