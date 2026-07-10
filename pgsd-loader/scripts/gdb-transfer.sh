@@ -276,19 +276,48 @@ echo \n=== kernel entered; setting landmark breakpoints ===\n
 # are hit print progress; the last one reached before the machine
 # faults/resets is the boundary.
 file $KERNEL_ELF
-break hammer_time
-break native_parse_preload_data
-break getmemsize
-break init_param1
-break cninit
-# temporary breakpoints so a hit does not require continue plumbing
-commands
+# Break at early-boot landmarks in call order. Each breakpoint gets
+# its own print-and-continue command block, bound by number, because
+# a bare "commands" attaches only to the most recent breakpoint. The
+# last LANDMARK printed before the machine faults is the boundary.
+break amd64_loadaddr
+commands 2
 silent
-printf "LANDMARK: reached %s\n", \$pc
+printf "LANDMARK: amd64_loadaddr\n"
+continue
+end
+break hammer_time
+commands 3
+silent
+printf "LANDMARK: hammer_time\n"
+continue
+end
+break native_parse_preload_data
+commands 4
+silent
+printf "LANDMARK: parse_preload_data\n"
+continue
+end
+break getmemsize
+commands 5
+silent
+printf "LANDMARK: getmemsize\n"
+continue
+end
+break init_param1
+commands 6
+silent
+printf "LANDMARK: init_param1\n"
+continue
+end
+break cninit
+commands 7
+silent
+printf "LANDMARK: cninit (console init reached; should print now)\n"
 continue
 end
 continue
-echo \n=== if no LANDMARK lines printed, the fault is before hammer_time in btext locore ===\n
+echo \n=== last LANDMARK above is how far boot got; if none, fault is in btext before hammer_time ===\n
 info registers rip
 detach
 quit
