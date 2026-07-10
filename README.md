@@ -17,10 +17,19 @@ Awase is built for PGSD on FreeBSD; it no longer targets GhostBSD. Earlier work 
 
 ---
 
-## Current state (2026-06-12)
+## Current state (2026-07-10)
 
 What is built and verified:
 
+- The **installation architecture** is moving under ADR 0002 (ratified
+  2026-07-10) to a producer/consumer split joined by a published
+  artifact contract. Milestone 1 is landed and bench-verified:
+  `install.sh` installs the userland only and detects the kernel
+  state; the PGSD kernel is built and installed separately per
+  `pgsd-kernel/KERNEL-RECIPE.md`; and the bench runs the pinned PGSD
+  kernel, its commit hash visible in `uname`. Milestone 2 (the Awase
+  build staging Axiom-format artifact sets with per-file inventory)
+  is next.
 - **chronofs** is complete (C-1 through C-5 closed): the clock
   module, event-stream buffers, resolver, audio-driven frame
   scheduler, and `chrono_dump`. The temporal layer is done.
@@ -691,7 +700,11 @@ alone (AD-2 closed 2026-05-17), audio on audiofs and semasound alone
 all of it supervised from boot. The open substrate-level audio work
 proceeds under ADR 0030's maintained end-state; the open AD items are
 in `BACKLOG.md`; and the upper layers (NDE, LT, the rest of SM) are
-the next frontier, by choice of priority.
+the next frontier, by choice of priority. The installation and
+packaging path is moving under project ADR 0002 to a published
+artifact contract converging on Axiom: milestone 1 (kernel
+separation) landed and was bench-verified 2026-07-10; the remaining
+milestones are tracked in `BACKLOG.md` under ADR 0002.
 
 ---
 

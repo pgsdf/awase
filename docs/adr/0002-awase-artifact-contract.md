@@ -350,6 +350,22 @@ Ratified 2026-07-10 as itemized:
    milestone 1's retained detection gate.
 7. The deferrals as listed.
 
+## Implementation status
+
+Maintained as milestones land. Entries are dated facts, not
+decisions; the decisions above are not reopened here.
+
+- Milestone 1: landed 2026-07-10 and bench-verified the same day on
+  both kernels. GENERIC: exit-3 fail-fast, --skip-kernel
+  acknowledgment, interactive completion with notice, and the
+  check/uninstall gate bypass. PGSD: the satisfied path, with
+  "installation complete" printed for the first time as a true
+  statement of the machine's state. Documentation updated
+  (INSTALL.md, KERNEL-RECIPE.md).
+- Milestones 2 through 5: open. Milestone 2 (Axiom-format artifact
+  sets with Lockbox-grade inventory, staged by the Awase build) is
+  next.
+
 ## Appendix: Axiom implementation observations (2026-07-10)
 
 Non-normative. This appendix records the state of the Axiom

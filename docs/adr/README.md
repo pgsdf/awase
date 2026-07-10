@@ -30,6 +30,8 @@ law; manifest and inventory as distinct abstractions with identity as
 a content hash over filesystem contents; authority factoring between
 producer facts and consumer policy; convergence on the Axiom artifact
 contract; and a five-milestone, format-first migration whose first
-increment separates the kernel build from install.sh.
+increment separates the kernel build from install.sh. Milestone 1
+landed and was bench-verified on both kernels 2026-07-10; milestone
+progress is tracked in BACKLOG.md under ADR 0002.
 
 This README carries no decisions.

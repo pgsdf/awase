@@ -1882,6 +1882,61 @@ definition without turning the repo into a FreeBSD source mirror. Full
 vendoring is rejected as the first move; whether any touched-file
 patch-base is vendored is a representation detail, not this decision.
 
+### `[~]` ADR 0002: the Awase artifact contract  *(In progress, Large; project-level ADR ratified 2026-07-10; milestone 1 of 5 complete and bench-verified 2026-07-10; milestone 2 next)*
+
+**Tracks**: `docs/adr/0002-awase-artifact-contract.md`.
+
+Building Awase and installing PGSD become independent systems that
+communicate only through a published artifact contract: the successor
+AD-57 explicitly deferred, the FREEBSD-PIN shape generalized from the
+kernel to the whole substrate. Two principles graduate to project law
+(Publish, Don't Infer; Authority Owns Truth), and the contract
+converges on the Axiom artifact format (github.com/pgsdf/axiom), with
+two enhancements flowing upstream: Lockbox-grade per-file inventory
+promoted into package manifests, and identity/provenance separation.
+
+**Milestones** (format before machinery; the implementation appears
+once, at milestone 4):
+
+- `[x]` 1. Kernel build separated from installation. Landed and
+  bench-verified 2026-07-10 on both kernels: GENERIC (exit-3 gate,
+  `--skip-kernel` acknowledgment, interactive notice, check/uninstall
+  gate bypass) and PGSD (satisfied path). `install.sh` detects and
+  informs, never builds; the kernel lifecycle is
+  `pgsd-kernel-build.sh` per `pgsd-kernel/KERNEL-RECIPE.md`.
+  Documentation updated (INSTALL.md Step 5.5, KERNEL-RECIPE.md
+  ordering note).
+- `[ ]` 2. Artifact contract established: the Awase build stages
+  Axiom-compatible artifact sets with complete Lockbox-grade
+  inventory and Merkle identity, inside this repository. Pure data,
+  no runtime dependency on Axiom; closes the deploy-gap class
+  structurally. **Next.**
+- `[ ]` 3. `install.sh` consumes only the published contract:
+  hash-verified inventory install, hard failure on divergence in
+  either direction; the `BINARIES` list and all inferred
+  completeness deleted.
+- `[ ]` 4. Consumer implementation replaced by Axiom (store import,
+  PGSD as a profile, realize and activate). Preconditions: Axiom
+  exercised on the bench, and its FreeBSD 15.1 / Zig 0.16 migration
+  done upstream. Only here does Axiom become load-bearing, as a
+  deliberate operational decision.
+- `[ ]` 5. Repository split along the proven contract; artifact sets
+  referenced by identity, never committed to git.
+
+**Findings originated in the milestone 1 bench session** (pending
+operator disposition into their own AD numbers or existing entries):
+
+- AD-8 first-gate miss (2026-07-10): buildkernel produced all ten
+  suppressed HID `.ko` files despite `WITHOUT_MODULES`; the closure
+  verification caught it at install time and the remediation path
+  cleaned `/boot/kernel/`. Determine why the first gate missed
+  (candidates: `resolve_without_modules` against the freshly pinned
+  tree, or the variable not reaching the make invocation). P2.
+- `pgsd-kernel-build.sh check` has no `/usr/src` ownership
+  pre-flight: root-owned droppings from elevated git operations
+  surface at fetch time instead of at `check`. Add a `[WARN]` when
+  `/usr/src/.git` content is not owned by the invoking user. P2.
+
 ### `[~]` AD-62: pgsd-loader, the fresh Awase loader (AD-56 Phase 3 implementation)  *(In progress, Large; project ADR 0001 ratified; L0 closed, L3a.1 complete, L3a.2 through increment 2 bench-proven on bare-metal-test-bench)*
 
 **Tracks**: `pgsd-loader/` (the implementation), `pgsd-loader/docs/`
