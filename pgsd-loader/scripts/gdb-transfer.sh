@@ -177,6 +177,66 @@ GDBEOF
         done
         echo "gdb-transfer: serial log at $LOG"
         ;;
+    trace)
+        # Like step, but after reaching the kernel entry, let it run
+        # under gdb and periodically sample rip to see where early
+        # kernel bring-up wedges. A stuck or resetting rip means an
+        # early fault (candidate: the kernel's physical-memory setup
+        # against our no-copy staging layout); an rip parked in a spin
+        # or wait means it reached a later stage that is blocking. This
+        # is the loader/kernel boundary diagnostic.
+        command -v gdb >/dev/null 2>&1 || { echo "gdb-transfer: gdb not found; pkg install gdb" >&2; exit 1; }
+        stage
+        timeout 60 "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+            -drive if=pflash,format=raw,file="$VARS" \
+            -drive format=raw,file=fat:rw:"$ESP" \
+            -net none >/dev/null 2>&1 || true
+        TRAMP=$(strings "$VARS" | grep -aoE 'clipc=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
+        ENTRY=$(strings "$VARS" | grep -aoE 'entry=0x[0-9a-f]+' | tail -1 | cut -d= -f2)
+        [ -n "$TRAMP" ] || { echo "gdb-transfer: no clipc discovered" >&2; exit 1; }
+        echo "gdb-transfer: trace; cli=$TRAMP entry=$ENTRY"
+        stage
+        cat > /tmp/pgsd-gdb.cmds << GDBEOF
+set pagination off
+set confirm off
+target remote localhost:1234
+hbreak *$TRAMP
+continue
+echo \n=== at trampoline; stepping into kernel entry ===\n
+stepi
+stepi
+stepi
+stepi
+info registers rip
+echo \n=== kernel entered; letting it run free, then interrupting to sample ===\n
+# Free-run and interrupt a few times to see where rip settles. If it
+# is the same address across samples, the kernel is spinning/wedged
+# there; if rip is 0 or garbage, it faulted.
+shell sleep 2
+interrupt
+info registers rip
+shell sleep 2
+interrupt
+info registers rip
+shell sleep 2
+interrupt
+info registers rip rsp
+echo \n=== if rip repeats, that is where bring-up wedges ===\n
+detach
+quit
+GDBEOF
+        "$QEMU" -machine q35 -m 256 -nographic -no-reboot -boot menu=off \
+            -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+            -drive if=pflash,format=raw,file="$VARS" \
+            -drive format=raw,file=fat:rw:"$ESP" \
+            -net none -S -gdb tcp::1234 > "$LOG" 2>&1 &
+        QPID=$!
+        sleep 1
+        gdb -q -x /tmp/pgsd-gdb.cmds 2>&1 | grep -aE 'sample|rip|===' || true
+        kill "$QPID" 2>/dev/null || true
+        echo "gdb-transfer: serial log at $LOG"
+        ;;
     run)
         # Free run: boot the transfer-armed real kernel and let it run
         # without gdb, serial captured, to see how far kernel bring-up
