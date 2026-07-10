@@ -2790,19 +2790,14 @@ elif [ "$KERNEL_PLAN" = "prompt" ]; then
         echo "Running GENERIC kernel; $KBUILD not found, skipping kernel build."
     elif kernel_prompt_yesno "Awase installer: PGSD kernel" "Awase is installed. You are running the GENERIC kernel.
 
-The PGSD kernel is recommended for full Awase support: it removes the HID and
-console drivers that otherwise claim the devices inputfs and drawfs need.
-Building it now:
+The PGSD kernel is recommended for full Awase support: it removes the HID and console drivers that otherwise claim the devices inputfs and drawfs need. Building it now:
 
   - takes roughly 30 to 60 minutes
-  - happens after this completed install, so drawfs.ko is already in place and
-    the kernel's AD-8 closure check will pass
-  - requires a reboot afterwards, straight into a ready system; no second
-    install pass is needed
+  - happens after this completed install, so drawfs.ko is already in place and the kernel's AD-8 closure check will pass
+  - requires a reboot afterwards, straight into a ready system; no second install pass is needed
 
 Build and install the PGSD kernel now? Choosing No leaves you on GENERIC."; then
         echo ""
-        echo "=== PGSD kernel: environment check ($KERNCONF) ==="
         sh "$KBUILD" check "$KERNCONF" || true
         echo ""
         if kernel_confirm "Check complete; review the output above. Proceed to BUILD ($KERNCONF)?"; then
