@@ -647,3 +647,112 @@ Remaining, as separate non-F7 work: the EFI runtime module load
 (MOD_LOAD efirt error 6) if EFI runtime services are ever wanted, and
 a real-hardware boot on the bench where the ZFS root is present, under
 the ADR 0005 Decision 4 metal discipline.
+
+### F8: metal transfer does not boot though emulation does; a sequencing divergence from loader.efi is the leading hypothesis
+
+**Status: open (hypothesis, emulation-testable, metal retired).**
+
+#### What was observed on metal (2026-07-11)
+
+The transfer that boots the pinned kernel to the mountroot prompt in
+emulation (F7, closed above) was armed on the bench twice under the
+ADR 0005 Decision 4 one-cycle protocol. The second attempt was
+validated against a mock efibootmgr and checkpoint-confirmed
+armed-active-at-order-head before the single reboot. Both attempts
+failed to boot: the first power-cycled, the second blanked the
+display with no kernel text, and both required a FreeBSD reinstall to
+recover. The armed loader launched from the firmware picker also
+blanked. This reproduces the original F7 signature (reset/blank at
+the Apple firmware, no kernel text) on hardware, twice, against a
+transfer that is correct in emulation.
+
+Per ADR 0005 Decision 6 (2026-07-11) metal arming is retired: the
+QEMU-boots / metal-does-not split is now the established finding, and
+the bench is not to be armed again to re-confirm it. The remaining
+question, why the handoff differs on this firmware, is pursued in
+emulation and against the FreeBSD source, never on the bench.
+
+#### The divergence from the reference implementation
+
+FreeBSD's own EFI loader boots this same Apple hardware (it is what
+the bench boots today), so its kernel handoff is a working reference
+for this firmware. Comparing our exit sequence against it:
+
+- Observed (reference): FreeBSD builds all boot metadata first, then
+  enters a tight retry loop that does GetMemoryMap immediately
+  followed by ExitBootServices with nothing in between.
+  stand/efi/loader/bootinfo.c bi_load_efi_data(): bi_load()
+  constructs the module chain and boot info, and only afterward the
+  for (retry = 2 ...) loop calls BS->GetMemoryMap(&...&efi_mapkey...)
+  and then efi_exit_boot_services(efi_mapkey) with no intervening
+  work. The loop, and its comment crediting Matthew Garrett with
+  observing a system that changes the memory map during
+  ExitBootServices, is explicit firmware-quirk handling: the map key
+  must still be current when ExitBootServices is called, and the
+  retry re-reads the map if it is not.
+
+- Observed (ours): pgsd-loader/src/main.zig performs additional work
+  between acquiring the map key and calling ExitBootServices. Inside
+  the retry loop it captures the map (handoff.captureMemoryMap, which
+  yields fmap.key), then rebuilds the metadata chain with the final
+  map (metadata.buildChainFull) and memcpy's it into the staging
+  area, and only then calls bsp.exitBootServices(handle, fmap.key).
+  The metadata rebuild sits between the key acquisition and the exit,
+  and it is repeated on every retry.
+
+- Verified (ours): buildChainFull and its callees (file_addmetadata,
+  record, ChainWriter.init) invoke no EFI Boot Services and perform
+  no allocations; they write into caller-provided buffers, and the
+  only memory-state change between capture and exit is the memcpy of
+  the rebuilt chain into the already-reserved staging region. So the
+  divergence is a sequencing difference, not a known allocation or
+  boot-services callback between GetMemoryMap and ExitBootServices.
+
+#### Hypothesis, and what would support or falsify it
+
+Hypothesis: on strict firmware, any work performed between
+GetMemoryMap and ExitBootServices raises the chance that the map key
+is no longer current when ExitBootServices is called, which the
+firmware reports by failing the exit. FreeBSD's reference structure
+avoids this by construction (nothing between the two calls) and by
+re-reading the map on failure. Ours does not: it interposes the chain
+rebuild and memcpy, and because each retry repeats that same
+interposed work, a retry does not converge if the interposed work is
+what perturbs the map.
+
+Not established: that the memcpy (or any specific interposed
+operation) actually invalidates the key on this firmware. buildChainFull
+does not allocate, so there is no obvious mechanism; whether a large
+write into an already-reserved staging region perturbs the map on
+Apple firmware is unknown. The claim this finding stands behind is
+the narrower one: our sequence differs from the working reference in
+a way that the reference's own comments identify as firmware-sensitive.
+
+Supporting evidence would be: restructuring the handoff so all
+metadata construction precedes a tight GetMemoryMap/ExitBootServices
+loop (mirroring bi_load) changes the ExitBootServices outcome. This
+is testable in emulation for regression (the kernel must still reach
+the mountroot prompt) but its effect on the metal failure cannot be
+tested without a bench arming, which is retired; a future metal test
+would require an explicit ADR 0005 amendment per Decision 6, and this
+restructuring is exactly the kind of specific, source-grounded change
+that could justify proposing one.
+
+Falsifying evidence would be: the restructured loader still fails
+ExitBootServices in an environment that reproduces the strictness, or
+analysis showing the map key is captured and used correctly across
+the interposed work (in which case the divergence is cosmetic and the
+metal failure lies elsewhere, e.g. the EFI runtime mapping thread,
+MOD_LOAD efirt error 6, or SetVirtualAddressMap handling).
+
+#### Proposed follow-on (not yet done)
+
+1. This finding (recorded).
+2. Refactor the handoff so all metadata construction occurs before a
+   tight GetMemoryMap/ExitBootServices loop, matching FreeBSD's
+   structure. Touches the ADR 0005 Decision 3 fail-closed rebuild
+   timing, so it needs an ADR note.
+3. Validate in emulation via f7probe that the kernel still reaches
+   the mountroot prompt (no regression).
+4. Leave the physical-hardware question open unless a future explicit
+   decision, under ADR 0005 Decision 6, authorizes another bench test.
