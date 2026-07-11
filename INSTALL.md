@@ -1,19 +1,44 @@
 # Installing Awase on a fresh FreeBSD system
 
-This document walks through installing Awase on a clean FreeBSD 15
-machine. Each step has a verification check; do not proceed until
-the check passes. The hazards section at the end names the things
-that have actually broken installs in the past.
+This document has two parts, because installing Awase and developing
+Awase are different jobs with different steps.
 
-The high-level shape is: install FreeBSD, provision `mac_do` so the
-installer can elevate, mount `/var/run` as tmpfs, install build
-dependencies, build awase userland, install awase, load kernel
-modules manually (not from loader.conf), start daemons. `install.sh`
-runs as a regular user and elevates privileged steps through `mdo`
-itself; it is not run under `sudo`. It does not build the PGSD
-kernel: that is a separate, operator-invoked step (Step 5.5, per
-ADR 0002), and on GENERIC the installer detects the missing kernel
-and says so.
+- **Part 1, Installing** is for getting a working Awase system. It is
+  a linear runsheet: prepare the machine, run the installer, install
+  the PGSD kernel, reboot. You do not build individual components by
+  hand; `install.sh` builds and installs the userland, the kernel
+  modules, the services, and the supervision tree for you. If you
+  want a working system, read Part 1 and stop.
+
+- **Part 2, Developing** is for working on a component. It covers
+  building a single subproject or kernel module without reinstalling
+  everything, reloading a module against a running system, restarting
+  one daemon, and the iterate loop. These steps are not part of an
+  install and you do not need them to run Awase.
+
+Parts 3 and 4 (Hazards, Recovery and uninstall) apply to both.
+
+Every step in Part 1 has a verify block. Do not proceed past a step
+whose check fails. The hazards section names the things that have
+actually broken installs in the past.
+
+`install.sh` runs as a regular user and elevates privileged steps
+through `mdo` itself; it is not run under `sudo`. It does not build
+the PGSD kernel: that is a separate, operator-invoked step (per ADR
+0002), and on GENERIC the installer detects the missing kernel and
+says so.
+
+
+---
+
+# Part 1 — Installing Awase
+
+This is the whole install. Follow it top to bottom. You will not
+build any component by hand: `install.sh` does that.
+
+The shape is: prepare the machine (Steps 1 to 4), run the installer
+(Step 5), install the PGSD kernel (Step 6), reboot and verify
+(Steps 7 to 9).
 
 ## Prerequisites
 
@@ -27,10 +52,10 @@ and says so.
 - The `/usr/src` tree if you intend to build the PGSD kernel. You
   do not need to set this up by hand: the kernel build provisions
   it from the pinned fork with
-  `sudo sh pgsd-kernel/pgsd-kernel-build.sh provision` (Step 5.5).
+  `sudo sh pgsd-kernel/pgsd-kernel-build.sh provision` (Step 6).
   Optional for first install; GENERIC works for staging, but the
   system is not runnable until the PGSD kernel is installed
-  (Step 5.5).
+  (Step 6).
 
 ## Step 0: Provision `mac_do` elevation
 
@@ -117,7 +142,7 @@ copy module sources into `/usr/src/sys/`. It is not in FreeBSD
 base. Without it, both kernel-module builds fail at the install
 step with `rsync: not found`.
 
-For the interactive backend selector in step 3.5 below, also
+For the interactive backend selector in step 4 below, also
 install `bsddialog`:
 
 ```
@@ -131,7 +156,7 @@ interface and is recommended.
 **Do not `pkg install FreeBSD-src`.** The PGSD kernel builds
 against a *pinned FreeBSD fork*, not the pkgbase release source,
 and the AD-57 pin check rejects an unpinned `/usr/src`. The kernel
-build provisions the correct source itself in Step 5.5
+build provisions the correct source itself in Step 6
 (`pgsd-kernel-build.sh provision`); there is nothing to install
 here for the kernel source.
 
@@ -189,7 +214,7 @@ Expect to see `README.md`, `BACKLOG.md`, `install.sh`, `drawfs/`,
 `inputfs/`, `audiofs/`, `semadraw/`, `semasound/`, `semainput/`,
 `chronofs/`, `shared/`, `pgsd-kernel/`.
 
-## Step 3.5 — Configure backend selection
+## Step 4 — Configure backend selection
 
 Awase's semadraw compositor has several optional backends — Vulkan,
 X11, Wayland, and bsdinput. On a fresh FreeBSD install without
@@ -239,150 +264,23 @@ Expect to see the current configuration printed. If the file
 does not exist, configure.sh tells you so; do not proceed
 until `.config` is written.
 
-## Step 4 — Build awase userland
-
-The top-level `build.sh` builds every userland Zig subproject:
-`semasound`, `chronofs`, and `semadraw`. The `semainput` subproject
-no longer produces an executable (the daemon was retired
-2026-05-08); only `libsemainput` remains, consumed by `semadrawd`
-at build time.
+## Step 5 — Run the installer
 
 ```
-sh build.sh
+sh install.sh
 ```
 
-Run this as your regular user, not under `sudo`: the userland
-build is unprivileged by design, which keeps `zig-out/` and
-`.zig-cache/` owned by you and avoids the root-owned-artifact
-problem that a later unprivileged rebuild would trip over.
-This takes a few minutes and produces binaries under each
-subproject's `zig-out/bin/`. Kernel modules are built separately
-in step 5 — `build.sh` does not build kernel modules.
+Run as a regular user, not under `sudo`. `install.sh` does the whole
+build and install: it cleans stale artifacts, builds the userland
+(ReleaseSafe), builds and deploys the drawfs, inputfs, and audiofs
+kernel modules, installs the binaries, generates the rc.d services
+and the s6 supervision tree, and sets the enable flags. You do not
+run `build.sh` or the per-module build scripts yourself; that is
+developer work (Part 2).
 
-**Verify:**
+This is the step that needs `mac_do` (Step 0): the build is
+unprivileged, and only the deploy phase elevates.
 
-```
-ls semadraw/zig-out/bin/semadrawd
-ls semasound/zig-out/bin/semasound
-ls chronofs/zig-out/bin/chrono_dump
-```
-
-All three files must exist. If any are missing, the corresponding
-build step failed; re-run `build.sh` and read the error output.
-
-## Step 5 — Build the kernel modules
-
-drawfs and inputfs are FreeBSD kernel modules, built against
-`/usr/src` via per-module helper scripts. The full build sequence
-runs as part of `install.sh` in step 6, so for a normal install
-you can skip this step. To build the modules without installing
-the rest of awase (for development iteration):
-
-```
-sudo sh drawfs/build.sh install
-sudo sh drawfs/build.sh build
-sudo sh drawfs/build.sh deploy
-sudo sh inputfs/build.sh install
-sudo sh inputfs/build.sh build
-sudo sh inputfs/build.sh deploy
-```
-
-Each helper script copies sources into `/usr/src/sys/`, runs
-`make`, and copies the resulting `.ko` to `/boot/modules/`.
-
-**Verify:**
-
-```
-ls /boot/modules/drawfs.ko
-ls /boot/modules/inputfs.ko
-```
-
-Both must exist after the deploy step.
-
-The standalone Zig build under `inputfs/` (just `zig build` in
-that directory) only builds `inputdump`, the userland diagnostic
-CLI — not the kernel module. The kernel module is built by
-`inputfs/build.sh` exclusively.
-
-## Step 5.5 — Build the PGSD kernel (recommended)
-
-The stock GENERIC kernel works for first install and basic Awase
-testing, but several in-tree drivers compete with Awase for
-ownership of hardware:
-
-- `hkbd`, `ukbd`, `hms`, `hmt`, `hgame`, `hcons`, `hsctrl`,
-  `hpen`, `hconf`, `hidmap`: HID class drivers that claim
-  USB keyboards, mice, and touchpads before `inputfs` can.
-  Without the PGSD kernel, input under Awase may not work
-  (Hazard 2 below).
-- `vt`, `vt_efifb`, `sc`, `vga`, `splash`: in-tree console
-  drivers that write to the EFI framebuffer in parallel with
-  drawfs, causing cursor sprites and other compositor output
-  to be overwritten by console repaints (Hazard 7 below).
-
-The PGSD kernel removes all of these. For full Awase behaviour
-including reliable input and contention-free framebuffer
-rendering, build and install PGSD.
-
-If you do not need input or visible cursor tracking on this
-install (for example, you are bringing up Awase on a remote bench
-that you will only access over SSH for kernel-module testing),
-you can skip this step and stay on GENERIC.
-
-**Not built by `install.sh` (ADR 0002).** The installer detects the
-kernel state and informs; it never builds or installs a kernel. On
-GENERIC, a non-interactive run (`--yes`) fails fast (exit 3) unless
-`--skip-kernel` acknowledges a staged, not yet runnable install; an
-interactive run completes the userland deploy and prints a prominent
-notice pointing here. The kernel lifecycle belongs to
-`pgsd-kernel-build.sh`, operator-invoked, phase by phase; see
-`pgsd-kernel/KERNEL-RECIPE.md`.
-
-**Ordering.** Run the kernel `install` phase only after Step 6 has
-deployed the userland: the kernel's AD-8 closure check refuses to
-install until `/boot/modules/drawfs.ko` is on disk (a PGSD kernel
-booting with no drawfs.ko comes up dark). The `check` phase and the
-30-60 minute `build` phase can run at any time before that.
-
-**Quickstart.** The kernel steps, in the working order around
-Step 6:
-
-```
-sudo sh pgsd-kernel/pgsd-kernel-build.sh provision   # clone the pinned fork into /usr/src
-sh pgsd-kernel/pgsd-kernel-build.sh check
-mdo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
-sh install.sh                                # Step 6 (deploys drawfs.ko)
-mdo sh pgsd-kernel/pgsd-kernel-build.sh install
-mdo shutdown -r now
-```
-
-The `provision` phase populates `/usr/src` with the pinned FreeBSD
-fork the kernel builds against (reading `pgsd-kernel/FREEBSD-PIN`).
-It is a deliberate, destructive step (a multi-GiB clone that replaces
-`/usr/src`), owned by the kernel build because `/usr/src` exists only
-for the kernel: the userland install never uses it. Run it once on a
-fresh machine; it is idempotent when `/usr/src` is already the pinned
-fork, and it confirms before replacing a non-empty tree (pass `--yes`
-to skip the prompt). If you provisioned `/usr/src` some other way (a
-manual clone at the pinned commit), skip it; `check` verifies the pin
-regardless.
-
-The default config is `PGSD`; pass `PGSD-DEBUG` as the phase argument
-to build the debug variant instead.
-
-Plan 30-60 minutes for the build. See `pgsd-kernel/README.md`
-for what each step does, the pkgbase versus source-built install
-variations, the PGSD-DEBUG variant for kernel-side Awase
-development, and recovery procedures if a build or boot goes
-wrong. Read it before running the commands if this is your
-first PGSD build.
-
-`pgsd-kernel-build.sh` is the single source of truth for source-tree
-validation, AD-8 closure, recovery checks, and build flags.
-`install.sh` neither sequences nor runs its phases; it only detects
-whether a PGSD kernel is present and reports (ADR 0002 milestone 1).
-
-## Step 6 — Install (system-wide)
 
 ```
 sh install.sh
@@ -404,7 +302,7 @@ This is the canonical install path. It:
 2. On a GENERIC kernel with no PGSD kernel installed for next boot,
    decides up front: non-interactive runs fail fast (exit 3) unless
    `--skip-kernel` acknowledges the staged state; interactive runs
-   complete and print a notice pointing at Step 5.5.
+   complete and print a notice pointing at Step 6.
 3. Clears stale build artifacts (`clean.sh --force`) and repairs any
    root-owned `sdk/` toolchain left by an older `sudo`-based install,
    then builds the userland unprivileged.
@@ -478,30 +376,108 @@ The last `grep` is a check, not a setup step: if it produces
 output, something added `inputfs_load` and it must be removed
 before the next reboot.
 
-## Step 7 — Load drawfs
+## Step 6 — Build and install the PGSD kernel
 
-drawfs loads automatically at next boot via `/boot/loader.conf`
-(install.sh writes this). To load it now without rebooting:
+The stock GENERIC kernel works for first install and basic Awase
+testing, but several in-tree drivers compete with Awase for
+ownership of hardware:
+
+- `hkbd`, `ukbd`, `hms`, `hmt`, `hgame`, `hcons`, `hsctrl`,
+  `hpen`, `hconf`, `hidmap`: HID class drivers that claim
+  USB keyboards, mice, and touchpads before `inputfs` can.
+  Without the PGSD kernel, input under Awase may not work
+  (Hazard 2 below).
+- `vt`, `vt_efifb`, `sc`, `vga`, `splash`: in-tree console
+  drivers that write to the EFI framebuffer in parallel with
+  drawfs, causing cursor sprites and other compositor output
+  to be overwritten by console repaints (Hazard 7 below).
+
+The PGSD kernel removes all of these. For full Awase behaviour
+including reliable input and contention-free framebuffer
+rendering, build and install PGSD.
+
+If you do not need input or visible cursor tracking on this
+install (for example, you are bringing up Awase on a remote bench
+that you will only access over SSH for kernel-module testing),
+you can skip this step and stay on GENERIC.
+
+**Not built by `install.sh` (ADR 0002).** The installer detects the
+kernel state and informs; it never builds or installs a kernel. On
+GENERIC, a non-interactive run (`--yes`) fails fast (exit 3) unless
+`--skip-kernel` acknowledges a staged, not yet runnable install; an
+interactive run completes the userland deploy and prints a prominent
+notice pointing here. The kernel lifecycle belongs to
+`pgsd-kernel-build.sh`, operator-invoked, phase by phase; see
+`pgsd-kernel/KERNEL-RECIPE.md`.
+
+**Ordering.** Run the kernel `install` phase only after Step 5 has
+deployed the userland: the kernel's AD-8 closure check refuses to
+install until `/boot/modules/drawfs.ko` is on disk (a PGSD kernel
+booting with no drawfs.ko comes up dark). The `check` phase and the
+30-60 minute `build` phase can run at any time before that.
+
+**Quickstart.** The kernel steps, in the working order around
+Step 5:
 
 ```
-sudo kldload drawfs
+sudo sh pgsd-kernel/pgsd-kernel-build.sh provision   # clone the pinned fork into /usr/src
+sh pgsd-kernel/pgsd-kernel-build.sh check
+mdo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
+sh install.sh                                # Step 5 (deploys drawfs.ko)
+mdo sh pgsd-kernel/pgsd-kernel-build.sh install
+mdo shutdown -r now
 ```
+
+The `provision` phase populates `/usr/src` with the pinned FreeBSD
+fork the kernel builds against (reading `pgsd-kernel/FREEBSD-PIN`).
+It is a deliberate, destructive step (a multi-GiB clone that replaces
+`/usr/src`), owned by the kernel build because `/usr/src` exists only
+for the kernel: the userland install never uses it. Run it once on a
+fresh machine; it is idempotent when `/usr/src` is already the pinned
+fork, and it confirms before replacing a non-empty tree (pass `--yes`
+to skip the prompt). If you provisioned `/usr/src` some other way (a
+manual clone at the pinned commit), skip it; `check` verifies the pin
+regardless.
+
+The default config is `PGSD`; pass `PGSD-DEBUG` as the phase argument
+to build the debug variant instead.
+
+Plan 30-60 minutes for the build. See `pgsd-kernel/README.md`
+for what each step does, the pkgbase versus source-built install
+variations, the PGSD-DEBUG variant for kernel-side Awase
+development, and recovery procedures if a build or boot goes
+wrong. Read it before running the commands if this is your
+first PGSD build.
+
+`pgsd-kernel-build.sh` is the single source of truth for source-tree
+validation, AD-8 closure, recovery checks, and build flags.
+`install.sh` neither sequences nor runs its phases; it only detects
+whether a PGSD kernel is present and reports (ADR 0002 milestone 1).
+
+## Step 7 — Reboot onto the PGSD kernel
+
+```
+mdo shutdown -r now
+```
+
+The reboot is what puts the PGSD kernel and the modules in place:
+drawfs loads from `/boot/loader.conf` (which `install.sh` wrote),
+inputfs and audiofs load from their rc.d services, and the
+supervision tree starts. Loading modules by hand is developer work
+(Part 2); a normal install just reboots.
 
 **Verify:**
 
 ```
-kldstat | grep drawfs
+uname -a
 ```
 
-If `kldload drawfs` fails, run `dmesg | tail -50` and read the
-error.
+The banner must name the PGSD kernel, for example
+`FreeBSD 15.1-RELEASE ... n283562-96841ea08dcf PGSD amd64`. If it
+still says GENERIC, the kernel install did not take: go back to
+Step 6.
 
-inputfs is *not* loaded here. inputfs is loaded by its rc.d service,
-which is started in Step 8. inputfs cannot be loaded via
-`/boot/loader.conf` (see Hazard 1) and must wait until `/var/run`
-is mounted.
-
-## Step 8 — Start Awase services
+## Step 8 — Confirm the services are running
 
 On a deployed PGSD system (this is what these install steps
 produce), use the `service` interface. This is the only
@@ -583,7 +559,7 @@ or `service semainputd start` will fail with "no such service";
 input now flows directly from the inputfs kernel module to
 `semadrawd` via the shared event ring.
 
-## Step 8.5 — Confirm the supervision tree shape
+## Step 9 — Confirm the supervision tree shape
 
 ```
 ps auxww | grep s6- | grep -v grep
@@ -604,7 +580,7 @@ Fewer processes than expected means one or more daemons did
 not come up; check `service awase-supervisor status` to see
 which.
 
-## Step 9 — Run something
+## Step 10 — Run something
 
 ```
 sudo /usr/local/bin/semadraw-term --scale 2
@@ -647,43 +623,134 @@ daemons stay ReleaseSafe (no known issues there). Re-running
 and bring the panic back; until AD-14 closes, the Debug build
 is the operational mode for the terminal client.
 
-## Rebuilding
 
-To rebuild from a clean tree (after pulling changes, editing
-sources, or changing the Zig toolchain), just rerun the installer:
+---
+
+# Part 2 — Developing Awase
+
+Nothing in this part is needed to install or run Awase. Part 1 is
+the install; `install.sh` builds and deploys every component for
+you. This part is for working on a component: building one
+subproject or one kernel module without reinstalling everything,
+loading it against a running system, and iterating.
+
+It assumes you already have a working install from Part 1 (a PGSD
+kernel, `/usr/src` provisioned, dependencies present, `.config`
+written).
+
+## Building the userland without installing
+
+The top-level `build.sh` builds every userland Zig subproject:
+`semasound`, `chronofs`, and `semadraw`. The `semainput` subproject
+no longer produces an executable (the daemon was retired
+2026-05-08); only `libsemainput` remains, consumed by `semadrawd`
+at build time.
+
+```
+sh build.sh
+```
+
+This is what `install.sh` runs internally, so use it to check that
+your change compiles without doing a full install. Build outputs
+land in each subproject's `zig-out/bin/`. The build uses the
+vendored Zig at `sdk/zig/current` (see Hazard 4), not a system Zig.
+
+To build a single subproject, run its own `build.sh`, for example:
+
+```
+sh semadraw/build.sh
+```
+
+## Building a kernel module without installing the rest
+
+drawfs, inputfs, and audiofs are FreeBSD kernel modules built
+against `/usr/src` via per-module helper scripts. The full sequence
+runs as part of `install.sh`, so this is only for development
+iteration on one module:
+
+```
+sudo sh drawfs/build.sh install
+sudo sh drawfs/build.sh build
+sudo sh drawfs/build.sh deploy
+sudo sh inputfs/build.sh install
+sudo sh inputfs/build.sh build
+sudo sh inputfs/build.sh deploy
+```
+
+Each helper copies the
+module sources into `/usr/src/sys/`, runs `make`, and copies the
+resulting `.ko` to `/boot/modules/`. The subcommands are:
+
+- `install` copies sources into `/usr/src/sys/`
+- `build` runs `make` against them
+- `deploy` copies the built `.ko` to `/boot/modules/`
+- `load` kldloads the module
+
+**Verify:**
+
+```
+ls /boot/modules/drawfs.ko
+ls /boot/modules/inputfs.ko
+```
+
+## Loading a module against a running system
+
+drawfs loads automatically at boot from `/boot/loader.conf` (which
+`install.sh` writes). To load a freshly built one now, without
+rebooting:
+
+```
+sudo kldload drawfs
+```
+
+**Verify:**
+
+```
+kldstat | grep drawfs
+```
+
+Note Hazard 1: do NOT add `inputfs_load="YES"` to
+`/boot/loader.conf`. inputfs must load from its rc.d service, not
+the loader.
+
+## The iterate loop
+
+To rebuild after editing sources, rerun the installer:
 
 ```
 sh install.sh
 ```
 
-`install.sh` clears the build artifacts itself before building:
-it runs `clean.sh --force` as an early step, so a separate manual
-clean is no longer required. To inspect or clean by hand:
+`install.sh` clears the build artifacts itself before building: it
+runs `clean.sh --force` as an early step, so a separate manual
+clean is not needed. This is the safest loop, because it rebuilds
+and redeploys everything consistently.
+
+To clean by hand (to inspect what would be removed, or to reset a
+tree without installing):
 
 ```
-sh clean.sh --dry-run   # list candidates without removing
-sh clean.sh --force     # remove them
+sh clean.sh --dry-run
+sh clean.sh --force
 ```
 
-`clean.sh` removes every `.zig-cache/` and `zig-out/` directory
-under the checkout plus the root-level `build-*.log` files. It
-does not touch `.git/`, `.config`, source files, or anything
-under `/usr/src`, `/boot`, or `/usr/obj`. The drawfs and inputfs
-kernel modules under `/usr/src` are cleaned by their own
-`build.sh` scripts, not by `clean.sh`.
+`clean.sh` removes build outputs (`.zig-cache/`, `zig-out/`) inside
+the checkout. It deliberately does not touch `sdk/zig/`, so the
+vendored toolchain is not re-bootstrapped on every clean.
 
-`install.sh` then rebuilds every userland subproject (unprivileged),
-rebuilds and redeploys the kernel modules, and reinstalls, exactly
-as in Step 6. Because `install.sh` performs both the clean and the
-userland build itself, a clean rebuild needs no separate `clean.sh`
-or `build.sh` run.
+For a faster loop on one component, build just that component (see
+above), deploy it, and restart only its service rather than
+reinstalling. The supervised daemons are `semadrawd`, `semasound`,
+and `pgsd-sessiond` under the s6 tree at `/var/service/awase/`.
 
-A clean rebuild is the reliable way to pick up a Zig toolchain
-change: stale `.zig-cache/` entries from a previous compiler
-version are a common source of confusing build errors, and
-clearing them removes that variable.
 
-## Hazards
+---
+
+# Part 3 — Hazards
+
+These apply whether you are installing or developing. Each one has
+actually broken an install.
+
 
 These are mistakes that have actually caused install-time crashes
 or unrecoverable boots. Read them.
@@ -815,7 +882,7 @@ error: unable to find dynamic system library 'udev' ...
 ```
 
 The fix is to write `.config` before building, with all
-optional backends explicitly disabled. Step 3.5 covers this.
+optional backends explicitly disabled. Step 4 covers this.
 
 A related symptom: missing `rsync` causes `drawfs/build.sh`
 and `inputfs/build.sh` to fail at the install step with
@@ -903,6 +970,11 @@ is logging. Once AD-13 lands (per-report logging behind a
 sysctl, default off), the residual flashing is only
 boot/dmesg traffic, which may make the rc.local mute
 unnecessary altogether.
+
+
+---
+
+# Part 4 — Recovery, uninstall, and reference
 
 ## Recovery checklist
 
