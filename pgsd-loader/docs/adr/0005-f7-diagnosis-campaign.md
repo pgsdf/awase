@@ -146,6 +146,31 @@ exercised in step 2 is the AD-57 pinned build, not a convenience
 kernel, so a step 2 success speaks for the exact bytes the bench
 boots and a failure is reproducible against a fixed identity.
 
+**Decision 6: metal arming is retired (2026-07-11).** Step 3 was
+executed under Decision 4 and F7 was reproduced on physical
+hardware twice, cleanly. Both attempts armed exactly one cycle
+through deploy.sh with the full create-activate-order-head-reap
+protocol; the second was mock-validated and checkpoint-confirmed
+armed-active-at-head before the single reboot. Both power-cycled
+or blanked at the Apple firmware with no kernel text, and both
+required a FreeBSD reinstall to recover. This satisfies the
+Decision 4 / closure-criterion-4 branch "the fault is identified":
+the transfer that boots to the mountroot prompt in emulation
+(Decision 2's exact caution) does not boot on this Apple firmware.
+The QEMU-versus-metal handoff gap is now the established finding,
+not a hypothesis.
+
+Consequently, no further metal arming is authorized. Re-arming the
+bench to re-confirm a twice-reproduced failure has no diagnostic
+value and a standing reinstall cost. The remaining F7 work (why the
+EFI handoff differs: EFI runtime mapping, SetVirtualAddressMap, the
+memory-map handoff diffed against the stock loader.efi) belongs in
+emulation and source analysis, where the bench is never at risk.
+deploy.sh is retired as an arming path and carries a deprecation
+header saying so; it is kept for reference, not use. Reversing this
+decision requires a new ADR amendment that first states what about
+the metal handoff has changed to justify another physical attempt.
+
 ## Closure criteria
 
 1. Step 1 executed and its outcome (breadcrumb recovered,
@@ -182,3 +207,11 @@ boots and a failure is reproducible against a fixed identity.
   the decision's intent in full: no power-cycle loop, evidence every
   cycle, recovery path always reachable. Prompted by preparing the
   step 3 metal attempt after step 2 succeeded in emulation.
+- 2026-07-11: Decision 6 added. Step 3 executed; F7 reproduced on
+  metal twice under the amended Decision 4 protocol (the second
+  mock-validated and checkpoint-confirmed armed before the single
+  reboot), each requiring a reinstall. The emulation-booting transfer
+  does not boot on this Apple firmware, closing F7 on the
+  fault-identified branch. Metal arming is retired; deploy.sh is
+  deprecated as an arming path and kept for reference only. Remaining
+  handoff-difference work moves to emulation and source.

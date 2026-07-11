@@ -2065,6 +2065,19 @@ operator disposition into their own AD numbers or existing entries):
 
 ### `[~]` AD-62: pgsd-loader, the fresh Awase loader (AD-56 Phase 3 implementation)  *(In progress, Large; project ADR 0001 ratified; L0 closed, L3a.1 complete, L3a.2 through increment 2 bench-proven on bare-metal-test-bench)*
 
+**F7 metal arming RETIRED (2026-07-11, ADR 0005 Decision 6).** The
+armed transfer boots the pinned PGSD kernel to the mountroot prompt
+in emulation (F7 root-caused: the loader now publishes the serial
+console binding and, via findAcpiRsdp, the acpi.rsdp kenv the UEFI
+kernel needs). On metal it does not: F7 reproduced on the bench's
+Apple firmware twice, each requiring a FreeBSD reinstall. Metal
+arming is retired; `deploy.sh` carries a deprecation header and its
+`arm-once` refuses to run without a deliberate override. The open
+F7 question, why the EFI handoff differs from QEMU (EFI runtime
+mapping, SetVirtualAddressMap, memory-map handoff versus the stock
+loader.efi), moves to emulation and source analysis; the bench is
+not to be armed again to re-confirm a known failure.
+
 **Tracks**: `pgsd-loader/` (the implementation), `pgsd-loader/docs/`
 (the ADR series, the two bench-campaign ledgers, and the three
 substrate specifications), and `docs/adr/0001-boot-artifact-deployment-architecture.md`

@@ -1,4 +1,24 @@
 #!/bin/sh
+# ======================================================================
+# DEPRECATED. DO NOT USE TO ARM PHYSICAL HARDWARE.
+#
+# This deployment path was retired (ADR 0005 Decision 6, 2026-07-11)
+# after repeated reproducible F7 failures on physical hardware: the
+# transfer that boots to the mountroot prompt in emulation does not
+# boot on this bench's Apple firmware, and each metal arming attempt
+# required a full FreeBSD reinstall to recover. It is retained for
+# historical and reference purposes only.
+#
+# Re-arming the bench to re-confirm a twice-reproduced failure has no
+# diagnostic value and a standing reinstall cost. Reversing this
+# requires a new ADR 0005 amendment that first states what about the
+# metal EFI handoff has changed to justify another physical attempt.
+# The remaining F7 work (why the EFI handoff differs from QEMU: EFI
+# runtime mapping, SetVirtualAddressMap, the memory-map handoff
+# diffed against the stock loader.efi) belongs in emulation and
+# source analysis, where the bench is never at risk.
+# ======================================================================
+#
 # deploy.sh: the sanctioned writer of the bench ESP and boot
 # variables for pgsd-loader metal runs. It implements ADR 0005
 # Decision 4 (as amended): the transfer is armed through the
@@ -94,6 +114,20 @@ cmd_stage() {
 }
 
 cmd_arm_once() {
+    # Enforced deprecation (ADR 0005 Decision 6). Metal arming is
+    # retired after F7 reproduced twice on this bench's firmware. The
+    # header explains why; this guard makes the retirement more than a
+    # comment so the bench cannot be armed by habit or by skipping the
+    # header. Overriding requires deliberately setting the variable
+    # below, which is itself a signal to re-read Decision 6 first.
+    if [ "${PGSD_DEPLOY_OVERRIDE_RETIRED:-}" != "i-have-read-adr-0005-decision-6" ]; then
+        echo "deploy.sh: arm-once is RETIRED (ADR 0005 Decision 6)." >&2
+        echo "deploy.sh: metal arming was retired after F7 reproduced on" >&2
+        echo "deploy.sh: hardware twice, each needing a reinstall. This path" >&2
+        echo "deploy.sh: is kept for reference only. Do not arm the bench." >&2
+        echo "deploy.sh: remaining F7 work belongs in emulation and source." >&2
+        exit 1
+    fi
     need_root arm-once
     if [ -f "$SAVED_ORDER_FILE" ]; then
         echo "deploy.sh: a saved BootOrder already exists ($SAVED_ORDER_FILE)." >&2
