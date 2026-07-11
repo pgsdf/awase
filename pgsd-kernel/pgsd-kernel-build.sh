@@ -6,13 +6,22 @@
 # PGSD kernel correctness depends on getting two things right at every
 # rebuild:
 #
-#   1. WITHOUT_MODULES must be passed to BOTH make buildkernel AND make
-#      installkernel. AD-8 explains why: without it, the .ko files for
-#      the suppressed HID drivers (hkbd, ukbd, hms, hgame, hcons, hsctrl,
-#      utouch, hpen, hmt, hconf, hidmap) get built and installed, and
-#      the kernel auto-loads them at device probe time. They then claim
-#      ownership of the USB HID devices, and inputfs has nothing to bind
-#      to. The result: keyboard and mouse stop working.
+#   1. The AD-8 HID modules (hkbd, ukbd, hms, hgame, hcons, hsctrl,
+#      hpen, hmt, hconf, hidmap) CANNOT be excluded at build time.
+#      WITHOUT_MODULES only filters the top-level sys/modules SUBDIR
+#      (sys/modules/Makefile: SUBDIR:= ${SUBDIR:N${reject}}), and every
+#      one of these is a nested leaf (hid/hkbd, usb/ukbd, ...) that no
+#      top-level token reaches; the nested group Makefiles do not
+#      re-apply the filter. So installkernel always installs these .ko,
+#      and the kernel would auto-load them at device probe time, claim
+#      the USB HID devices, and leave inputfs nothing to bind to
+#      (keyboard and mouse stop working). The sanctioned fix is the
+#      AD-8 closure reap in phase_install: after installkernel, the
+#      suppressed .ko are removed from /boot/kernel/ and linker.hints
+#      is regenerated. This runs by default every install, including
+#      non-interactively, because the leak is guaranteed, not an
+#      anomaly. WITHOUT_MODULES is still passed for the genuinely
+#      top-level entries it can exclude (e.g. sound).
 #
 #   2. DESTDIR=/ must be passed to make installkernel when /boot/kernel/
 #      is owned by a pkgbase package. Without it, the install step
@@ -65,20 +74,39 @@ set -u
 # user-facing log lines. NOT passed directly to make: see resolve_without_modules.
 WITHOUT_MODULES_NAMES="hkbd ukbd hms hgame hcons hsctrl hpen hmt hconf hidmap hda sound cmi csa emu10kx es137x ich via8233"
 
-# resolve_without_modules: convert bare module names into the
-# path-prefixed form make buildkernel actually understands.
+# The AD-8 HID modules specifically: the nested leaves that
+# WITHOUT_MODULES cannot suppress and that the closure reap removes
+# from /boot/kernel/ after installkernel. Single source of truth for
+# both leak detection and removal (previously two hardcoded lists that
+# had drifted; one listed a non-existent "utouch"). These are the HID
+# drivers that contend with inputfs for HID ownership per ADR 0007.
+AD8_HID_MODULES="hkbd ukbd hms hgame hcons hsctrl hpen hmt hconf hidmap"
+
+# resolve_without_modules: validate the suppression names against the
+# source tree and emit them as bare names for WITHOUT_MODULES.
 #
-# FreeBSD kernel modules live under /usr/src/sys/modules/<group>/<name>/.
-# The "group" is usually "hid" (most HID drivers) but some modules live
-# elsewhere -- ukbd is under usb/ukbd, for example. Passing a bare name
-# like "ukbd" to make's WITHOUT_MODULES does NOT match usb/ukbd, which
-# is why our earlier builds failed to suppress the modules.
+# Important, and the source of a long-standing AD-8 leak: FreeBSD's
+# WITHOUT_MODULES only filters the TOP-LEVEL sys/modules SUBDIR list
+# (sys/modules/Makefile: .for reject in ${WITHOUT_MODULES};
+# SUBDIR:= ${SUBDIR:N${reject}}). The nested group Makefiles
+# (sys/modules/hid/Makefile, sys/modules/usb/Makefile) do NOT re-apply
+# the filter. So WITHOUT_MODULES can exclude a top-level entry like
+# "sound", but it CANNOT exclude a nested leaf like hkbd (under hid/)
+# or ukbd (under usb/): neither the bare name nor a "hid/hkbd" path
+# matches the top-level "hid" SUBDIR word. The official example is
+# bare top-level names: sys/i386/conf/PAE has
+# WITHOUT_MODULES="ctl dpt hptmv ida".
 #
-# This helper walks /usr/src/sys/modules looking for each name and
-# returns the path-prefixed form (e.g. "hid/hkbd usb/ukbd hid/hms ...").
-# Echoes the resolved list to stdout. Any name not found in the source
-# tree is echoed to stderr; exit code 1 means "one or more names did
-# not resolve". The caller decides whether to proceed.
+# Consequence: the AD-8 HID modules are always built and installed;
+# no WITHOUT_MODULES form suppresses them. They are removed after
+# installkernel by the AD-8 closure reap in phase_install, which is
+# the sanctioned mechanism (not error recovery). This helper still
+# emits the names so genuinely top-level entries (sound) are excluded,
+# and validates every name exists so a typo is caught; the nested
+# names are inert in the make argument but are the authoritative list
+# the reap and verification use via WITHOUT_MODULES_NAMES.
+#
+# Emits bare names to stdout; unresolved names to stderr with exit 1.
 resolve_without_modules() {
     resolved=""
     unresolved=""
@@ -89,9 +117,12 @@ resolve_without_modules() {
         found=$(find "${SRC_DIR}/sys/modules" -maxdepth 3 -type d \
                 -name "$name" 2>/dev/null | head -1)
         if [ -n "$found" ]; then
-            # Strip the leading /usr/src/sys/modules/ to get hid/hkbd or usb/ukbd.
-            path="${found#${SRC_DIR}/sys/modules/}"
-            resolved="$resolved $path"
+            # Emit the bare leaf name: WITHOUT_MODULES matches top-level
+            # SUBDIR words (see the header note), so "sound" works and
+            # the nested HID names are inert here (handled by the reap).
+            # The subdir-path form used previously matched nothing, top
+            # level or nested, which is why suppression silently failed.
+            resolved="$resolved $name"
         else
             unresolved="$unresolved $name"
         fi
@@ -505,11 +536,12 @@ phase_build() {
 
     # The actual buildkernel.
     emit ""
-    # Resolve bare module names to their source-tree paths. make
-    # buildkernel matches WITHOUT_MODULES entries against the directory
-    # structure under sys/modules/, so we must pass "hid/hkbd usb/ukbd"
-    # rather than the bare "hkbd ukbd" — passing bare names silently
-    # fails to match modules whose source isn't directly under sys/modules/.
+    # Validate and emit the suppression names for WITHOUT_MODULES.
+    # Only top-level sys/modules entries (e.g. sound) are actually
+    # excluded by this; the nested AD-8 HID modules cannot be
+    # (see resolve_without_modules), and are removed after
+    # installkernel by the AD-8 closure reap. Passing the names is
+    # still correct for the top-level ones and harmless for the rest.
     WITHOUT_MODULES_LIST=$(resolve_without_modules)
     if [ -z "$WITHOUT_MODULES_LIST" ]; then
         emit "  ERROR: WITHOUT_MODULES resolution failed; cannot build safely"
@@ -667,7 +699,7 @@ phase_install() {
     # If any are present (typically because of an earlier build that
     # omitted WITHOUT_MODULES), offer to remove them. Default: Yes.
     leaked_ko=""
-    for ko in hkbd ukbd hms hgame hcons hsctrl utouch hpen hmt hconf hidmap; do
+    for ko in $AD8_HID_MODULES; do
         if [ -f "/boot/kernel/${ko}.ko" ]; then
             leaked_ko="$leaked_ko $ko"
         fi
@@ -677,46 +709,68 @@ phase_install() {
     if [ -z "$leaked_ko" ]; then
         ok "no AD-8 suppressed .ko files in /boot/kernel/"
     else
-        fail "AD-8 suppressed .ko files installed: $leaked_ko"
-        note "WITHOUT_MODULES did not take effect on installkernel"
-        note "  (most often: an earlier buildkernel ran without WITHOUT_MODULES)"
+        note "AD-8 suppressed .ko files present: $leaked_ko"
+        note "This is expected, not an anomaly. WITHOUT_MODULES cannot"
+        note "  suppress these: FreeBSD filters WITHOUT_MODULES against the"
+        note "  top-level sys/modules SUBDIR only (SUBDIR:N reject), and"
+        note "  every AD-8 module is a nested leaf (hid/hkbd, usb/ukbd, ...)"
+        note "  that no top-level token reaches. installkernel therefore"
+        note "  always installs them, and reaping them here is the"
+        note "  sanctioned closure mechanism, not error recovery."
 
-        # Decide whether to offer removal.
-        do_remove=0
-        if [ "$ASSUME_YES" -eq 1 ]; then
-            do_remove=1
+        # Reap is the primary AD-8 mechanism, so it runs by default,
+        # including non-interactively: leakage is guaranteed every
+        # install, and leaving these .ko in /boot/kernel/ lets them
+        # autoload and contend with inputfs for HID ownership. --yes
+        # and an interactive Remove/Keep choice remain, but the default
+        # (including a bare non-interactive install, e.g. a reinstall
+        # runsheet) is to remove. Only an explicit interactive "Keep"
+        # or PGSD_AD8_KEEP=1 leaves them, and that is recorded as a
+        # closure failure since the resulting kernel is not AD-8 clean.
+        do_remove=1
+        if [ "${PGSD_AD8_KEEP:-0}" = "1" ]; then
+            do_remove=0
+            note "PGSD_AD8_KEEP=1 set; leaving modules in place (NOT AD-8 clean)"
+            fails=$((fails + 1))
+        elif [ "$ASSUME_YES" -eq 1 ]; then
             note "--yes set; removing without prompting"
         elif [ -t 0 ] && [ -t 1 ]; then
-            # Interactive: bsddialog if available; plain prompt otherwise.
+            # Interactive: offer a choice, but default to Remove.
             if command -v bsddialog >/dev/null 2>&1; then
-                if bsddialog --title "AD-8 closure: stale modules" \
+                if bsddialog --title "AD-8 closure: suppressed modules" \
                              --yes-label "Remove" \
-                             --no-label "Keep (abort)" \
-                             --yesno "The following stale AD-8 modules were found in /boot/kernel/:
+                             --no-label "Keep (not AD-8 clean)" \
+                             --yesno "These AD-8 HID modules were installed by installkernel:
 
     $leaked_ko
 
-These must be removed; if left in place they auto-load at boot and
-contend with inputfs for HID ownership.
+They cannot be excluded at build time (WITHOUT_MODULES does not reach
+nested modules); removing them here is the normal closure step. If
+left in place they auto-load at boot and contend with inputfs for HID
+ownership.
 
-Remove them now? (default: Remove)" 15 70; then
+Remove them now? (default: Remove)" 16 70; then
                     do_remove=1
+                else
+                    do_remove=0
+                    note "operator chose Keep; kernel is NOT AD-8 clean"
+                    fails=$((fails + 1))
                 fi
             else
-                # Plain prompt. Default Yes; pressing Enter accepts.
-                printf "         Remove these files now? [Y/n] "
+                printf "         Remove these AD-8 modules now? [Y/n] "
                 read answer
                 case "$answer" in
-                    n|N|no|NO|No) do_remove=0 ;;
-                    *)            do_remove=1 ;;
+                    n|N|no|NO|No)
+                        do_remove=0
+                        note "operator chose Keep; kernel is NOT AD-8 clean"
+                        fails=$((fails + 1)) ;;
+                    *)  do_remove=1 ;;
                 esac
             fi
         else
-            # Non-interactive without --yes: do not modify silently.
-            note "non-interactive without --yes; not removing automatically"
-            note "remove with: sudo rm /boot/kernel/{$(echo $leaked_ko | tr ' ' ',')}.ko"
-            note "then: sudo kldxref /boot/kernel"
-            fails=$((fails + 1))
+            # Non-interactive: reap by default (the reinstall case that
+            # previously left the modules and failed the install).
+            note "non-interactive; removing (AD-8 reap is the default)"
         fi
 
         if [ "$do_remove" -eq 1 ]; then
@@ -777,8 +831,9 @@ Remove them now? (default: Remove)" 15 70; then
 
     # 2. linker.hints must not advertise PNP for the suppressed drivers.
     if [ -f /boot/kernel/linker.hints ]; then
+        hid_alt=$(echo "$AD8_HID_MODULES" | tr ' ' '|')
         hints_leak=$(strings /boot/kernel/linker.hints 2>/dev/null | \
-            grep -cE "(hkbd|ukbd|hms|hgame|hcons|hsctrl|utouch|hpen|hmt|hconf|hidmap)\.ko" \
+            grep -cE "(${hid_alt})\.ko" \
             || true)
         : "${hints_leak:=0}"
         if [ "$hints_leak" = "0" ]; then
