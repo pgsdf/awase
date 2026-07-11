@@ -109,20 +109,54 @@ cmd_arm_once() {
     printf '%s\n' "$cur" > "$SAVED_ORDER_FILE"
     echo "deploy.sh: saved BootOrder $cur -> $SAVED_ORDER_FILE"
 
-    # Create the entry. -p (unix-path) makes efibootmgr resolve the
-    # ESP device from the full filesystem path itself, so no disk
-    # needs to be named (FreeBSD efibootmgr:
-    # efivar_unix_path_to_device_path). -a activates in the same
-    # step; F2 requires an active entry or the firmware skips it.
-    efibootmgr --dry-run -c -a -p -l "$loader_path" -L "$ENTRY_LABEL" >/dev/null 2>&1 || true
-    efibootmgr -c -a -p -l "$loader_path" -L "$ENTRY_LABEL" >/dev/null
-    # Find the just-created entry by its unique label.
-    bn=$(efibootmgr | awk -v L="$ENTRY_LABEL" '$0 ~ L {gsub(/[^0-9]/,"",$1); print $1; exit}')
-    [ -n "$bn" ] || { echo "deploy.sh: could not find created entry '$ENTRY_LABEL'" >&2; exit 1; }
-    # Belt and suspenders: ensure active (F2), even though -a was given.
-    efibootmgr -a -b "$bn" >/dev/null 2>&1 || true
-    # Place it at the order head for exactly one cycle.
-    efibootmgr -o "$bn,$cur" >/dev/null
+    # From this point on, an entry may exist in NVRAM. Any failure
+    # must reap it and restore the order rather than leave the bench
+    # armed. Disable errexit here and check each step explicitly, and
+    # trap any unexpected exit to run recover. This is the safety
+    # invariant the one-cycle discipline depends on: arm-once never
+    # returns with an armed entry present unless the full head
+    # placement succeeded.
+    set +e
+    trap 'echo "deploy.sh: arm-once failed mid-way; disarming..." >&2; cmd_recover; exit 1' EXIT
+
+    # Create + activate. -p resolves the ESP device from the path.
+    # efibootmgr prints the new entry ("Boot0004* label"); capture the
+    # bootnum from that output directly rather than re-parsing the
+    # full list with a regex (the label contains parens, which are
+    # regex metacharacters). -c also prepends the entry to BootOrder.
+    create_out=$(efibootmgr -c -a -p -l "$loader_path" -L "$ENTRY_LABEL" 2>&1)
+    bn=$(printf '%s\n' "$create_out" | awk '/Boot[0-9A-Fa-f]+\*?[[:space:]]/{for(i=1;i<=NF;i++) if($i ~ /^Boot[0-9A-Fa-f]+\*?$/){s=$i; gsub(/[^0-9A-Fa-f]/,"",s); print s; exit}}')
+    if [ -z "$bn" ]; then
+        # Fall back to a literal (non-regex) scan of the full list.
+        bn=$(efibootmgr | while IFS= read -r line; do
+            case "$line" in
+                *"$ENTRY_LABEL"*)
+                    set -- $line
+                    b=$1; b=${b#Boot}; b=${b%\*}
+                    printf '%s\n' "$b"; break ;;
+            esac
+        done)
+    fi
+    if [ -z "$bn" ]; then
+        echo "deploy.sh: entry create did not yield a bootnum; output was:" >&2
+        printf '%s\n' "$create_out" >&2
+        # trap will disarm (reap by label) and restore order
+        exit 1
+    fi
+
+    # Ensure active (F2) and place at the order head for one cycle.
+    efibootmgr -a -b "$bn" >/dev/null 2>&1
+    efibootmgr -o "$bn,$cur" >/dev/null 2>&1
+    # Verify the head is our active entry before declaring success.
+    newhead=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}' | awk -F', *' '{print $1}')
+    if [ "$newhead" != "$bn" ]; then
+        echo "deploy.sh: could not place Boot$bn at the order head; disarming." >&2
+        exit 1   # trap disarms
+    fi
+
+    # Success: keep the entry, clear the trap.
+    trap - EXIT
+    set -e
     echo "deploy.sh: armed entry Boot$bn (active) at the order head for ONE cycle."
     echo ""
     echo "  NEXT, in order:"
@@ -149,10 +183,19 @@ cmd_recover() {
     else
         echo "deploy.sh: no saved BootOrder pending (already recovered or never armed)"
     fi
-    # Reap any entry with our label (idempotent).
-    for bn in $(efibootmgr | awk -v L="$ENTRY_LABEL" '$0 ~ L {gsub(/[^0-9]/,"",$1); print $1}'); do
-        efibootmgr -B -b "$bn" >/dev/null 2>&1 || true
-        echo "deploy.sh: reaped Boot$bn"
+    # Reap any entry with our label (idempotent). Match the label
+    # literally, not as a regex: the label contains parens, which are
+    # regex metacharacters and can defeat a "$0 ~ L" match. Also match
+    # the fixed BOOTX64 loader path as a fallback in case the label
+    # was altered.
+    efibootmgr | while IFS= read -r line; do
+        case "$line" in
+            *"$ENTRY_LABEL"*)
+                set -- $line
+                b=$1; b=${b#Boot}; b=${b%\*}
+                efibootmgr -B -b "$b" >/dev/null 2>&1 || true
+                echo "deploy.sh: reaped Boot$b" ;;
+        esac
     done
     echo "deploy.sh: recover complete; bench is on its normal boot path."
 }
