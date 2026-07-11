@@ -174,6 +174,7 @@ SRC_DIR="/usr/src"
 usage() {
     cat >&2 << EOF
 Usage:
+    sh $0 provision [--yes] [KERNCONF]   clone the pinned fork into /usr/src
     sh $0 check    [KERNCONF]            verify build environment (read-only)
     sh $0 build    [--clean] [KERNCONF]  make buildkernel with WITHOUT_MODULES
     sh $0 install  [KERNCONF]            make installkernel + AD-8 closure check
@@ -185,8 +186,11 @@ Flags:
               Use on first build of a session or after editing the kernel
               config. Without it, the build is incremental (fast, but can
               produce stale output if the config recently changed).
+    --yes     Skip the interactive confirm before replacing /usr/src
+              (provision phase only). Provisioning is destructive.
 
 Typical first-time install:
+    sudo sh $0 provision
     sh $0 check
     sudo sh $0 build --clean
     sudo sh $0 install
@@ -368,6 +372,136 @@ fi
 
 PGSD_REPO_CONFIG="${REPO_ROOT}/pgsd-kernel/${KERNCONF}"
 PGSD_INSTALLED_CONFIG="${ARCH_CONF_DIR}/${KERNCONF}"
+
+# ======================================================================
+# Phase: provision
+#
+# Populate /usr/src with the pinned FreeBSD fork this kernel builds
+# against. This is deliberately its own phase, and destructive, so it
+# is never a side effect of check/build/install: replacing /usr/src is
+# a multi-GiB clone and, on a dedicated dataset, /usr/src is a
+# mountpoint. The operator runs it consciously.
+#
+# The pin lives next to this script in FREEBSD-PIN, and the kernel
+# build already owns pin verification (phase_check); provisioning
+# belongs here too, so /usr/src setup is kernel-setup work in one
+# place rather than split into the userland installer. AD-57: the
+# source must be the pinned fork.
+
+phase_provision() {
+    emit "=== provision /usr/src from the pinned fork (AD-57)"
+
+    if [ "$(id -u)" -ne 0 ]; then
+        fail "provision must run as root (clones and chowns /usr/src)"
+        note "re-run: sudo sh pgsd-kernel/pgsd-kernel-build.sh provision"
+        return 1
+    fi
+    if [ ! -f "$PIN_FILE" ]; then
+        fail "pin file not found: $PIN_FILE"
+        return 1
+    fi
+
+    # Read key: value pairs from the pin.
+    src_repo="$(awk '$1=="base_repository:"{sub(/^[^:]*:[ \t]*/,"");print;exit}' "$PIN_FILE")"
+    src_commit="$(awk '$1=="base_commit:"{sub(/^[^:]*:[ \t]*/,"");print;exit}' "$PIN_FILE")"
+    src_branch="$(awk '$1=="base_branch:"{sub(/^[^:]*:[ \t]*/,"");print;exit}' "$PIN_FILE")"
+    if [ -z "$src_repo" ] || [ -z "$src_commit" ]; then
+        fail "could not read base_repository/base_commit from $PIN_FILE"
+        return 1
+    fi
+    emit "  repo:   $src_repo"
+    emit "  branch: ${src_branch:-(default)}"
+    emit "  commit: $src_commit"
+
+    # Already the pinned fork? Nothing to do.
+    if [ -d "${SRC_DIR}/.git" ]; then
+        have="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+        if [ "$have" = "$src_commit" ]; then
+            ok "/usr/src is already the pinned fork at $src_commit"
+            return 0
+        fi
+        warn "/usr/src is a git checkout at $have, not the pinned commit"
+        note "provision will replace it with the pinned fork below"
+    fi
+
+    # Guard a non-empty existing tree behind an explicit confirm
+    # (unless --yes). Replacing it is destructive.
+    if [ -e "$SRC_DIR" ] && [ -n "$(ls -A "$SRC_DIR" 2>/dev/null)" ]; then
+        if [ "$ASSUME_YES" -ne 1 ]; then
+            if [ -t 0 ] && [ -t 1 ]; then
+                printf "  /usr/src exists and is non-empty. Replace it now? [y/N]: "
+                read -r ans
+                case "$ans" in [Yy]*) ;; *) emit "  aborted; /usr/src left unchanged"; return 1 ;; esac
+            else
+                fail "/usr/src exists and is non-empty; refusing to replace it non-interactively"
+                note "re-run with --yes to replace it, or empty /usr/src first"
+                return 1
+            fi
+        fi
+        # Mountpoint-safe removal: if /usr/src is its own mount, rm -rf
+        # of the mountpoint fails with Device busy. Empty the contents
+        # instead, then clone into the mount.
+        if mount | grep -q " ${SRC_DIR} "; then
+            emit "  -- /usr/src is a separate mount; emptying its contents"
+            rm -rf "${SRC_DIR}/..?"* "${SRC_DIR}/".[!.]* "${SRC_DIR}/"* 2>/dev/null || true
+            if [ -n "$(ls -A "$SRC_DIR" 2>/dev/null)" ]; then
+                fail "could not empty /usr/src; left in an indeterminate state"
+                return 1
+            fi
+        else
+            emit "  -- removing existing /usr/src"
+            if ! rm -rf "$SRC_DIR"; then
+                fail "could not remove /usr/src"
+                return 1
+            fi
+        fi
+    fi
+
+    # Clone the pinned fork. Prefer base_branch for the starting point;
+    # the commit checkout below fixes identity per AD-57. Fetch all
+    # refs (no --single-branch) so the commit checkout succeeds even if
+    # it lives on a differently named branch.
+    emit "  -- cloning the pinned fork (this is large)"
+    cloned=0
+    if [ -n "$src_branch" ]; then
+        if git clone --branch "$src_branch" "$src_repo" "$SRC_DIR"; then
+            cloned=1
+        else
+            emit "  -- branch clone of '$src_branch' failed; trying a plain clone"
+        fi
+    fi
+    if [ "$cloned" -eq 0 ]; then
+        if ! git clone "$src_repo" "$SRC_DIR"; then
+            fail "git clone of $src_repo failed (check network and git)"
+            return 1
+        fi
+    fi
+    if ! git -C "$SRC_DIR" checkout --quiet "$src_commit"; then
+        fail "clone succeeded but checkout of the pinned commit failed"
+        note "$src_commit may be missing from the fork"
+        return 1
+    fi
+
+    # Own it for the unprivileged userland build and mark it a safe
+    # git directory (post-chown ownership differs from the invoker).
+    owner_uid="${SUDO_UID:-0}"; owner_gid="${SUDO_GID:-0}"
+    if chown -R "${owner_uid}:${owner_gid}" "$SRC_DIR"; then
+        ok "cloned and chowned /usr/src to uid ${owner_uid}"
+    else
+        warn "chown of /usr/src failed; git operations may need root"
+    fi
+    git config --global --add safe.directory "$SRC_DIR" 2>/dev/null || true
+
+    # Verify we landed on the pin.
+    now="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+    if [ "$now" = "$src_commit" ]; then
+        ok "/usr/src provisioned at pinned commit $src_commit"
+        emit "  next: sh pgsd-kernel/pgsd-kernel-build.sh check"
+        return 0
+    fi
+    fail "/usr/src HEAD ($now) does not match pin ($src_commit) after provision"
+    return 1
+}
 
 # ======================================================================
 # Phase: check
@@ -904,6 +1038,7 @@ Remove them now? (default: Remove)" 16 70; then
 # Dispatch
 
 case "$CMD" in
+    provision) phase_provision; exit $? ;;
     check)   phase_check;   exit $? ;;
     build)   phase_build;   exit $? ;;
     install) phase_install; exit $? ;;

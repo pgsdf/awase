@@ -689,9 +689,11 @@ provision_usr_src() {
         # touching an existing tree.
         if [ "$PROVISION_SRC" -ne 1 ]; then
             echo "     NOT provisioning: pass --provision-src to replace it."
+            echo "     The authoritative provisioner now lives with the kernel"
+            echo "     build (it owns the pin): run"
+            echo "       sudo sh pgsd-kernel/pgsd-kernel-build.sh provision"
             echo "     Until /usr/src is the pinned fork, the kernel build's"
-            echo "     AD-57 pin check will fail. To provision by hand see"
-            echo "     pgsd-kernel/KERNEL-RECIPE.md."
+            echo "     AD-57 pin check will fail."
             return 0
         fi
         # --provision-src given: still confirm interactively unless --yes.
