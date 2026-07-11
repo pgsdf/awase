@@ -24,10 +24,13 @@ and says so.
   steps through `mdo`; it is not run under `sudo`. If the rule
   is missing the installer detects it and prints the provisioning
   commands before doing any work.
-- The `/usr/src` tree if you intend to build the PGSD kernel
-  (see `pgsd-kernel/README.md`). Optional for first install;
-  GENERIC works for staging, but the system is not runnable
-  until the PGSD kernel is installed (Step 5.5).
+- The `/usr/src` tree if you intend to build the PGSD kernel. You
+  do not need to set this up by hand: the kernel build provisions
+  it from the pinned fork with
+  `sudo sh pgsd-kernel/pgsd-kernel-build.sh provision` (Step 5.5).
+  Optional for first install; GENERIC works for staging, but the
+  system is not runnable until the PGSD kernel is installed
+  (Step 5.5).
 
 ## Step 0: Provision `mac_do` elevation
 
@@ -98,12 +101,15 @@ proceed; awase will not work correctly on a non-tmpfs `/var/run`.
 
 ## Step 2 — Install build and runtime dependencies
 
-Zig 0.16 or newer for the userland build, plus `gmake`/`rsync` for
-the kernel modules, plus `s6` for the daemon supervision tree
+The userland build uses a **vendored, pinned Zig** at
+`sdk/zig/current` (bootstrapped automatically by `tools/zig` on
+first build; needs network), so you do not `pkg install zig`. The
+packages you do need are `gmake`/`rsync` for the kernel modules,
+`git` for the clone, and `s6` for the daemon supervision tree
 (introduced in AD-20):
 
 ```
-sudo pkg install -y zig git gmake rsync s6
+sudo pkg install -y git gmake rsync s6
 ```
 
 `rsync` is used by `drawfs/build.sh` and `inputfs/build.sh` to
@@ -122,21 +128,19 @@ sudo pkg install -y bsddialog
 text menu if it is absent — but the dialog menu is a clearer
 interface and is recommended.
 
-If you intend to build the PGSD kernel, also install the FreeBSD
-source tree:
-
-```
-sudo pkg install -y FreeBSD-src FreeBSD-src-sys
-```
+**Do not `pkg install FreeBSD-src`.** The PGSD kernel builds
+against a *pinned FreeBSD fork*, not the pkgbase release source,
+and the AD-57 pin check rejects an unpinned `/usr/src`. The kernel
+build provisions the correct source itself in Step 5.5
+(`pgsd-kernel-build.sh provision`); there is nothing to install
+here for the kernel source.
 
 **Verify:**
 
 ```
-zig version
 which s6-svscan
 ```
 
-`zig version` must report `0.16.x` or newer. Otherwise, the build will fail with errors about unrecognized syntax.
 `which s6-svscan` must print `/usr/local/bin/s6-svscan`. If absent,
 `install.sh` will fail at the dependency check in Step 6.
 
@@ -307,7 +311,7 @@ testing, but several in-tree drivers compete with Awase for
 ownership of hardware:
 
 - `hkbd`, `ukbd`, `hms`, `hmt`, `hgame`, `hcons`, `hsctrl`,
-  `utouch`, `hpen`, `hidmap`: HID class drivers that claim
+  `hpen`, `hconf`, `hidmap`: HID class drivers that claim
   USB keyboards, mice, and touchpads before `inputfs` can.
   Without the PGSD kernel, input under Awase may not work
   (Hazard 2 below).
@@ -344,12 +348,24 @@ booting with no drawfs.ko comes up dark). The `check` phase and the
 Step 6:
 
 ```
+sudo sh pgsd-kernel/pgsd-kernel-build.sh provision   # clone the pinned fork into /usr/src
 sh pgsd-kernel/pgsd-kernel-build.sh check
 mdo sh pgsd-kernel/pgsd-kernel-build.sh build --clean
 sh install.sh                                # Step 6 (deploys drawfs.ko)
 mdo sh pgsd-kernel/pgsd-kernel-build.sh install
 mdo shutdown -r now
 ```
+
+The `provision` phase populates `/usr/src` with the pinned FreeBSD
+fork the kernel builds against (reading `pgsd-kernel/FREEBSD-PIN`).
+It is a deliberate, destructive step (a multi-GiB clone that replaces
+`/usr/src`), owned by the kernel build because `/usr/src` exists only
+for the kernel: the userland install never uses it. Run it once on a
+fresh machine; it is idempotent when `/usr/src` is already the pinned
+fork, and it confirms before replacing a non-empty tree (pass `--yes`
+to skip the prompt). If you provisioned `/usr/src` some other way (a
+manual clone at the pinned commit), skip it; `check` verifies the pin
+regardless.
 
 The default config is `PGSD`; pass `PGSD-DEBUG` as the phase argument
 to build the debug variant instead.
@@ -399,19 +415,21 @@ This is the canonical install path. It:
    redundant if you run `install.sh`).
 7. Copies userland binaries to `/usr/local/bin/`.
 8. Generates rc.d service scripts: module loaders for `inputfs`
-   and `audiofs` (the latter PROVIDEs `utf_clock`, since loading
+   and `audiofs` (the latter PROVIDEs `awase_clock`, since loading
    audiofs starts the kernel clock writer; ADR 0018/0029), the
-   `utf-supervisor` (s6-svscan launcher), and thin shims for
+   `awase-supervisor` (s6-svscan launcher), and thin shims for
    `semasound`, `semadraw`, and `pgsd-sessiond` that translate
    `service <name> {start,stop,status,restart}` into the matching
    `s6-svc` calls.
-9. Copies the s6 service-directory layout from `s6/utf/` to
-   `/var/service/utf/` (one directory per supervised daemon).
-10. Creates `/var/log/utf/` and per-daemon log subdirectories
+9. Copies the s6 service-directory layout from `s6/awase/` to
+   `/var/service/awase/` (one directory per supervised daemon).
+10. Creates `/var/log/awase/` and per-daemon log subdirectories
     for `s6-log` to write into.
 11. Sets `drawfs_load="YES"` in `/boot/loader.conf`.
 12. Sets enable flags in `/etc/rc.conf`: `inputfs_enable`,
-    `utf_supervisor_enable`, plus the two daemon shims.
+    `audiofs_enable`, `awase_supervisor_enable`, and the daemon
+    shims `semasound_enable`, `semadraw_enable`,
+    `pgsd_sessiond_enable`, plus `pgsd_bootchime_enable`.
 13. On systems upgraded from a pre-2026-05-08 install, reaps any
     stale `semainputd` artifacts left from before the daemon was
     retired (the binary, its rc.d shim, its service directory,
@@ -440,9 +458,9 @@ and `/etc/`, and none of them reference the source location.
 
 ```
 ls /usr/local/bin/semadrawd /usr/local/bin/semasound /usr/local/bin/chrono_dump
-ls /usr/local/etc/rc.d/inputfs /usr/local/etc/rc.d/audiofs /usr/local/etc/rc.d/utf-supervisor
+ls /usr/local/etc/rc.d/inputfs /usr/local/etc/rc.d/audiofs /usr/local/etc/rc.d/awase-supervisor
 ls /usr/local/etc/rc.d/semasound /usr/local/etc/rc.d/semadraw
-ls /var/service/utf/semasound/run /var/service/utf/semadrawd/run
+ls /var/service/awase/semasound/run /var/service/awase/semadrawd/run
 ls /boot/modules/drawfs.ko /boot/modules/inputfs.ko
 grep drawfs_load /boot/loader.conf
 grep inputfs_load /boot/loader.conf  # should produce no output
@@ -450,7 +468,7 @@ grep inputfs_load /boot/loader.conf  # should produce no output
 
 Note the `semadraw` rc.d shim has no trailing `d`; the binary
 under `/usr/local/bin/` is `semadrawd` (with the `d`); the s6
-service directory under `/var/service/utf/` is named after the
+service directory under `/var/service/awase/` is named after the
 binary (`semadrawd`). The mapping is not arbitrary — it preserves
 the historical rc.d name operators may have in scripts while
 keeping the s6 layout consistent with the binary names.
@@ -495,7 +513,7 @@ development iteration, rebuild and `service <name> restart`.
 
 ```
 sudo service inputfs start
-sudo service utf-supervisor start
+sudo service awase-supervisor start
 sudo service semadraw start
 ```
 
@@ -503,7 +521,7 @@ The order matters and is enforced at boot by `rcorder(8)`:
 
 1. `inputfs` — loads the kernel module after `/var/run` is
    mounted, publishing `/var/run/sema/input/{state,events}`.
-2. `utf-supervisor` — launches `s6-svscan /var/service/utf`
+2. `awase-supervisor` — launches `s6-svscan /var/service/awase`
    as the supervision tree root. With it absent, the daemon
    shims have nothing to talk to.
 3. `semadraw` - the compositor. Reads input directly from the
@@ -516,11 +534,11 @@ upgraded from a pre-retirement install, install.sh reaps the stale
 semaaud artifacts automatically (service directory with supervise
 state, log directory, binary, rc.d script, and rc.conf key). The
 audio clock at `/var/run/sema/clock` is written by the audiofs kernel
-module (ADR 0018); the `audiofs` rc.d service PROVIDEs `utf_clock`.
+module (ADR 0018); the `audiofs` rc.d service PROVIDEs `awase_clock`.
 
-The `service utf-supervisor start` call brings up
+The `service awase-supervisor start` call brings up
 `s6-svscan`. `s6-svscan` then auto-spawns one `s6-supervise`
-per service directory under `/var/service/utf/` and the daemons
+per service directory under `/var/service/awase/` and the daemons
 come up under supervision a moment later. The subsequent
 `service <name> start` calls send `s6-svc -uwu` to confirm the
 service is up; when run from boot they are typically no-ops
@@ -530,13 +548,13 @@ because supervision has already started everything.
 
 ```
 kldstat | grep -E "drawfs|inputfs|audiofs"
-service utf-supervisor status
+service awase-supervisor status
 service semasound status
 service semadraw status
 ls /var/run/sema/clock /var/run/sema/input/state /var/run/sema/input/events
 ```
 
-`service utf-supervisor status` should report a pid and the
+`service awase-supervisor status` should report a pid and the
 supervised services with real `s6-svstat` output (uptimes,
 pids). The `service <name> status` calls are operator-side
 shims that ultimately read the same s6-svstat. All three kernel
@@ -547,13 +565,13 @@ If a supervised daemon dies repeatedly within 10 seconds of
 start, the flap detector in `./finish` (see `s6/README.md`)
 exits 125 after 5 such failures in a 45-second window; the
 service is then marked down until operator intervention. Read
-`/var/log/utf/<name>/current` for the daemon's own output and
-`/var/log/utf/svscan.log` for s6-svscan's diagnostic lines.
+`/var/log/awase/<name>/current` for the daemon's own output and
+`/var/log/awase/svscan.log` for s6-svscan's diagnostic lines.
 
 ### A note on rc.d naming
 
 The rc.d shim is `semadraw`; the binary it supervises is
-`semadrawd`; the `/var/service/utf/` directory is named
+`semadrawd`; the `/var/service/awase/` directory is named
 `semadrawd`. Old recipes that say `service semadrawd start`
 will fail with "no such service"; the correct command is
 `service semadraw start`. (`semasound` is the same name in
@@ -576,14 +594,14 @@ service (`semasound`, `semadrawd`, `pgsd-sessiond`), a
 supervise/log/logger/daemon quartet:
 
 - 1 `daemon: /usr/local/bin/s6-svscan ...` (rc.d wrapper)
-- 1 `s6-svscan /var/service/utf`
+- 1 `s6-svscan /var/service/awase`
 - 3 `s6-supervise <name>` (one per service)
 - 3 `s6-supervise <name>/log` (one per log directory)
-- 3 `s6-log ... /var/log/utf/<name>` (the loggers)
+- 3 `s6-log ... /var/log/awase/<name>` (the loggers)
 - 3 supervised daemons: `semasound`, `semadrawd`, `pgsd-sessiond`
 
 Fewer processes than expected means one or more daemons did
-not come up; check `service utf-supervisor status` to see
+not come up; check `service awase-supervisor status` to see
 which.
 
 ## Step 9 — Run something
@@ -688,7 +706,7 @@ inputfs is loaded by its dedicated rc.d service, installed by
 `install.sh` to `/usr/local/etc/rc.d/inputfs`. The script declares
 `REQUIRE: FILESYSTEMS`, so `rcorder(8)` runs `kldload inputfs`
 after `/var/run` is mounted (no early-boot crash). The consumer
-daemons (utf-supervisor and the three shims) express the inverse
+daemons (awase-supervisor and the three shims) express the inverse
 direction with their own `REQUIRE:` lines, so they always come up
 after inputfs.
 
@@ -755,16 +773,23 @@ Once the system boots cleanly, **do not retry the failed install
 step until you understand what caused the original interruption.**
 Repeated half-completes compound the corruption.
 
-### Hazard 4 — Zig version mismatch
+### Hazard 4 — Vendored Zig toolchain bootstrap
 
-Zig point releases have substantial syntax and stdlib
-differences. Awase targets 0.16; older toolchains (0.14, 0.15)
-fail loudly with errors about reserved syntax, missing imports,
-or wrong stdlib paths.
+Awase builds only through the vendored, pinned Zig at
+`sdk/zig/current`, invoked via `tools/zig`, which bootstraps it on
+first use. You do not use a system `pkg install zig`, so a system
+Zig of the wrong version is irrelevant; `build.sh` and `install.sh`
+ignore it.
 
-If `zig version` reports anything older than 0.16, install 0.16
-from the official Zig downloads or wait for `pkg install zig` to
-ship a 0.16 build for your FreeBSD version.
+The real hazard is the bootstrap: `tools/zig` fetches and unpacks
+the pinned toolchain into `sdk/zig/current` on first build, which
+needs network. If that first build ran under `sudo` in an older
+workflow, `sdk/` can be left root-owned and a later unprivileged
+build fails; `install.sh` repairs this (it re-chowns a root-owned
+`sdk/`), but if you hit it standalone, `chown -R` your user over
+`sdk/` and rebuild. If the bootstrap cannot reach the network, the
+build stops with guidance rather than a misleading "ok vendored
+zig".
 
 ### Hazard 5 — `/var/run` not actually tmpfs
 
@@ -884,7 +909,7 @@ unnecessary altogether.
 If something goes wrong during install or first run, these are
 the recovery steps in order:
 
-1. **`service utf-supervisor stop`** — stop the s6 supervision
+1. **`service awase-supervisor stop`** — stop the s6 supervision
    tree first; this stops the three supervised daemons cleanly
    in a single step. With it stopped, `service <name> status`
    for the three shims will report "not supervised" rather
