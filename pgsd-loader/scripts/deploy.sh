@@ -125,7 +125,20 @@ cmd_arm_once() {
     # full list with a regex (the label contains parens, which are
     # regex metacharacters). -c also prepends the entry to BootOrder.
     create_out=$(efibootmgr -c -a -p -l "$loader_path" -L "$ENTRY_LABEL" 2>&1)
-    bn=$(printf '%s\n' "$create_out" | awk '/Boot[0-9A-Fa-f]+\*?[[:space:]]/{for(i=1;i<=NF;i++) if($i ~ /^Boot[0-9A-Fa-f]+\*?$/){s=$i; gsub(/[^0-9A-Fa-f]/,"",s); print s; exit}}')
+    # efibootmgr prints created/listed entries as "BootXXXX* label"
+    # (format "Boot%04X"). Extract the 4 hex digits by stripping the
+    # literal "Boot" prefix and any "*" suffix. Do NOT gsub out
+    # non-hex characters: "B" in "Boot" is itself a hex digit, so a
+    # hex-class strip leaves "B0005" (the bug that failed head
+    # placement and forced a disarm).
+    bn=$(printf '%s\n' "$create_out" | while IFS= read -r line; do
+        for tok in $line; do
+            case "$tok" in
+                Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]|Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*)
+                    t=${tok#Boot}; t=${t%\*}; printf '%s\n' "$t"; break ;;
+            esac
+        done
+    done | head -1)
     if [ -z "$bn" ]; then
         # Fall back to a literal (non-regex) scan of the full list.
         bn=$(efibootmgr | while IFS= read -r line; do
@@ -148,8 +161,13 @@ cmd_arm_once() {
     efibootmgr -a -b "$bn" >/dev/null 2>&1
     efibootmgr -o "$bn,$cur" >/dev/null 2>&1
     # Verify the head is our active entry before declaring success.
+    # Normalize case: efibootmgr prints Boot%04X / BootOrder %04X
+    # (uppercase), but normalize both sides so a bootnum containing a
+    # hex letter (e.g. 000A) can never spuriously mismatch.
     newhead=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}' | awk -F', *' '{print $1}')
-    if [ "$newhead" != "$bn" ]; then
+    newhead_u=$(printf '%s' "$newhead" | tr 'a-f' 'A-F')
+    bn_u=$(printf '%s' "$bn" | tr 'a-f' 'A-F')
+    if [ "$newhead_u" != "$bn_u" ]; then
         echo "deploy.sh: could not place Boot$bn at the order head; disarming." >&2
         exit 1   # trap disarms
     fi
