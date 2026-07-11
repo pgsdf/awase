@@ -96,10 +96,35 @@ be.
 **Decision 4: metal re-attempt discipline.** When step 3 is
 reached:
 
-- The armed loader is never placed at the boot-order head. It runs
-  as a manually selected boot entry, one attempt per selection, so
-  a failure strands the bench at the firmware picker rather than in
-  a power-cycle loop.
+- The armed loader is delivered through the firmware's own
+  supported arming mechanism for this platform, with the safety
+  intent below preserved in full. The intent is what governs: no
+  power-cycle loop, evidence captured every cycle, and a recovery
+  path always reachable. The original clause read "never at the
+  boot-order head... so a failure strands the bench at the firmware
+  picker," which assumes a firmware that honors a manually selected
+  or BootNext one-shot entry. This bench does not (ledger F1:
+  BootNext is silently ignored; F2: inactive entries are skipped to
+  an internal default), so the only arming this firmware reliably
+  honors is an activated boot-order-head entry. Forcing the literal
+  clause on this platform is unexecutable and, worse, tempts
+  workarounds that are less safe than the supported path.
+- The supported path is therefore activated order-head arming for
+  exactly one cycle: create the entry, activate it (F2: entries are
+  created inactive and an inactive head is skipped), place it at the
+  order head, power cycle once, and restore the prior BootOrder and
+  reap the entry before a second cycle is possible. The single-cycle
+  window is this firmware's equivalent of stranding at the picker:
+  a failure cannot recur because the arming no longer exists on the
+  next cycle. This is exactly the F1 disposition, now adopted as the
+  Decision 4 mechanism rather than an exception to it.
+- The loop hazard that made F7 dangerous was not order-head arming
+  as such; it was an armed transfer that crossed ExitBootServices
+  into a faulting kernel, so the fault recurred every cycle. The
+  one-cycle reap removes recurrence structurally, and the transfer
+  is fail-closed (Decision 3) and now proven to boot in emulation
+  (though Decision 2 still forbids assuming that transfers to
+  metal).
 - Per-step NVRAM markers are written through the pre-exit sequence,
   plus one write immediately after ExitBootServices returns and
   before the cr3 load. A failed post-exit write is recorded
@@ -107,7 +132,14 @@ reached:
   themselves platform-dependent, and the marker protocol treats
   their failure as information.
 - The breadcrumb and markers are read back after every attempt,
-  before any next attempt is armed.
+  before any next attempt is armed. Because the entry is reaped each
+  cycle, arming the next attempt is a deliberate re-deploy, never a
+  leftover.
+- The deployment tool (deploy.sh) is the only sanctioned writer of
+  the bench ESP and boot variables; it performs the create,
+  activate, order-head placement, and the post-cycle restore and
+  reap as one protocol, so the safety steps cannot be omitted by a
+  manual runsheet (F2 recorded exactly such an omission).
 
 **Decision 5: emulation uses the pinned artifact.** The kernel
 exercised in step 2 is the AD-57 pinned build, not a convenience
@@ -141,3 +173,12 @@ boots and a failure is reproducible against a fixed identity.
 ## Revision history
 
 - 2026-07-10: ratified at initial revision.
+- 2026-07-10: Decision 4 amended to reconcile with ledger findings
+  F1 and F2. The literal "never at the boot-order head" clause is
+  unexecutable on this bench, whose firmware ignores BootNext and
+  skips inactive entries, so it is replaced by the firmware's
+  supported mechanism (activated order-head arming for exactly one
+  cycle, restored and reaped before a second cycle) while preserving
+  the decision's intent in full: no power-cycle loop, evidence every
+  cycle, recovery path always reachable. Prompted by preparing the
+  step 3 metal attempt after step 2 succeeded in emulation.
