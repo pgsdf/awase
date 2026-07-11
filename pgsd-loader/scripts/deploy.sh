@@ -40,6 +40,12 @@
 # separate deliberate acts, and recover is safe to run at any time
 # (idempotent), so the bench is never more than one command from its
 # normal boot path.
+#
+# Overriding a config variable under sudo: sudo scrubs the
+# environment, so "VAR=val sudo sh deploy.sh ..." does NOT pass VAR.
+# Put the assignment AFTER sudo ("sudo VAR=val sh deploy.sh ...") or
+# use "sudo -E". The defaults below fit the bench, so overrides are
+# rarely needed; arm-once no longer requires any variable to be set.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -48,7 +54,6 @@ B="$PROJ_DIR/zig-out/bin"
 
 # --- configuration (override via environment) ---
 ESP_MNT="${ESP_MNT:-/boot/efi}"                # bench ESP mount point
-ESP_DISK="${ESP_DISK:-}"                        # e.g. ada0p1 (for -c)
 PGSD_REAL_KERNEL="${PGSD_REAL_KERNEL:-/boot/kernel/kernel}"
 ENTRY_LABEL="${ENTRY_LABEL:-PGSD-loader armed (one-shot)}"
 SAVED_ORDER_FILE="${SAVED_ORDER_FILE:-/var/db/pgsd-loader-saved-bootorder}"
@@ -95,7 +100,8 @@ cmd_arm_once() {
         echo "deploy.sh: run 'recover' first; refusing to arm twice without recovery." >&2
         exit 1
     fi
-    [ -n "$ESP_DISK" ] || { echo "deploy.sh: set ESP_DISK to the ESP partition (e.g. ada0p1) for entry creation" >&2; exit 1; }
+    loader_path="$(esp EFI/BOOT/BOOTX64.EFI)"
+    [ -f "$loader_path" ] || { echo "deploy.sh: staged loader not found ($loader_path); run stage first" >&2; exit 1; }
 
     # Save the current BootOrder so recover can restore it exactly.
     cur=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
@@ -103,13 +109,18 @@ cmd_arm_once() {
     printf '%s\n' "$cur" > "$SAVED_ORDER_FILE"
     echo "deploy.sh: saved BootOrder $cur -> $SAVED_ORDER_FILE"
 
-    # Create the entry pointing at the launcher, then ACTIVATE it (F2:
-    # entries are created inactive and an inactive head is skipped).
-    efibootmgr -c -l "$(esp EFI/BOOT/BOOTX64.EFI)" -L "$ENTRY_LABEL" >/dev/null
-    # Find the just-created entry number by its unique label.
+    # Create the entry. -p (unix-path) makes efibootmgr resolve the
+    # ESP device from the full filesystem path itself, so no disk
+    # needs to be named (FreeBSD efibootmgr:
+    # efivar_unix_path_to_device_path). -a activates in the same
+    # step; F2 requires an active entry or the firmware skips it.
+    efibootmgr --dry-run -c -a -p -l "$loader_path" -L "$ENTRY_LABEL" >/dev/null 2>&1 || true
+    efibootmgr -c -a -p -l "$loader_path" -L "$ENTRY_LABEL" >/dev/null
+    # Find the just-created entry by its unique label.
     bn=$(efibootmgr | awk -v L="$ENTRY_LABEL" '$0 ~ L {gsub(/[^0-9]/,"",$1); print $1; exit}')
     [ -n "$bn" ] || { echo "deploy.sh: could not find created entry '$ENTRY_LABEL'" >&2; exit 1; }
-    efibootmgr -a -b "$bn" >/dev/null
+    # Belt and suspenders: ensure active (F2), even though -a was given.
+    efibootmgr -a -b "$bn" >/dev/null 2>&1 || true
     # Place it at the order head for exactly one cycle.
     efibootmgr -o "$bn,$cur" >/dev/null
     echo "deploy.sh: armed entry Boot$bn (active) at the order head for ONE cycle."
