@@ -54,6 +54,10 @@ var landmarks = []landmark{
 	{"getmemsize", "physical memory sizing"},
 	{"init_param1", "kernel parameter init"},
 	{"cninit", "console init; serial should come alive here"},
+	{"mi_startup", "machine-independent init; the main boot sequence"},
+	{"vfs_mountroot", "root filesystem mount"},
+	{"start_init", "launches userland init(8)"},
+	{"kern_reboot", "shutdown/reboot path (reached = kernel is halting)"},
 }
 
 // result is the parsed outcome of the probe.

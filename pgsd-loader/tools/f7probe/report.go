@@ -61,8 +61,17 @@ func report(cfg *config, r *result) {
 		vb.WriteString(dimStyle.Render("  The fault is in the loader trampoline. Unexpected: prior\n  runs proved the transfer. Re-check the discovered address.") + "\n")
 	case len(r.reached) == 0:
 		vb.WriteString("  " + warnStyle.Render("Kernel entry reached; no landmark hit.") + "\n")
-		vb.WriteString(dimStyle.Render("  Fault is in btext locore before hammer_time, OR the\n  landmark breakpoints did not resolve to the running\n  kernel's addresses (check symbol/load alignment below).") + "\n")
-	case lastReached == "cninit":
+		vb.WriteString(dimStyle.Render("  Fault is in btext locore before hammer_time, OR the\n  landmark breakpoints did not resolve to the running\n  kernel's addresses (check the gdb transcript).") + "\n")
+	case reachedSet["kern_reboot"]:
+		vb.WriteString("  " + warnStyle.Render("Kernel booted through init and then called kern_reboot.") + "\n")
+		vb.WriteString(dimStyle.Render("  This is not a crash: the kernel initialized and chose to\n  halt/shutdown. The cause is downstream of the loader,\n  most likely no mountable root (vfs.root.mountfrom names a\n  pool the emulator does not have) or a console that never\n  produced a prompt. Check whether vfs_mountroot was\n  reached and read the serial for a mountroot message.") + "\n")
+	case reachedSet["start_init"]:
+		vb.WriteString("  " + okStyle.Render("Kernel reached start_init (launching userland).") + "\n")
+		vb.WriteString(dimStyle.Render("  Early boot is fully working through the loader handoff.\n  Any remaining issue is userland/root-fs, not the loader.") + "\n")
+	case reachedSet["vfs_mountroot"]:
+		vb.WriteString("  " + okStyle.Render("Kernel reached vfs_mountroot.") + "\n")
+		vb.WriteString(dimStyle.Render("  The kernel booted through init to root mounting. A stop\n  here is a root-filesystem problem (the named root is not\n  present in the emulator), not a loader or handoff fault.") + "\n")
+	case reachedSet["cninit"]:
 		vb.WriteString("  " + okStyle.Render("Reached cninit (console init).") + "\n")
 		vb.WriteString(dimStyle.Render("  The kernel booted through early init. If no banner on\n  serial, the issue is console/UART config, not the handoff.") + "\n")
 	default:
