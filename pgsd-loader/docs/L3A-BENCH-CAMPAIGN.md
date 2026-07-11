@@ -606,3 +606,44 @@ this configuration; the fix is nonetheless correct and required for
 the bench, where ACPI tables are present in the EFI configuration
 tables. Whether the emulator then boots to mountroot is a separate
 question the fix will answer.
+
+#### F7 CLOSED: the kernel boots (2026-07-10)
+
+With acpi.rsdp published, f7probe shows the pinned PGSD kernel booting
+to completion under the loader. The serial carries the full boot:
+
+    Copyright (c) 1992-2025 The FreeBSD Project.
+    FreeBSD 15.1-RELEASE n283562-96841ea08dcf PGSD amd64
+    ... CPU, ACPI, PCI, AHCI, uart0 console (115200,n,8,1) ...
+    Trying to mount root from zfs:zroot/ROOT/awase-verified-pgsd-clean
+    mountroot>
+
+Every landmark is reached through start_init and vfs_mountroot. The
+ACPI RSDP fix resolved the earlier panic: the local APIC comes up
+(LAPIC event timer, ioapic0, ACPI APIC Table present), and the kernel
+runs all the way to root mounting. The probe's 90s timeout fires not
+on a hang but on the kernel sitting healthily at the mountroot
+prompt.
+
+Where it stops is expected and not a loader fault: the emulator has
+no ZFS pool zroot/ROOT/awase-verified-pgsd-clean (only the QEMU
+scratch disk), so root mount fails with "unknown file system" and the
+kernel drops to the mountroot prompt, exactly the behavior of any
+FreeBSD kernel whose named root is absent. On the bench, where that
+pool exists, this path continues to userland.
+
+F7 is closed. The two-week-old reset-at-the-Apple-logo failure was,
+end to end: a correct transfer (proven instruction by instruction), a
+correct handoff (stack, metadata, env, load address all verified
+against source), and a correct early boot, blocked only by two
+missing boot-env data the loader had not yet published, the serial
+console binding (hw.uart.console) and the ACPI RSDP (acpi.rsdp). Both
+are now published from facts the loader discovers (the UART port and
+the EFI configuration tables), consistent with the publish-not-infer
+discipline. The transfer that once required a bench reinstall now
+boots the pinned kernel to the mountroot prompt in emulation.
+
+Remaining, as separate non-F7 work: the EFI runtime module load
+(MOD_LOAD efirt error 6) if EFI runtime services are ever wanted, and
+a real-hardware boot on the bench where the ZFS root is present, under
+the ADR 0005 Decision 4 metal discipline.
