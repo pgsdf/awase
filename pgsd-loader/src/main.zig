@@ -159,7 +159,7 @@ pub fn main() uefi.Status {
                     // console kenv the kernel boots to a console that
                     // is not there and appears silent. The bench root
                     // is the clean Awase boot environment.
-                    const env_bytes = "console=comconsole\x00comconsole_speed=115200\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
+                    const env_bytes = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
                     @memcpy(env_stage[0..env_bytes.len], env_bytes);
                     const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
