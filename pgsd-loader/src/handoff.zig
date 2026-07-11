@@ -310,3 +310,25 @@ pub fn transferCliAddr() u64 {
 pub fn transferAddr() u64 {
     return @intFromPtr(&transferToKernel);
 }
+
+// Discover the ACPI RSDP physical address from the EFI system table's
+// configuration tables. A UEFI kernel locates ACPI only through this
+// pointer (passed as the acpi.rsdp kenv): the legacy scan of the BIOS
+// EBDA/ROM region does not find it on UEFI, where the RSDP lives in
+// the configuration tables. Prefer the ACPI 2.0 table, fall back to
+// 1.0, matching loader.efi. Returns null if neither is present.
+pub fn findAcpiRsdp() ?u64 {
+    const ConfigurationTable = uefi.tables.ConfigurationTable;
+    const st = uefi.system_table;
+    const tables = st.configuration_table[0..st.number_of_table_entries];
+    var acpi10: ?u64 = null;
+    for (tables) |t| {
+        if (t.vendor_guid.eql(ConfigurationTable.acpi_20_table_guid)) {
+            return @intFromPtr(t.vendor_table);
+        }
+        if (t.vendor_guid.eql(ConfigurationTable.acpi_10_table_guid)) {
+            acpi10 = @intFromPtr(t.vendor_table);
+        }
+    }
+    return acpi10;
+}

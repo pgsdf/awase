@@ -148,21 +148,33 @@ pub fn main() uefi.Status {
                     const image_span = lr.image_end - lr.base_paddr;
                     const fb = handoff.framebuffer(bsp);
                     const envp_rel = std.mem.alignForward(u64, image_span, 4096);
-                    // Minimal boot environment: the kernel reads
-                    // "name=value\0"... terminated by an empty string
-                    // (double NUL). vfs.root.mountfrom names the root
-                    // to mount; without it the kernel starts but stops
-                    // at mountroot. console=comconsole selects the
-                    // serial console: the PGSD kernel drops the
-                    // framebuffer/vt console (that is its purpose,
-                    // freeing the display for Awase), so without a
-                    // console kenv the kernel boots to a console that
-                    // is not there and appears silent. The bench root
-                    // is the clean Awase boot environment.
-                    const env_bytes = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00\x00";
+                    // Boot environment: "name=value\0"... terminated by
+                    // an empty string (double NUL). console=comconsole
+                    // plus hw.uart.console binds the serial console (the
+                    // PGSD kernel has no framebuffer console).
+                    // acpi.rsdp passes the ACPI Root System Description
+                    // Pointer discovered from the EFI configuration
+                    // tables: a UEFI kernel finds ACPI only through this
+                    // kenv (the legacy BIOS-region scan does not work on
+                    // UEFI), and without it panics with "running without
+                    // device atpic requires a local APIC".
+                    // vfs.root.mountfrom names the root to mount.
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
-                    @memcpy(env_stage[0..env_bytes.len], env_bytes);
-                    const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes.len, 4096);
+                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00";
+                    var env_len: usize = 0;
+                    @memcpy(env_stage[0..env_fixed.len], env_fixed);
+                    env_len = env_fixed.len;
+                    if (handoff.findAcpiRsdp()) |rsdp| {
+                        var rb: [40]u8 = undefined;
+                        if (std.fmt.bufPrint(&rb, "acpi.rsdp=0x{x}\x00", .{rsdp})) |kv| {
+                            @memcpy(env_stage[env_len .. env_len + kv.len], kv);
+                            env_len += kv.len;
+                        } else |_| {}
+                    }
+                    env_stage[env_len] = 0; // final terminating NUL (double NUL)
+                    env_len += 1;
+                    const env_bytes_len = env_len;
+                    const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes_len, 4096);
                     var chain_buf: [16384]u8 = undefined;
                     // Capture the memory map for EFI_MAP. In this
                     // attestable increment the map is captured during
@@ -231,9 +243,9 @@ pub fn main() uefi.Status {
                             // The env begins with the console= key and
                             // ends with the double-NUL terminator;
                             // confirm both. The terminator position is
-                            // derived from env_bytes.len so this stays
+                            // derived from env_bytes_len so this stays
                             // correct if the env content changes.
-                            const env_ok = env_phys[0] == 'c' and env_phys[env_bytes.len - 2] == 0 and env_phys[env_bytes.len - 1] == 0;
+                            const env_ok = env_phys[0] == 'c' and env_phys[env_bytes_len - 2] == 0 and env_phys[env_bytes_len - 1] == 0;
                             // Walk the chain in place and confirm the
                             // EFI_MAP record (0x9004) is present: this
                             // is what the kernel keys efi_boot on, and
