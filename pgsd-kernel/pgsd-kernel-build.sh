@@ -66,13 +66,29 @@ set -u
 # ----------------------------------------------------------------------
 # Constants
 
-# Bare module names: what humans understand and what AD-3 and
-# AD-8 actually mean. AD-8 covers the HID drivers (hkbd ukbd hms
-# hgame hcons hsctrl hpen hmt hconf hidmap); AD-3 covers the snd
-# entries (hda sound cmi csa emu10kx es137x ich via8233).
-# Used for verification (looking for .ko files in /boot/kernel/) and for
-# user-facing log lines. NOT passed directly to make: see resolve_without_modules.
-WITHOUT_MODULES_NAMES="hkbd ukbd hms hgame hcons hsctrl hpen hmt hconf hidmap hda sound cmi csa emu10kx es137x ich via8233"
+# Bare module names to exclude via WITHOUT_MODULES. Three groups:
+#   AD-8 HID drivers: hkbd ukbd hms hgame hcons hsctrl hpen hmt hconf
+#     hidmap. These are NESTED (hid/hkbd, usb/ukbd) so WITHOUT_MODULES
+#     cannot actually suppress them; they are removed after
+#     installkernel by the AD-8 closure reap. Listed here for the
+#     verification/reap source of truth, not because the make arg works.
+#   AD-3 sound: hda sound cmi csa emu10kx es137x ich via8233.
+#   Out-of-scope drivers: iwlwifi. Top-level LinuxKPI Intel wireless.
+#     PGSD is a headless wired appliance and does not use it, and its
+#     amd64 build is fragile (a failed if_iwlwifi.ko compile does not
+#     stop buildkernel, then installkernel dies trying to install the
+#     absent .ko: "install: if_iwlwifi.ko: No such file or directory").
+#     Because iwlwifi IS top-level, WITHOUT_MODULES genuinely excludes
+#     it at both build and install, so build and install agree and the
+#     module is never scheduled for an install it cannot satisfy. This
+#     is a definitional exclusion (out of scope), not a mask over a bug
+#     we care about; other missing modules still fail loudly. If rtw88
+#     or rtw89 (sibling LinuxKPI wireless under the same amd64 .if block
+#     in sys/modules/Makefile) later fail the same way, add them here
+#     rather than weakening the install error check.
+# Used for the make arg (only the top-level names take effect) and for
+# verification/reap. See resolve_without_modules for the mechanism.
+WITHOUT_MODULES_NAMES="hkbd ukbd hms hgame hcons hsctrl hpen hmt hconf hidmap hda sound cmi csa emu10kx es137x ich via8233 iwlwifi"
 
 # The AD-8 HID modules specifically: the nested leaves that
 # WITHOUT_MODULES cannot suppress and that the closure reap removes
