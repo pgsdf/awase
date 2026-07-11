@@ -513,3 +513,96 @@ free to cninit. The next experiment is gdb-transfer.sh run: boot the
 real kernel and let it run without freezing, serial captured, to see
 whether the banner appears or where bring-up stops. That is a kernel
 bring-up question, downstream of everything the loader owns.
+
+#### F7 reproduces in emulation and is a kernel early-boot fault (2026-07-10)
+
+trace mode (free-run + interrupt sampling) showed rip pinned at the
+kernel entry 0xffffffff80383000 across every sample, while step mode
+had single-stepped cleanly past the entry. The reconciliation: free
+execution faults a few instructions into the kernel, triple-faults,
+and the machine resets; the reset re-runs firmware, boot-launcher,
+and the loader, which re-enters the kernel at the same entry, so each
+interrupt samples a fresh iteration of a reset loop. This is the
+metal F7 signature reproduced in QEMU, with full visibility, and now
+located: not the transfer (proven correct instruction by
+instruction), but a few instructions into the kernel's own early
+boot.
+
+Source review against FreeBSD releng/15.1 (the pinned tree),
+sys/amd64/amd64/locore.S btext and machdep.c hammer_time /
+native_parse_preload_data / amd64_loadaddr:
+
+- btext reads modulep from 4(%rbp) and kernend from 8(%rbp), the
+  stack the loader hands over. buildHandoffStack writes modulep<<32
+  at s and kernend at s+8, so 4(s)=modulep and 8(s)=kernend. Layout
+  correct.
+- native_parse_preload_data sets preload_metadata = modulep +
+  KERNBASE and envp += KERNBASE, dereferenced through the upper
+  mapping. The loader's modulep and envp are KERNBASE-relative and
+  the WALK readback confirms KERNBASE+modulep and KERNBASE+envp
+  resolve. Metadata and env contracts satisfied.
+- amd64_loadaddr walks the loader page tables' PDE for KERNSTART
+  (KERNBASE + 2M) and returns its physical frame as kernphys. With
+  the loader's upper map pd_u0[k] = staging + k*2M - base_paddr and
+  base_paddr = KERNLOAD = 0x200000, KERNSTART (k=1) resolves to
+  staging = 0xc000000, so kernphys = 0xc000000, exactly the staging
+  base. The vmparam.h contract (2M hole at KERNBASE, kernel at
+  KERNSTART, contiguous phys below 4G, 1:1 low-4G map for page-table
+  access) is therefore satisfied by the loader: kernphys is correct,
+  the staging block is contiguous, the tables are below 4G and
+  1:1-mapped. This hypothesis is cleared.
+
+So the metadata, env, and load-address/physfree contracts are all
+satisfied. The fault is later in hammer_time, still within the first
+instructions before console init. Remaining candidates to check
+against source next session: the GDT/IDT/TSS setup in hammer_time
+(a bad descriptor load faults with no handler), the EFI map handoff
+(MODINFOMD_EFI_MAP contents and efi_boot detection), and the early
+pmap bootstrap create_pagetables. The next instrument is deepstep
+(single-step 60 instructions from entry) plus, on a synchronous
+fault, reading the faulting instruction against locore.S; on a clean
+deepstep with a resetting free-run, the trigger is asynchronous (an
+interrupt/NMI through an IDT not yet installed), which points at the
+early exception setup rather than a bad memory access.
+
+#### F7 resolved: not a transfer fault, an ACPI RSDP handoff gap (2026-07-10)
+
+With the console bound (hw.uart.console), f7probe captured the
+kernel's own panic. F7 was never a crash in the transfer or early
+boot: the kernel boots correctly through the loader handoff, runs
+amd64_loadaddr, hammer_time, parse_preload_data, getmemsize,
+init_param1, cninit, and mi_startup, then panics:
+
+    Firmware Error (ACPI): A valid RSDP was not found
+    panic: running without device atpic requires a local APIC
+
+and calls kern_reboot (the clean "exit" seen before the console
+worked). The kernel cannot find the local APIC because it cannot find
+the ACPI tables, because it has no RSDP.
+
+Root cause, confirmed against FreeBSD source
+(sys/x86/acpica/OsdEnvironment.c, stand/efi/loader/main.c): a UEFI
+kernel finds the ACPI RSDP from the acpi.rsdp kenv tunable, which the
+loader must set. The legacy fallback (AcpiFindRootPointer scanning
+the BIOS EBDA region) does not work on UEFI, where the RSDP lives
+only in the EFI system table's configuration tables. FreeBSD's
+loader.efi walks those tables for the ACPI 2.0 GUID (falling back to
+1.0) and does setenv("acpi.rsdp", <phys>, 1). pgsd-loader does not
+yet pass acpi.rsdp, so the UEFI kernel has no RSDP and panics.
+
+This reframes F7 entirely. The transfer, page tables, handoff stack,
+metadata chain, env relocation, and early kernel bring-up are all
+proven correct against the real pinned kernel. What remained after
+all of that is a boot-information gap: the loader must publish the
+ACPI RSDP the way it already publishes modulep, kernend, the EFI map,
+and the firmware handle. The next increment (call it L3a.2 increment
+2, or its own AD line) is: discover the RSDP from the EFI
+configuration tables in the loader and add acpi.rsdp (and
+optionally acpi.revision) to the boot env, per the loader.efi recipe.
+
+Scope note: the QEMU/OVMF run also printed "A valid RSDP was not
+found" from the firmware, so the emulator's ACPI may be atypical in
+this configuration; the fix is nonetheless correct and required for
+the bench, where ACPI tables are present in the EFI configuration
+tables. Whether the emulator then boots to mountroot is a separate
+question the fix will answer.
