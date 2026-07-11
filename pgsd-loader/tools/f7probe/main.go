@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -77,6 +78,7 @@ type result struct {
 	gdbRaw       string
 	serialRaw    string
 	notes        []string
+	timedOut     bool
 }
 
 func main() {
@@ -269,13 +271,40 @@ func runUnderGDB(cfg *config, esp, vars, tramp, entry string) (*result, error) {
 		return nil, err
 	}
 	g := exec.Command(cfg.gdb, "-q", "-nx", "-batch", "-x", scriptPath)
-	gout, err := g.CombinedOutput()
-	if err != nil {
-		// gdb batch returns nonzero on some detach paths; keep output
-		gout = append(gout, []byte(fmt.Sprintf("\n[gdb exit: %v]\n", err))...)
+	var gbuf []byte
+	gdone := make(chan error, 1)
+	gout, gpipeErr := g.StdoutPipe()
+	g.Stderr = g.Stdout
+	timedOut := false
+	if gpipeErr == nil {
+		if startErr := g.Start(); startErr == nil {
+			go func() {
+				b, _ := io.ReadAll(gout)
+				gbuf = b
+				gdone <- g.Wait()
+			}()
+			select {
+			case err := <-gdone:
+				if err != nil {
+					gbuf = append(gbuf, []byte(fmt.Sprintf("\n[gdb exit: %v]\n", err))...)
+				}
+			case <-time.After(90 * time.Second):
+				// The kernel is still running past all landmarks: it did
+				// not panic or exit within the window. That is itself a
+				// result (progress), not a tool failure. Kill gdb and
+				// note it.
+				timedOut = true
+				_ = g.Process.Kill()
+				<-gdone
+				gbuf = append(gbuf, []byte("\n[PROBE_TIMEOUT gdb still running; kernel did not panic or exit within 90s]\n")...)
+			}
+		} else {
+			gbuf = []byte(fmt.Sprintf("[gdb start failed: %v]\n", startErr))
+		}
 	}
-	serial, _ := os.ReadFile(serialPath)
-	res := parse(string(gout), string(serial), tramp, entry)
+	serialData, _ := os.ReadFile(serialPath)
+	res := parse(string(gbuf), string(serialData), tramp, entry)
+	res.timedOut = timedOut
 	return res, nil
 }
 

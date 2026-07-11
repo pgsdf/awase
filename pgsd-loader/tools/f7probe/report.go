@@ -56,6 +56,13 @@ func report(cfg *config, r *result) {
 	var vb strings.Builder
 	vb.WriteString(headStyle.Render("Verdict") + "\n")
 	switch {
+	case r.timedOut && !reachedSet["kern_reboot"]:
+		vb.WriteString("  " + okStyle.Render("Kernel still running after 90s; no panic, no reboot.") + "\n")
+		last := "the last landmark below"
+		if lastReached != "" {
+			last = lastReached
+		}
+		vb.WriteString(dimStyle.Render("  This is progress: the kernel did not panic or halt. It\n  ran past "+last+" and kept going, which means the\n  earlier early-boot panic is gone. If it is not reaching\n  vfs_mountroot, it may be waiting on a device probe; read\n  the serial log for where it is spending time.") + "\n")
 	case !r.entryReached:
 		vb.WriteString("  " + errStyle.Render("Transfer did not reach kernel entry.") + "\n")
 		vb.WriteString(dimStyle.Render("  The fault is in the loader trampoline. Unexpected: prior\n  runs proved the transfer. Re-check the discovered address.") + "\n")
