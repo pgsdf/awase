@@ -152,6 +152,33 @@ separate, operator-invoked step per `pgsd-kernel/KERNEL-RECIPE.md`
 The working order on a fresh machine is: build the kernel, run
 `install.sh`, install the kernel, reboot.
 
+**One-time `mac_do` provisioning (do this first).** `install.sh`
+elevates privileged steps through `mdo` (mac_do) by default, but it
+cannot provision `mac_do` itself: provisioning needs root, and the
+whole point of the installer is that it runs unprivileged, so this is
+a chicken-and-egg the installer leaves to you. Once, in a root shell
+(`su -`, or the system console):
+
+```
+kldload mac_do
+sysrc -f /boot/loader.conf mac_do_load=YES
+sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'
+echo 'security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*' >> /etc/sysctl.conf
+```
+
+If `id` does not show the `wheel` group for your user, also run (then
+re-login):
+
+```
+pw groupmod wheel -m "$(id -un)"
+```
+
+Alternatively, skip `mac_do` entirely and run the installer with
+`sudo` as the elevator: `PRIV=sudo sh install.sh` (this needs a
+working sudoers entry for your user). Either way `install.sh` probes
+that elevation actually works before any privileged step and prints
+this same guidance if it does not.
+
 Two system-level settings matter:
 
 **`/var/run` must be tmpfs.** Awase publishes state to userland
