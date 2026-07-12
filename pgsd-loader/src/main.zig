@@ -355,6 +355,21 @@ pub fn main() uefi.Status {
                                             break;
                                         }
                                         recordVerdict("MARK_CHAIN_REBUILT");
+
+                                        // F9: build the identity virtual
+                                        // map BEFORE exiting. It must be
+                                        // built here because the copy
+                                        // needs no allocator but the map
+                                        // it reads was allocated with a
+                                        // BOOT service; after the exit we
+                                        // could neither allocate nor
+                                        // re-fetch. Applying it comes
+                                        // after, as the reference does
+                                        // (bootinfo.c:313, after the exit
+                                        // loop): SetVirtualAddressMap is
+                                        // a RUNTIME service and survives.
+                                        const vmap = handoff.prepareVirtualMap(fmap);
+
                                         bsp.exitBootServices(uefi.handle, fmap.key) catch continue;
                                         // Past ExitBootServices: no boot
                                         // services, no console. One
@@ -366,6 +381,38 @@ pub fn main() uefi.Status {
                                         // absent (with MARK_CHAIN_REBUILT
                                         // present) means EBS itself reset.
                                         recordVerdict("MARK_EXITED_BOOTSERVICES");
+
+                                        // F9: apply it. The kernel checks
+                                        // (efirt.c) whether its GetTime
+                                        // pointer lies within the EFI map
+                                        // and refuses to attach efirt if
+                                        // not, returning ENXIO (errno 6).
+                                        // That is the "MOD_LOAD efirt
+                                        // error 6" we saw in emulation
+                                        // and wrongly called cosmetic: it
+                                        // was the kernel reporting this
+                                        // exact omission. Firmware that
+                                        // swaps its runtime-service
+                                        // implementations on this call
+                                        // (which the kernel comment says
+                                        // some do, and which OVMF does
+                                        // not) would be left with stale
+                                        // pointers without it.
+                                        //
+                                        // A failure here is recorded and
+                                        // NOT fatal: the kernel's own
+                                        // check decides whether the
+                                        // runtime services are usable,
+                                        // and a loader that reaches the
+                                        // kernel with no virtual map is
+                                        // no worse off than the one that
+                                        // never made the call at all.
+                                        if (handoff.applyVirtualMap(vmap)) {
+                                            recordVerdict("MARK_VMAP_SET");
+                                        } else |_| {
+                                            recordVerdict("MARK_VMAP_FAILED");
+                                        }
+
                                         handoff.transferToKernel(lr.entry, pt.pml4, hrsp);
                                     }
                                     // All exit attempts failed, or the

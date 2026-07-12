@@ -280,6 +280,137 @@ pub fn buildHandoffStack(bs: *uefi.tables.BootServices, modulep: u64, kernend: u
 // cannot occur. r9 is a scratch to stage the new rsp, keeping the
 // three inputs untouched until used. The clobber of memory keeps the
 // asm from being reordered against the surrounding stores.
+// ---------------------------------------------------------------------
+// F9: the EFI virtual address map.
+//
+// pgsd-loader never called SetVirtualAddressMap. The reference loader
+// does: stand/efi/loader/bootinfo.c efi_do_vmap() walks the memory map,
+// identity-maps every descriptor carrying EFI_MEMORY_RUNTIME
+// (VirtualStart = PhysicalStart), and calls
+// RS->SetVirtualAddressMap(nset * mmsz, mmsz, mmver, vmap). It is
+// called at bootinfo.c:313, AFTER the ExitBootServices retry loop at
+// ~294, which is legal and deliberate: SetVirtualAddressMap is a
+// RUNTIME service, not a boot service, so it survives the exit.
+//
+// The kernel notices the omission and told us so, in an error we saw in
+// emulation and dismissed as cosmetic. sys/dev/efidev/efirt.c: some
+// UEFI implementations keep two implementations of RS->GetTime and
+// switch to the runtime-valid one ONLY when SetVirtualAddressMap is
+// called, so the kernel checks whether the GetTime pointer lies within
+// the EFI map and fails to attach if not, returning ENXIO. ENXIO is
+// errno 6. That is exactly the "MOD_LOAD efirt error 6" we observed and
+// ignored: the kernel reporting, precisely, that this loader never
+// called SetVirtualAddressMap.
+//
+// OVMF does not do the pointer switching, which is why omitting the
+// call cost nothing in QEMU but a failed efirt attach. Apple firmware
+// is the class the kernel comment is warning about, which is why this
+// is the leading F7 hypothesis (finding F9).
+//
+// CONSTRAINT, and the reason this is split in two. The reference can
+// malloc() inside efi_do_vmap because the FreeBSD loader has its own
+// heap that survives ExitBootServices. We do not: our allocator is
+// UEFI's allocatePool, a BOOT service, which is gone the moment we
+// exit. So the vmap buffer must be built BEFORE the exit and only
+// APPLIED after it. prepareVirtualMap() does the former into a static
+// buffer; applyVirtualMap() does the latter and allocates nothing.
+
+/// Room for the runtime descriptors. Real firmware exposes a handful
+/// (runtime code, runtime data, ACPI NVS, MMIO); 64 is generous. If a
+/// firmware exceeds it we take the first 64 rather than corrupt the
+/// call, and say so: a truncated map is a bug, not a silent
+/// degradation.
+const MAX_RT_DESCRIPTORS: usize = 64;
+
+var vmap_buf: [MAX_RT_DESCRIPTORS * 128]u8 align(8) = undefined;
+
+pub const VirtualMap = struct {
+    /// Number of runtime descriptors copied. Zero means the firmware
+    /// reported none, which would be unusual and is worth noticing.
+    count: usize,
+    descriptor_size: usize,
+    descriptor_version: u32,
+    /// True if the runtime descriptor count exceeded MAX_RT_DESCRIPTORS
+    /// and the map was truncated. The caller should treat this as a
+    /// failure rather than proceed.
+    truncated: bool,
+};
+
+/// Build the identity virtual map from a memory map captured BEFORE
+/// ExitBootServices. Allocates nothing: the descriptors are copied into
+/// a static buffer, so the result stays valid across the exit.
+///
+/// Mirrors efi_do_vmap's walk: copy every descriptor with the
+/// memory_runtime attribute, setting virtual_start = physical_start.
+pub fn prepareVirtualMap(map: MemMap) VirtualMap {
+    var out: usize = 0;
+    var truncated = false;
+
+    var i: usize = 0;
+    while (i < map.count) : (i += 1) {
+        const off = i * map.descriptor_size;
+        const desc: *const uefi.tables.MemoryDescriptor =
+            @ptrCast(@alignCast(&map.buffer[off]));
+
+        if (!desc.attribute.memory_runtime) continue;
+
+        if (out >= MAX_RT_DESCRIPTORS or
+            (out + 1) * map.descriptor_size > vmap_buf.len)
+        {
+            truncated = true;
+            break;
+        }
+
+        const dst_off = out * map.descriptor_size;
+        @memcpy(
+            vmap_buf[dst_off .. dst_off + map.descriptor_size],
+            map.buffer[off .. off + map.descriptor_size],
+        );
+
+        // Identity map, exactly as the reference does: the kernel's
+        // 1:1 map means the runtime services keep working at their
+        // physical addresses.
+        const dst: *uefi.tables.MemoryDescriptor =
+            @ptrCast(@alignCast(&vmap_buf[dst_off]));
+        dst.virtual_start = dst.physical_start;
+
+        out += 1;
+    }
+
+    return .{
+        .count = out,
+        .descriptor_size = map.descriptor_size,
+        .descriptor_version = map.descriptor_version,
+        .truncated = truncated,
+    };
+}
+
+/// Apply the prepared map. Call AFTER ExitBootServices, as the
+/// reference does. Allocates nothing and calls no boot service:
+/// SetVirtualAddressMap is a runtime service and is still live.
+///
+/// Returns the UEFI status so the caller can record it in the boot
+/// breadcrumb. A failure here is worth knowing about but is not
+/// necessarily fatal: the kernel's own check (efirt.c) is what
+/// ultimately decides whether the runtime services are usable.
+pub fn applyVirtualMap(vm: VirtualMap) !void {
+    if (vm.count == 0) return error.NoRuntimeDescriptors;
+    if (vm.truncated) return error.VirtualMapTruncated;
+
+    const rs = uefi.system_table.runtime_services;
+    try rs.setVirtualAddressMap(.{
+        .info = .{
+            // The key is not consulted by SetVirtualAddressMap; it
+            // takes size, descriptor size, version, and the map.
+            .key = @enumFromInt(0),
+            .descriptor_size = vm.descriptor_size,
+            .descriptor_version = vm.descriptor_version,
+            .len = vm.count,
+        },
+        .ptr = @ptrCast(&vmap_buf),
+    });
+}
+
 pub fn transferToKernel(entry: u64, pagetable: u64, handoff_rsp: u64) noreturn {
     asm volatile (
         \\ .globl pgsd_tramp_cli
@@ -331,4 +462,122 @@ pub fn findAcpiRsdp() ?u64 {
         }
     }
     return acpi10;
+}
+
+// ---------------------------------------------------------------------
+// F9 tests.
+//
+// prepareVirtualMap is pure logic over a buffer with no UEFI calls, so
+// unlike the rest of this file it can be tested directly. It is worth
+// testing: a wrong attribute filter or a missed identity assignment
+// would be silent, and the failure would only appear as a kernel that
+// cannot use its runtime services.
+
+const testing = std.testing;
+
+fn tdesc(
+    buf: []align(8) u8,
+    idx: usize,
+    dsize: usize,
+    phys: u64,
+    runtime: bool,
+) void {
+    const off = idx * dsize;
+    const d: *uefi.tables.MemoryDescriptor = @ptrCast(@alignCast(&buf[off]));
+    d.* = .{
+        .type = .conventional_memory,
+        .physical_start = phys,
+        .virtual_start = 0xdead_beef, // must be overwritten for runtime descs
+        .number_of_pages = 1,
+        .attribute = .{
+            .uc = false, .wc = false, .wt = false, .wb = true,
+            .uce = false, .wp = false, .rp = false, .xp = false,
+            .nv = false, .more_reliable = false, .ro = false,
+            .sp = false, .cpu_crypto = false,
+            .memory_runtime = runtime,
+        },
+    };
+}
+
+test "prepareVirtualMap: copies only runtime descriptors, identity-mapped" {
+    const dsize = @sizeOf(uefi.tables.MemoryDescriptor);
+    var buf: [8 * @sizeOf(uefi.tables.MemoryDescriptor)]u8 align(8) = undefined;
+
+    // Five descriptors: three runtime, two not. The reference walks the
+    // whole map and copies only the runtime ones, which is what the
+    // firmware expects: SetVirtualAddressMap takes the runtime subset.
+    tdesc(&buf, 0, dsize, 0x1000, false);
+    tdesc(&buf, 1, dsize, 0x2000, true);
+    tdesc(&buf, 2, dsize, 0x3000, false);
+    tdesc(&buf, 3, dsize, 0x4000, true);
+    tdesc(&buf, 4, dsize, 0x5000, true);
+
+    const vm = prepareVirtualMap(.{
+        .key = @enumFromInt(0),
+        .descriptor_size = dsize,
+        .descriptor_version = 1,
+        .count = 5,
+        .buffer = &buf,
+    });
+
+    try testing.expectEqual(@as(usize, 3), vm.count);
+    try testing.expectEqual(false, vm.truncated);
+    try testing.expectEqual(dsize, vm.descriptor_size);
+
+    // Each copied descriptor is identity-mapped: virtual == physical.
+    // If this regresses, the firmware relocates its runtime services to
+    // an address the kernel's 1:1 map does not cover.
+    const expect_phys = [_]u64{ 0x2000, 0x4000, 0x5000 };
+    for (expect_phys, 0..) |phys, i| {
+        const d: *const uefi.tables.MemoryDescriptor =
+            @ptrCast(@alignCast(&vmap_buf[i * dsize]));
+        try testing.expectEqual(phys, d.physical_start);
+        try testing.expectEqual(phys, d.virtual_start);
+        try testing.expectEqual(true, d.attribute.memory_runtime);
+    }
+}
+
+test "prepareVirtualMap: no runtime descriptors is reported, not silently empty" {
+    const dsize = @sizeOf(uefi.tables.MemoryDescriptor);
+    var buf: [4 * @sizeOf(uefi.tables.MemoryDescriptor)]u8 align(8) = undefined;
+    tdesc(&buf, 0, dsize, 0x1000, false);
+    tdesc(&buf, 1, dsize, 0x2000, false);
+
+    const vm = prepareVirtualMap(.{
+        .key = @enumFromInt(0),
+        .descriptor_size = dsize,
+        .descriptor_version = 1,
+        .count = 2,
+        .buffer = &buf,
+    });
+
+    try testing.expectEqual(@as(usize, 0), vm.count);
+    // applyVirtualMap must refuse rather than call the firmware with an
+    // empty map: zero runtime descriptors means something is wrong with
+    // the map we captured, not that the firmware has no runtime services.
+    try testing.expectError(error.NoRuntimeDescriptors, applyVirtualMap(vm));
+}
+
+test "prepareVirtualMap: truncation is a failure, not a silent partial map" {
+    const dsize = @sizeOf(uefi.tables.MemoryDescriptor);
+    const n = MAX_RT_DESCRIPTORS + 4;
+    const bytes = n * @sizeOf(uefi.tables.MemoryDescriptor);
+    const buf = try testing.allocator.alignedAlloc(u8, .@"8", bytes);
+    defer testing.allocator.free(buf);
+
+    for (0..n) |i| tdesc(buf, i, dsize, 0x1000 * (i + 1), true);
+
+    const vm = prepareVirtualMap(.{
+        .key = @enumFromInt(0),
+        .descriptor_size = dsize,
+        .descriptor_version = 1,
+        .count = n,
+        .buffer = buf,
+    });
+
+    try testing.expectEqual(true, vm.truncated);
+    // A truncated map would tell the firmware to relocate SOME runtime
+    // regions and not others, which is worse than not calling at all.
+    // Refuse.
+    try testing.expectError(error.VirtualMapTruncated, applyVirtualMap(vm));
 }
