@@ -28,16 +28,59 @@ an absence: dead code, a comment explaining why something is not done,
 a workaround that looks like a design choice. Those are the entries
 worth recording.
 
+**A second signature, and a stronger one: capabilities that evolved
+independently above and below the protocol.** When a layer that can act
+unilaterally has built something (the backend can resize; the registry
+can resize; the client can resize its pty), and the protocol between
+them cannot express it, that is strong evidence the protocol is the
+missing abstraction. Layers that can proceed alone do; the layer that
+requires a design decision about who proposes and who disposes stalls.
+Hunt for this pattern deliberately: it is a much stronger signal than
+"an application wants X", because it says the need was felt
+independently at more than one layer and the only thing that blocked it
+was the absence of an agreement between them.
+
+A corollary discipline, adopted 2026-07-12: **no new semadraw protocol
+primitive is introduced without a concrete client that demonstrates the
+need.** Not every client request becomes protocol (the heuristic above
+sorts those), but every protocol addition must be grounded in
+demonstrated usage. This keeps the substrate from accumulating
+speculative abstractions while ensuring each addition has a proven
+purpose.
+
 Status key: OPEN (recorded, no ADR), ADR (design in progress or
 ratified), CLOSED (implemented and verified).
 
 ---
 
-## SA-1: the substrate cannot express resize
+## SA-1: surface state mutation has no protocol transaction semantics
 
-Status: ADR. Recorded 2026-07-12. Disposition: semadraw.
-Design: ADR 0022 (Surface geometry evolution, Substrate Evolution 1),
-Proposed 2026-07-12, awaiting ratification.
+Status: ADR. Recorded 2026-07-12, reclassified the same day.
+Disposition: semadraw.
+Design: ADR 0022 (Transactional surface state and commit semantics,
+Substrate Evolution 1), Proposed 2026-07-12, awaiting ratification.
+
+**Reclassification note.** This finding was opened as "the substrate
+cannot express resize". Studying the commit path showed that resize is
+a symptom, not the deficiency. Surface state mutations
+(`set_position`, `set_z_order`, `set_visible`, and the dormant
+`setLogicalSize`) are applied to the registry immediately, while the
+command stream is committed separately, and the compositor reads
+surface state live at composite time. There is no pending/current
+split and no snapshot. So a frame is already, today, rasterized against
+whatever state the registry happens to hold at composite time, not the
+state the client drew for.
+
+Position and z-order tear invisibly: a stream drawn for one position
+still renders correctly, merely somewhere else, because the content
+does not depend on position. Geometry is the first surface state the
+content *does* depend on, so resize is the first case where the
+missing abstraction becomes visible. Adding a resize-specific
+mechanism would have bolted a transactional guarantee onto one field
+and left the model unfixed, which is a mechanism future features would
+have to work around.
+
+The terminal found resize. The audit found transactions.
 
 ### Protocol evidence
 
@@ -143,6 +186,33 @@ protocol.
 Next step: study `attach_buffer` and `commit` in detail, then a
 Substrate Evolution ADR.
 
+### Classification
+
+    Consumers affected:
+        All interactive clients
+
+    Layer:
+        Protocol
+
+    Root cause:
+        Missing abstraction, not a missing feature: surface state
+        mutations are immediate while command streams are committed
+        separately, so no frame is a coherent transaction over
+        (surface state, commands)
+
+    Affected state:
+        geometry, position, z-order, visibility, and any future
+        surface state
+
+    Implementation status:
+        Backend:  present  (Backend.resize, all three backends)
+        Registry: present  (SurfaceRegistry.setLogicalSize)
+        Client:   present  (semadraw-term pty.resize)
+        Protocol: absent
+
+    Disposition:
+        Substrate Evolution ADR 0022
+
 ### Study of the commit path (2026-07-12)
 
 Reading `attach_buffer` and `commit` before designing changes the
@@ -192,4 +262,8 @@ design decision about who proposes and who disposes, is the only thing
 missing, and it is the only thing that can make the other three
 coherent.
 
-Design proceeded to ADR 0022.
+Design proceeded to ADR 0022, which was generalized from resize to the
+transaction model after this study. The resize-only draft is not
+retained: its `config_serial` was compensating for missing transactions
+rather than identifying a configuration, which is the distinction ADR
+0022 section 5 now makes explicit.
