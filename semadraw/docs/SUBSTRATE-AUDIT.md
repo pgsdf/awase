@@ -365,3 +365,92 @@ If a concrete atomicity requirement appears (most plausibly from
 drag-and-drop, where a sprite and its hotspot may need to change
 together with other surface state), this finding is where it lands, and
 it gets its own decision rather than inheriting ADR 0022's.
+
+---
+
+## SA-4: the substrate cannot capture what it presents
+
+Status: OPEN. Recorded 2026-07-12. Disposition: semadraw.
+
+### Classification
+
+    Consumers affected:
+        Operators (bug reports, documentation, showing a design to
+        someone), regression testing, and NDE's stated diagnostics
+        obligation. Not one client's need.
+
+    Layer:
+        Protocol, or the control socket. Undecided; see below.
+
+    Root cause:
+        Missing abstraction. The pixels exist and are reachable
+        in-process; nothing can get them out.
+
+    Implementation status:
+        Backend:  present  (software.zig holds framebuffer: ?[]u8)
+        Registry: n/a
+        Protocol: absent
+        Tooling:  absent  (sdcs_dump inspects a FILE, not the screen)
+
+    Disposition:
+        Substrate Evolution ADR, after D-12. Not started.
+
+### Evidence
+
+There is no way to capture the screen. `sdcs_dump` decodes an SDCS file
+into readable form and `sdcs_replay` replays one; neither reads what is
+on screen. The `Backend` vtable has no readback operation. The protocol
+has no capture message. No tool writes an image.
+
+The pixels are nonetheless right there: `software.zig` keeps
+`framebuffer: ?[]u8`, an addressable buffer in memory. So this is the
+audit's second signature again, the one recorded in the method section:
+a capability present below (the framebuffer), a demand present above
+(an operator wanting an image), and nothing between them. The layer
+that could act alone did; the layer that needs a design decision
+stalled.
+
+### It is already an obligation, not a new idea
+
+NDE DESIGN.md section 6 (Diagnostics) requires "SDCS capture for bug
+reports", and section 5 requires that "rendering must be replayable
+from SDCS". The design already treats capture as something the
+substrate owes. It simply was never built.
+
+### Two different things, not to be conflated
+
+- **SDCS capture**: record the command stream a client submitted.
+  Replayable, deterministic, small, and it is what sections 5 and 6
+  actually ask for. This is the semadraw-native answer and the one that
+  serves determinism testing.
+- **Framebuffer capture**: grab the composited pixels. This is what an
+  operator means by "screenshot", and SDCS capture does not provide it
+  (a stream is not an image, and replaying it requires a compositor).
+
+They serve different purposes. Both are probably wanted. A design that
+answers only one should say so.
+
+### The design question, unanswered
+
+Where does capture belong?
+
+- A privileged client protocol message, like `set_focus`? That makes it
+  a client capability, which invites the question of which clients may
+  capture what, and capture of other clients' surfaces is a serious
+  privacy and security boundary.
+- A control-socket command, like the ADR 0021 blank/lock controls
+  (`/var/run/semadraw.ctl`, `semadraw-ctl`)? Capture is an operator
+  action rather than a client one, which makes this the more natural
+  home on current evidence, and the socket is already
+  privilege-gated.
+- A backend readback operation, exposed only to the daemon?
+
+Not decided here. Recorded so the question is asked deliberately rather
+than answered by whoever needs a screenshot first.
+
+### Why it is recorded and not built
+
+The immediate need (looking at the console-layout prototype) is served
+by photographing the bench. Building a capture path to satisfy that
+would be a quick hack answering a design question by accident, which is
+the failure mode this audit exists to prevent. Revisit after D-12.
