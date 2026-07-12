@@ -454,3 +454,111 @@ The immediate need (looking at the console-layout prototype) is served
 by photographing the bench. Building a capture path to satisfy that
 would be a quick hack answering a design question by accident, which is
 the failure mode this audit exists to prevent. Revisit after D-12.
+
+---
+
+## SA-5: no layer owns keyboard layout
+
+Status: OPEN. Recorded 2026-07-12. Disposition: semadraw or inputfs
+(boundary undecided; see below).
+
+### Classification
+
+    Consumers affected:
+        Every text-accepting client. Two exist today and both have
+        already independently reinvented the mapping.
+
+    Layer:
+        Input path. Which layer exactly is the open question: inputfs
+        (which delivers the keycodes) or semadraw (which delivers the
+        events to clients).
+
+    Root cause:
+        Missing abstraction. Keycodes are delivered; nothing turns them
+        into characters, so each client does it, differently, hardcoded.
+
+    Implementation status:
+        inputfs:  keycodes only. inputfs_kbdmux.c carries a translation
+                  table, but that is the AT-scancode bridge for kbdmux,
+                  not a layout owner.
+        semadraw: passes key_code and modifiers through to clients.
+        Clients:  pgsd-sessiond has keymap.zig (hardcoded US).
+                  semadraw-term has its OWN `const Key` table
+                  (main.zig:217) and its own translation.
+        Shared:   nothing. shared/src/input.zig does not own layout.
+
+    Disposition:
+        Substrate Evolution ADR, after D-12. Not started.
+
+### Evidence
+
+Two clients, two hardcoded US keyboard layouts, no shared owner. That
+is the whole finding. `pgsd-sessiond` maps keycode 15 to Tab and 31 to
+`s` in `keymap.zig`; `semadraw-term` maintains a separate `Key` struct
+and maps its own. Neither can be switched to a German or Japanese
+layout, and if one were, the other would disagree.
+
+This is the audit's first signature (a client evolving around an
+absence) appearing twice independently, which is what makes it a
+substrate finding rather than a feature request. When two clients solve
+the same problem separately and incompatibly, the problem belonged
+below both of them.
+
+### Disposition, by the project heuristic
+
+    Would multiple applications need it?   Yes. Every client that
+                                           accepts text. Two already do.
+    Is it terminal-specific?               No.
+    Is it desktop policy?                  No. WHICH layout to use is a
+                                           policy and a user preference;
+                                           being ABLE to map a keycode
+                                           to a character under a named
+                                           layout is a capability.
+
+So the capability belongs in the substrate. The choice of layout is
+policy and belongs above it (the greeter before login, the user's
+profile after).
+
+### A related symptom, probably the same gap
+
+Bare Tab is not delivered to `pgsd-sessiond`. Ordinary characters
+arrive and Ctrl chords arrive (Ctrl-Q has always worked), but Tab does
+not, which is why the session picker had to be rebound to Ctrl-S. That
+is an input-path fault sitting in the same under-specified layer, and
+it is plausible the two have a common cause. Recorded here so the
+connection is not lost; not asserted, because it has not been traced.
+
+### Not to be conflated
+
+Keyboard layout, language/locale, and time zone are three settings, not
+one. English UI with a German keyboard is a real configuration, as is a
+Japanese UI with a US keyboard. A design that collapses them is wrong.
+Only the first is a substrate capability; the other two are
+preferences with no substrate involvement.
+
+### Persistence model (recommendation, not yet decided)
+
+- The greeter's layout is a MACHINE setting, persisted globally. It is
+  a property of the keyboard plugged into this machine, not of any
+  user: if someone selects a German layout at the greeter, the next
+  person at that keyboard wants it too. It should survive reboot.
+- After authentication, the session switches to the USER's preferred
+  layout, from their profile. The hardware is shared; the preference is
+  personal.
+- This falls naturally on a boundary that already exists:
+  pgsd-sessiond runs as root and drops privilege per-session after
+  auth, which is exactly where the machine-to-user layout handover
+  would happen.
+
+### Consequence for the login UI
+
+The header should display the active layout regardless of when this
+lands. It costs almost nothing and explains an entire class of failed
+password attempts at a glance, which is the highest-value item in the
+console-layout work.
+
+A keyboard-SELECTION view in the login navigation should NOT be built
+until the substrate owns layout. Building it in pgsd-sessiond would
+mean semadraw-term needs its own, and NDE needs its own, and they would
+disagree: precisely the pattern this audit exists to prevent, and the
+one already visible in the two hardcoded tables above.
