@@ -1,5 +1,14 @@
 # semadraw window-manager-client contract (NDE-1 substrate validation)
 
+Status (updated 2026-07-12). NDE-1 has NO remaining substrate
+blocker. The original Gap 1 (privileged set-focus) was closed by D-7
+on 2026-06-26 under ADR 0011. Focus, raise, and close, the whole of
+NDE ROADMAP Milestone 1 basic window policy, are all provided today.
+The remaining gaps (D-8 grabs, D-9 subsurfaces) serve NDE Milestone 2
+and do not block NDE-1. Earlier revisions of this document listed
+Gap 1 as open and said keyboard focus was not driven at all; that is
+no longer true and the affected sections are corrected below.
+
 Purpose. This documents the contract semadraw offers a privileged
 window-manager client, and validates it against what NDE-1's Surface
 Manager needs (NDE Milestone 1, substrate validation). It is the
@@ -81,18 +90,29 @@ windowing policy, including focus transitions and grabs, in NDE, under
 "Rendering remains in semadraw. Policy remains in NDE." Section 3.3
 puts focus ownership in NDE's input contract, and section 5 requires
 layout decisions and UI state transitions to be deterministic and
-serializable. Against that, three substrate additions are required.
-The first two are small (the focus-region writers already exist; only
-a message and handler are missing); the third is real new work.
+serializable. Against that, three substrate additions were identified.
+The first (set-focus) is now CLOSED by D-7; two remain, and neither
+blocks NDE-1. The grab addition is small (the pointer-grab writer
+already exists; only a message and handler are missing); the
+subsurface addition is real new work.
 
-Gap 1: privileged set-focus message. Focus is NDE policy, so the
-Surface Manager must be able to assign keyboard focus. The writer side
-is ready: FocusWriter.setKeyboardFocus already writes the focus
-region's keyboard_focus. What is missing is a client-to-daemon
-set-focus message and the daemon calling setKeyboardFocus on receipt
-from the privileged client. Today setKeyboardFocus has no daemon
-caller, so keyboard focus is not driven at all. Scope: one message
-plus one handler.
+Gap 1: privileged set-focus message. CLOSED by D-7 (2026-06-26,
+ADR 0011 Accepted 2026-06-08). This section is retained for the
+record; the gap no longer exists. The substrate now provides
+`set_focus = 0x0034`, keyed by surface and resolved to the owning
+session, privileged-gated and deterministic, with the
+`focus_changed = 0x9003` event to the gaining and losing clients.
+The daemon wires both `handleSetFocus` and `handleRemoteSetFocus`,
+and a focus-validity invariant guarantees the daemon never publishes
+a focus without a live surface (cleared on destroy and on
+disconnect). Bench-verified: the privileged client sets focus to each
+of two surfaces owned by distinct clients, `inputfs` routes keyboard
+input to the focused client, a non-privileged client is refused, and
+destroy and disconnect clear focus to `NO_FOCUS`.
+
+Consequence: NDE-1 has no remaining substrate blocker. Focus, raise
+(`set_z_order`), and close (`destroy_surface`) are all provided, which
+is the whole of NDE ROADMAP Milestone 1 basic window policy.
 
 Gap 2: privileged grab and release message. Section 3.2 lists grabs;
 popups need them (route pointer input to the popup until dismissed).
@@ -137,47 +157,51 @@ policy traces, session snapshots).
   - position, visibility: provided.
   - server-side decorations: provided via existing surface primitives.
   - input delivery to surfaces, pointer routing: provided.
-  - focus transitions (NDE policy): GAP 1, set-focus message and
-    handler; focus-region writer already present.
-  - grabs for popups (NDE policy): GAP 2, grab and release message and
-    handler; pointer-grab writer already present, inputfs reads the
-    region.
-  - subsurface semantics: GAP 3, parent-child surfaces with atomic
-    positioning and clip-to-parent; genuine new compositor work.
+  - focus transitions (NDE policy): PROVIDED. Was Gap 1; closed by
+    D-7 (2026-06-26, ADR 0011): set_focus (0x0034), privileged-gated,
+    with the focus_changed (0x9003) event and a focus-validity
+    invariant. NDE-1 has no remaining substrate blocker.
+  - grabs for popups (NDE policy): GAP 2 (D-8), grab and release
+    message and handler; pointer-grab writer already present, inputfs
+    reads the region. Serves NDE Milestone 2, not NDE-1.
+  - subsurface semantics: GAP 3 (D-9), parent-child surfaces with
+    atomic positioning and clip-to-parent; genuine new compositor
+    work. Serves NDE Milestone 2, not NDE-1.
 
 ## Milestone sequencing (NDE ROADMAP)
 
 NDE's own ROADMAP scopes Milestone 1 (which Awase NDE-1 tracks) as
 "basic window policy: focus, raise, close", not the full section 3.2.
-That maps to the substrate cleanly: raise is set_z_order (provided),
-close is destroy_surface (provided), and focus is Gap 1. So only
-Gap 1 (set-focus) blocks NDE-1; Gap 2 (grabs and popups) and Gap 3
-(subsurfaces) serve the fuller section 3.2 windowing policy at NDE
-Milestone 2 and beyond and can be sequenced after NDE-1. The
+That maps to the substrate cleanly, and all three are now provided:
+raise is set_z_order, close is destroy_surface, and focus is set_focus
+(D-7, closed 2026-06-26). NDE-1 therefore has no substrate blocker and
+can be implemented now. Gap 2 (D-8, grabs and popups) and Gap 3 (D-9,
+subsurfaces) serve the fuller section 3.2 windowing policy at NDE
+Milestone 2 and beyond, and are sequenced after NDE-1. The
 Milestone 1 exit criterion "SDCS capture and replay demonstrates
 deterministic output" is the section 5 determinism requirement made
 concrete for the Surface Manager.
 
 ## Next steps
 
-  1. Open the set-focus item (Gap 1) as the NDE-1 substrate blocker:
-     a privileged set-focus message and handler (FocusWriter.setKeyboardFocus
-     already exists; small). ADR before code. This plus the
-     already-provided set_z_order (raise) and destroy_surface (close)
-     satisfies Milestone 1's basic window policy.
-  2. Open Gap 2 (privileged grab and release message and handler with
-     inputfs honoring the grab) and Gap 3 (subsurface semantics:
-     parent-child surfaces, atomic positioning, clip-to-parent) as
-     later semadraw items for the fuller section 3.2 policy, not
-     required for NDE-1. Each is ADR before code; Gap 3 is the
-     substantial one and warrants its own ADR.
-  3. Write the conformant Surface Manager design in the NDE repo
+  1. DONE. The set-focus item (Gap 1) was opened as D-7, designed in
+     ADR 0011 (Accepted 2026-06-08), and closed 2026-06-26. Together
+     with the already-provided set_z_order (raise) and destroy_surface
+     (close), this satisfies Milestone 1's basic window policy. The
+     substrate is ready for NDE-1.
+  2. Write the conformant Surface Manager design in the NDE repo
      (docs/) against section 3.2: role tracking (toplevel, popup,
      subsurface), stacking rules, focus-transition policy, popup grab
      and dismiss behavior, decoration layout. It targets the basic
      focus/raise/close policy first (Milestone 1) and the fuller
-     policy as Gaps 2 and 3 land.
-  4. NDE-1 implements the Surface Manager as the privileged client:
+     policy as D-8 and D-9 land. ADR before code.
+  3. NDE-1 implements the Surface Manager as the privileged client:
      hello as the privileged uid, raise via set_z_order, close via
-     destroy_surface, focus via the new set-focus message; popups and
-     subsurfaces follow at later milestones.
+     destroy_surface, focus via set_focus. This is unblocked now.
+     Popups and subsurfaces follow at later milestones.
+  4. D-8 (privileged grab and release message and handler with inputfs
+     honoring the grab) and D-9 (subsurface semantics: parent-child
+     surfaces, atomic positioning, clip-to-parent) remain open for the
+     fuller section 3.2 policy at NDE Milestone 2. Neither is required
+     for NDE-1. Each is ADR before code; D-9 is the substantial one and
+     warrants its own ADR.
