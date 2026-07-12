@@ -183,12 +183,17 @@ const USAGE_TEXT =
     \\      attempts" message; the daemon does NOT exit on auth
     \\      failure.
     \\
-    \\      Stage 7 session picker: pressing Tab from the password
-    \\      field opens a four-option overlay (Terminal / X11 /
+    \\      Stage 7 session picker: pressing Ctrl-S (or Tab) from the
+    \\      password field opens a four-option overlay (Terminal / X11 /
     \\      Wayland / NDE). Only Terminal is enabled in v1; the
     \\      others render as "(not installed)" and are
     \\      uncrosseable by the cursor. Up/Down navigate enabled
     \\      entries; Tab or Enter confirms; ESC cancels.
+    \\
+    \\      Ctrl-S is the reliable route. Bare Tab is not currently
+    \\      delivered to this daemon (Ctrl chords are), so Tab may
+    \\      not open the picker; it still works to confirm once the
+    \\      picker is open.
     \\
     \\      On AUTH SUCCESS: resolves the selected session type to
     \\      a .session file (Terminal -> default.session), tears

@@ -752,6 +752,22 @@ pub const State = struct {
                     .picker, .power_menu, .submitting => unreachable, // guarded above
                 }
             },
+            .session_picker => {
+                // Stage 7: Ctrl-S opens the session picker overlay.
+                // Same behavior and same guard as .tab below: only from
+                // the password field, because selected_session is
+                // per-login and there is no point choosing one before
+                // the user has identified themselves.
+                //
+                // This exists because bare Tab stopped being delivered
+                // to this daemon while Ctrl chords kept arriving. See
+                // keymap.translate. Both routes are kept.
+                if (self.field == .password) {
+                    self.picker_cursor = self.selected_session;
+                    self.field = .picker;
+                    self.status_message = null;
+                }
+            },
             .tab => {
                 // Stage 7: Tab opens the session picker overlay,
                 // but ONLY from the password field. From identify,
@@ -1830,6 +1846,31 @@ test "Tab from password opens picker overlay" {
     try testing.expectEqual(SessionType.terminal, s.picker_cursor);
     // selected_session unchanged until confirm.
     try testing.expectEqual(SessionType.terminal, s.selected_session);
+}
+
+test "Ctrl-S from password opens picker overlay" {
+    var s = try makeTestState(testing.allocator);
+    defer s.deinit();
+    try s.handleAction(.{ .print = 'v' });
+    try s.handleAction(.enter); // identify -> password
+    try testing.expectEqual(FieldState.password, s.field);
+
+    try s.handleAction(.session_picker); // password -> picker
+    try testing.expectEqual(FieldState.picker, s.field);
+    // Same behavior as the Tab route: cursor starts on the current
+    // selection, and selected_session is unchanged until confirm.
+    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
+    try testing.expectEqual(SessionType.terminal, s.selected_session);
+}
+
+test "Ctrl-S from identify is a no-op" {
+    var s = try makeTestState(testing.allocator);
+    defer s.deinit();
+    try testing.expectEqual(FieldState.identify, s.field);
+
+    try s.handleAction(.session_picker);
+    // Same guard as Tab: no picker before the user has identified.
+    try testing.expectEqual(FieldState.identify, s.field);
 }
 
 test "Picker: Enter confirms cursor selection, returns to password" {

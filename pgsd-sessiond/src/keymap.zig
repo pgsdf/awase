@@ -135,6 +135,7 @@ pub const Action = union(enum) {
     power_menu,
 
     // Stage 7: session picker navigation.
+    session_picker, // Ctrl-S - open picker from password field
     tab, // Tab - open picker from password field, or confirm + close
     up, // Up arrow - move picker cursor up
     down, // Down arrow - move picker cursor down
@@ -146,6 +147,21 @@ pub fn translate(key_code: u32, modifiers: u8) Action {
 
     // Ctrl-Q opens the Stage 8 power menu regardless of shift.
     if (ctrl and key_code == Key.Q) return .power_menu;
+
+    // Ctrl-S opens the Stage 7 session picker regardless of shift.
+    //
+    // Tab (below) was the original and only way in, and it stopped
+    // working: plain Tab does not reach this daemon, while Ctrl chords
+    // demonstrably do (Ctrl-Q has kept working throughout). Something
+    // upstream in the input path consumes bare Tab, which is a
+    // conventional focus-navigation key. That is a separate bug and is
+    // still worth finding, so .tab is left in place and keeps its
+    // meaning: if Tab delivery is repaired, it works again, and Ctrl-S
+    // remains as an additional route rather than a replacement.
+    //
+    // Ctrl-S is deliberately in the input class that is known to
+    // arrive, and it matches the existing idiom (Ctrl-Q for power).
+    if (ctrl and key_code == Key.S) return .session_picker;
 
     // Other Ctrl combos: ignored. The login UI does not need Ctrl-C
     // (no copy/paste in v1), Ctrl-U (would clear; we use ESC for
@@ -314,4 +330,17 @@ test "Down arrow translates to .down" {
 
 test "unknown keycode returns none" {
     try testing.expectEqual(Action.none, translate(999, 0));
+}
+
+test "Ctrl-S translates to .session_picker action" {
+    try testing.expectEqual(Action.session_picker, translate(Key.S, Mod.CTRL));
+}
+
+test "Ctrl-Shift-S also opens the session picker" {
+    // Same "regardless of shift" rule as Ctrl-Q.
+    try testing.expectEqual(Action.session_picker, translate(Key.S, Mod.CTRL | Mod.SHIFT));
+}
+
+test "plain S is still a printable character, not the picker" {
+    try testing.expectEqual(Action{ .print = 's' }, translate(Key.S, 0));
 }
