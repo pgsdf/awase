@@ -1018,6 +1018,71 @@ fn drawBorder(enc: *Encoder, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: 
 /// supplies the surface dimensions (queried from the daemon) so
 /// the layout can center on the real display rather than assuming
 /// a fixed size.
+// -----------------------------------------------------------------
+// Console palette (PGSD_SESSIOND_LAYOUT=console)
+//
+// Background is a muted indigo, #3a3153: hue 256deg, lightness 26%,
+// saturation 26%. Every other colour here is chosen against it, and
+// every text tier was checked for contrast rather than picked by eye.
+//
+// The amber survives unchanged in spirit because it is already the
+// right hue: #3a3153's complement sits at about 76deg, which is where
+// amber lives. Interactive elements therefore keep their meaning and
+// gain contrast (5.83:1) against the new background.
+//
+// The cyan does NOT survive. At 180deg it is only 76deg from the
+// background's hue, same cool family, so it muddies against indigo
+// instead of separating from it. It is replaced by a mint-teal at
+// 165deg with lower saturation, which keeps the cool "this is
+// context, not something you act on" reading while actually
+// separating.
+//
+// The dim tiers are the ones that forced the work. Against black, dim
+// amber (2.57:1) and dim cyan (1.77:1) were legible enough; against
+// indigo they collapse. Both dim tiers are lifted so they clear 4:1.
+//
+// Contrast against #3a3153 (WCAG: 4.5 body, 3.0 large/UI):
+//   AMBER      #ff9e2a   5.83  active interactive
+//   AMBER_DIM  #c98a3f   4.12  inactive interactive
+//   MINT       #7fd4bd   6.91  context, bright (hostname)
+//   MINT_DIM   #63a894   4.33  context, dim (network, memory)
+//   RULE       #6e5f96   2.14  deliberately low: a separator is
+//                              structure, not text
+//   PANEL      #2b2440   overlay fill; darker than the background so
+//                        overlays read as ON TOP rather than as holes
+//
+// Amber and mint sit close in luminance (1.18:1 between them) on
+// purpose. They are distinguished by hue, not by brightness, so
+// neither shouts over the other: the semantic distinction is colour,
+// which is the rationale the palette block above already states.
+const C_BG_R: f32 = 0.227; // #3a3153
+const C_BG_G: f32 = 0.192;
+const C_BG_B: f32 = 0.325;
+
+const C_AMBER_R: f32 = 1.0; // #ff9e2a
+const C_AMBER_G: f32 = 0.620;
+const C_AMBER_B: f32 = 0.165;
+
+const C_AMBER_DIM_R: f32 = 0.788; // #c98a3f
+const C_AMBER_DIM_G: f32 = 0.541;
+const C_AMBER_DIM_B: f32 = 0.247;
+
+const C_MINT_R: f32 = 0.498; // #7fd4bd
+const C_MINT_G: f32 = 0.831;
+const C_MINT_B: f32 = 0.741;
+
+const C_MINT_DIM_R: f32 = 0.388; // #63a894
+const C_MINT_DIM_G: f32 = 0.659;
+const C_MINT_DIM_B: f32 = 0.580;
+
+const C_RULE_R: f32 = 0.431; // #6e5f96
+const C_RULE_G: f32 = 0.373;
+const C_RULE_B: f32 = 0.588;
+
+const C_PANEL_R: f32 = 0.169; // #2b2440
+const C_PANEL_G: f32 = 0.141;
+const C_PANEL_B: f32 = 0.251;
+
 // =============================================================================
 // Console layout (prototype)
 // =============================================================================
@@ -1080,7 +1145,7 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
     const pad_x: f32 = gw;
     const pad_y: f32 = row * 0.5;
 
-    try enc.fillRect(0, 0, surface_w, surface_h, 0, 0, 0, 1);
+    try enc.fillRect(0, 0, surface_w, surface_h, C_BG_R, C_BG_G, C_BG_B, 1);
 
     // ---- Header: system status line, not application branding -------
     const header_h: f32 = row + pad_y * 2;
@@ -1089,38 +1154,38 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
 
         // Hostname, bright cyan: the machine's identity is the most
         // important thing in the header.
-        try drawText(enc, state.hostname, pad_x, y, CYAN_R, CYAN_G, CYAN_B, CYAN_A);
+        try drawText(enc, state.hostname, pad_x, y, C_MINT_R, C_MINT_G, C_MINT_B, 1);
 
         // Network, dim cyan, right-of-center.
         const net_x: f32 = surface_w * 0.42;
-        try drawText(enc, state.network_str, net_x, y, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+        try drawText(enc, state.network_str, net_x, y, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
 
         // Memory, dim cyan, right-aligned. Dim deliberately: see the
         // note above about it being the easy metric, not the useful one.
         var membuf: [64]u8 = undefined;
         const mem = std.fmt.bufPrint(&membuf, "mem {s}", .{state.physmem_str}) catch state.physmem_str;
         const mem_x: f32 = surface_w - pad_x - @as(f32, @floatFromInt(mem.len)) * gw;
-        try drawText(enc, mem, mem_x, y, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+        try drawText(enc, mem, mem_x, y, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
     }
     // Header rule.
-    try enc.fillRect(0, header_h, surface_w, sf, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+    try enc.fillRect(0, header_h, surface_w, sf, C_RULE_R, C_RULE_G, C_RULE_B, 1);
 
     // ---- Footer: the legend, unchanged in content ------------------
     const footer_h: f32 = row + pad_y * 2;
     const footer_top: f32 = surface_h - footer_h;
-    try enc.fillRect(0, footer_top, surface_w, sf, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+    try enc.fillRect(0, footer_top, surface_w, sf, C_RULE_R, C_RULE_G, C_RULE_B, 1);
     {
         const hint = legendFor(state);
         const x: f32 = pad_x;
         const y: f32 = footer_top + pad_y;
-        try drawText(enc, hint, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+        try drawText(enc, hint, x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
     }
 
     // ---- Rail: persistent navigation (decorative in the prototype) --
     const rail_w: f32 = gw * 16;
     const body_top: f32 = header_h + sf;
     const body_bot: f32 = footer_top;
-    try enc.fillRect(rail_w, body_top, sf, body_bot - body_top, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+    try enc.fillRect(rail_w, body_top, sf, body_bot - body_top, C_RULE_R, C_RULE_G, C_RULE_B, 1);
 
     {
         // The rail marker tracks the current field so it is honest about
@@ -1138,9 +1203,9 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
             var buf: [32]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "{s} {s}", .{ marker, item.label() }) catch item.label();
             if (is_active) {
-                try drawText(enc, line, pad_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+                try drawText(enc, line, pad_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
             } else {
-                try drawText(enc, line, pad_x, y, DIM_R, DIM_G, DIM_B, DIM_A);
+                try drawText(enc, line, pad_x, y, C_AMBER_DIM_R, C_AMBER_DIM_G, C_AMBER_DIM_B, 1);
             }
             y += row;
         }
@@ -1163,13 +1228,13 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
     {
         var buf: [64]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Session:  {s}", .{state.selected_session.displayName()}) catch "Session:";
-        try drawText(enc, line, pane_x, y, DIM_R, DIM_G, DIM_B, DIM_A);
+        try drawText(enc, line, pane_x, y, C_AMBER_DIM_R, C_AMBER_DIM_G, C_AMBER_DIM_B, 1);
         y += row * 2;
     }
 
     // Status message (auth failure, etc).
     if (state.status_message) |msg| {
-        try drawText(enc, msg, pane_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+        try drawText(enc, msg, pane_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
     }
 
     // Overlays still work: the prototype does not re-implement them,
@@ -1231,9 +1296,9 @@ fn drawConsoleField(
         (which == .password and (state.field == .picker or state.field == .submitting));
 
     if (focused) {
-        try drawText(enc, label, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+        try drawText(enc, label, x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
     } else {
-        try drawText(enc, label, x, y, DIM_R, DIM_G, DIM_B, DIM_A);
+        try drawText(enc, label, x, y, C_AMBER_DIM_R, C_AMBER_DIM_G, C_AMBER_DIM_B, 1);
     }
 
     const val_x: f32 = x + @as(f32, @floatFromInt(label.len + 2)) * gw;
@@ -1245,7 +1310,7 @@ fn drawConsoleField(
         for (0..n) |i| buf[i] = '*';
         shown = buf[0..n];
     }
-    try drawText(enc, shown, val_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+    try drawText(enc, shown, val_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
 
     // Cursor: block, on the active field only, blinking unless the user
     // has not typed yet (steady-on invites the first keystroke).
@@ -1253,7 +1318,7 @@ fn drawConsoleField(
         const on = !state.typing_started or (blink_phase % 2 == 0);
         if (on) {
             const cx: f32 = val_x + @as(f32, @floatFromInt(shown.len)) * gw;
-            try enc.fillRect(cx, y, gw, @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * @as(f32, @floatFromInt(SCALE)), AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+            try enc.fillRect(cx, y, gw, @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * @as(f32, @floatFromInt(SCALE)), C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
         }
     }
 }
