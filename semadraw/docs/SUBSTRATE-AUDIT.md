@@ -35,7 +35,9 @@ ratified), CLOSED (implemented and verified).
 
 ## SA-1: the substrate cannot express resize
 
-Status: OPEN. Recorded 2026-07-12. Disposition: semadraw.
+Status: ADR. Recorded 2026-07-12. Disposition: semadraw.
+Design: ADR 0022 (Surface geometry evolution, Substrate Evolution 1),
+Proposed 2026-07-12, awaiting ratification.
 
 ### Protocol evidence
 
@@ -140,3 +142,54 @@ protocol.
 
 Next step: study `attach_buffer` and `commit` in detail, then a
 Substrate Evolution ADR.
+
+### Study of the commit path (2026-07-12)
+
+Reading `attach_buffer` and `commit` before designing changes the
+problem substantially, and in semadraw's favor.
+
+**semadraw is a command-stream substrate, not a pixel-buffer one.**
+`AttachBufferMsg` carries `surface_id`, `shm_size`, `sdcs_offset`, and
+`sdcs_length`. It carries **no width and no height**. The client is not
+handing over a sized pixel buffer; it is handing over a range of shared
+memory containing an SDCS command stream (`docs/SDCS.md`: STROKE_RECT,
+FILL_PATH, SET_BLEND, and so on), which the daemon interprets and
+rasterizes. Geometry lives in the *surface*, in the registry, not in
+the buffer.
+
+This is why resize here is not the problem it is elsewhere. In a
+pixel-buffer system the client must reallocate a buffer whose
+dimensions the compositor must agree with, and the whole configure/ack
+apparatus of other protocols exists to stop a frame being presented at
+the wrong size. In semadraw the client does not reallocate anything on
+resize: it emits *different commands* for the new geometry. The
+coherence requirement is therefore narrower and cleaner:
+
+  A frame is self-consistent if the command stream committed for that
+  frame is rasterized against the same geometry the client emitted it
+  for.
+
+**The sequencing primitive already exists.** `SurfaceRegistry.commit`
+increments a per-surface `frame_number` and returns it, and
+`FrameCompleteMsg` carries `frame_number` back to the client. There is
+already a monotonic, client-visible frame counter to which a geometry
+change can be bound. Resize does not need a new synchronization
+mechanism invented for it; it needs to be expressed in terms of the
+one that is already there.
+
+**A third unreachable capability.** `SurfaceRegistry.setLogicalSize`
+exists and mutates `logical_width`/`logical_height` after creation. Its
+own comment anticipates this work: it says dimensions are "normally set
+at createSurface time and not changed", that the API exists for the
+cursor sprite-replace path "and any future use case where a surface's
+logical extent changes after creation". It is called by nothing today
+outside that cursor path.
+
+So the count is three: the backend can resize, the registry can resize,
+and the reference client can resize its pty. Each was built by a layer
+that could build it alone. The protocol, the one layer that requires a
+design decision about who proposes and who disposes, is the only thing
+missing, and it is the only thing that can make the other three
+coherent.
+
+Design proceeded to ADR 0022.
