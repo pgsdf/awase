@@ -2,7 +2,18 @@
 
 ## Status
 
-Proposed 2026-07-12. Not ratified. Awaiting operator review.
+**Accepted. Ratified 2026-07-12 (operator).**
+
+Ratified at Revision 2. Revision 1 was the resize-only design
+(`config_serial` as a synchronization primitive, plus `request_size`);
+it was superseded before ratification after inspecting the commit path.
+Revision 2 generalized it to the transaction model and, in review,
+dropped `request_size` and deferred `setHotspot`.
+
+Implementation is authorized. It is not yet done: this ADR is a
+decision, and the bench requirements in section 10 are the condition
+for calling it complete. Requirement 2 (position change during draw)
+is the one that proves the model, and it fails on the tree as it stands.
 
 **Provenance.** This ADR began as a resize design, opened from audit
 finding SA-1 ("the substrate cannot express resize"). Inspecting the

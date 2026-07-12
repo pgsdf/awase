@@ -58,7 +58,9 @@ ratified), CLOSED (implemented and verified).
 Status: ADR. Recorded 2026-07-12, reclassified the same day.
 Disposition: semadraw.
 Design: ADR 0022 (Transactional surface state and commit semantics,
-Substrate Evolution 1), Proposed 2026-07-12, awaiting ratification.
+Substrate Evolution 1), **Accepted, ratified 2026-07-12**.
+Implementation authorized and open; SA-1 closes when the ADR 0022
+bench requirements pass.
 
 **Reclassification note.** This finding was opened as "the substrate
 cannot express resize". Studying the commit path showed that resize is
@@ -211,7 +213,7 @@ Substrate Evolution ADR.
         Protocol: absent
 
     Disposition:
-        Substrate Evolution ADR 0022 (Proposed 2026-07-12)
+        Substrate Evolution ADR 0022 (Accepted 2026-07-12)
 
     Not in scope of the fix:
         setHotspot (cursor semantics; see SA-2)

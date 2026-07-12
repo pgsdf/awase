@@ -605,6 +605,60 @@ semadrawd LOCKED state machine, inputfs precedence, bench.
 
 ## Deferred
 
+### `[ ]` D-12: transactional surface state and commit semantics  *(Open 2026-07-12, Large, P1; ADR 0022 Accepted 2026-07-12; first Substrate Evolution item, from audit SA-1)*
+
+Implement ADR 0022. A frame becomes the pair (surface state snapshot,
+command stream), promoted atomically by `commit`.
+
+Today surface state is applied immediately and the compositor reads it
+live at composite time, so a presented frame is rasterized against
+whatever state the registry holds when compositing runs, not the state
+the client drew for. `SurfaceRegistry`'s setters (`setVisible`,
+`setZOrder`, `setPosition`, `setLogicalSize`) write the `Surface`
+struct directly; there is no pending copy; `commit` sets a boolean and
+bumps `frame_number`, promoting nothing. Position and z-order tear
+invisibly because a command stream's content does not depend on them.
+Geometry is the first state the content depends on, which is why
+semadraw-term surfaced it: it cannot resize, its `pty.resize` is dead
+code, and its reconnect path recreates the surface at the original
+dimensions rather than re-querying, commenting that a mid-session
+resize "would disturb the grid".
+
+Work: a pending copy of mutable surface state on `Surface`; the four
+transactional setters stage rather than apply; `commit` promotes
+pending to current atomically with the attached SDCS stream; the
+compositor reads current only. Protocol: `surface_configure` (0x9006,
+daemon to client, carrying width, height, scale, and a per-surface
+monotonic `config_serial`), and `config_serial` added to `CommitMsg`
+(SIZE 8 to 16), which the client echoes to name the configuration its
+frame was drawn for. The compositor retains the previous configuration
+until a pending one is acknowledged, and at most one configure may be
+outstanding (a second supersedes the first). The wire change to
+`commit` plus the semantic change to the setters is a compatibility
+event and needs a protocol version bump.
+
+Deliberately excluded: `request_size` (would create a second geometry
+authority; the compositor is the sole source of surface configuration
+until a window-management client demonstrates a need for negotiation),
+and `setHotspot` (cursor semantics do not automatically inherit surface
+transaction semantics; recorded as audit SA-2).
+
+Unblocks: resize for every interactive client; `Backend.resize` and
+`SurfaceRegistry.setLogicalSize`, both currently unreachable;
+multi-property atomic updates; and D-9 (subsurfaces), whose atomic
+parent-child positioning is a transaction over two surfaces and needs
+this substrate first.
+
+Bench (ADR 0022 section 10): the test that matters is requirement 2,
+position change during draw, which proves the general mechanism rather
+than a resize special case and fails on the tree as it stands. Also:
+geometry change during draw presents the in-flight frame at the old
+geometry and the next at the new; one commit carrying position,
+visibility, z-order, and a stream appears atomically; two configures
+before acknowledgment supersede correctly; a never-acknowledging client
+keeps presenting correctly; and semadraw-term, resized, reflows its
+grid and its shell observes the new `TIOCSWINSZ`.
+
 ### `[ ]` SM-TEST-1: daemon testability and IPC integration harness  *(Deferred 2026-06-26, opened by D-7; serves the window-management line, not D-7 alone)*
 
 A reusable way to exercise semadrawd end-to-end with connected clients,
