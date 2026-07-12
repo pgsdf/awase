@@ -211,7 +211,12 @@ Substrate Evolution ADR.
         Protocol: absent
 
     Disposition:
-        Substrate Evolution ADR 0022
+        Substrate Evolution ADR 0022 (Proposed 2026-07-12)
+
+    Not in scope of the fix:
+        setHotspot (cursor semantics; see SA-2)
+        request_size (declined: would create a second geometry
+        authority; see ADR 0022 section 6)
 
 ### Study of the commit path (2026-07-12)
 
@@ -267,3 +272,55 @@ transaction model after this study. The resize-only draft is not
 retained: its `config_serial` was compensating for missing transactions
 rather than identifying a configuration, which is the distinction ADR
 0022 section 5 now makes explicit.
+
+---
+
+## SA-2: cursor hotspot semantics under a transaction model
+
+Status: OPEN. Recorded 2026-07-12. Disposition: undecided.
+
+### Classification
+
+    Consumers affected:
+        Unknown. No client has demonstrated a need.
+
+    Layer:
+        Protocol / compositor boundary
+
+    Root cause:
+        Not established. This is an open question, not a diagnosed
+        deficiency.
+
+    Disposition:
+        Deliberately deferred. Not part of ADR 0022.
+
+### The question
+
+ADR 0022 makes surface state transactional: `setVisible`, `setZOrder`,
+`setPosition`, and `setLogicalSize` stage against a pending copy and
+are promoted atomically by `commit`. `setHotspot` is the fifth setter
+and is deliberately excluded.
+
+Should cursor configuration participate in surface transactions, or is
+cursor state compositor-internal enough that immediate updates are
+preferable?
+
+Arguments have not been gathered because no requirement has appeared.
+What is known: the cursor is driven by the SET_CURSOR path (ADR 0005);
+its hotspot is used by the compositor to place the sprite at
+(pointer - hotspot); and the hotspot fields live on every `Surface`
+rather than only the cursor, with a comment anticipating a future
+hotspot-using feature such as drag-and-drop visual offsets.
+
+### Why it is recorded rather than decided
+
+Including `setHotspot` in the transaction set by symmetry would be
+speculative: it would extend a mechanism to a case that has not
+demonstrated it needs it, which is precisely what the audit discipline
+forbids. Cursor state does not automatically inherit surface
+transaction semantics.
+
+If a concrete atomicity requirement appears (most plausibly from
+drag-and-drop, where a sprite and its hotspot may need to change
+together with other surface state), this finding is where it lands, and
+it gets its own decision rather than inheriting ADR 0022's.

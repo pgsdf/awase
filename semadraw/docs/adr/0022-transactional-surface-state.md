@@ -127,13 +127,37 @@ Each surface holds two copies of its state:
             v
     current surface state  +  committed command stream
 
-- `set_visible`, `set_z_order`, `set_position`, `set_cursor` (hotspot),
-  and the geometry acknowledgment (section 5) all write **pending**.
+- `set_visible`, `set_z_order`, `set_position`, and the geometry
+  acknowledgment (section 5) write **pending**.
+- `set_cursor` (hotspot) is deliberately NOT included. See below.
 - `attach_buffer` stages the command stream.
 - `commit` atomically promotes pending state to current and binds the
   attached stream to it, incrementing `frame_number`.
 - The compositor reads **current** state only, and rasterizes the
   stream committed with it.
+
+**Scope of transactional state.**
+
+    setVisible      transactional   surface presence in composition
+                                    must be atomic with its content
+    setZOrder       transactional   ordering must correspond to the
+                                    committed frame
+    setPosition     transactional   prevents the configuration and
+                                    content mismatch this ADR exists for
+    setLogicalSize  transactional   geometry affects the client's
+                                    rendering assumptions
+    setHotspot      TBD             cursor semantics may differ from
+                                    surface semantics; see below
+
+`setHotspot` is left out on purpose. Cursor state does not
+automatically inherit surface transaction semantics: the cursor is
+compositor-internal, driven by the SET_CURSOR path (ADR 0005), and no
+concrete atomicity requirement has appeared for it. Including it by
+symmetry would be exactly the speculative reasoning the audit
+discipline forbids (no primitive, and no semantics, without a concrete
+client demonstrating the need). If an atomicity requirement for cursor
+state appears, it gets its own decision rather than inheriting this
+one.
 
 Consequences that follow immediately:
 
@@ -161,9 +185,11 @@ through a compositor-owned path rather than as a client-set field.
 compositor-provided configuration. Its role under this ADR is precise
 and narrow, and differs from the earlier draft of this document:
 
-  The serial is NOT a mechanism compensating for missing transactions.
-  The transaction is provided by section 4. The serial is simply the
-  identifier of the configuration the client is acknowledging.
+  The serial is an acknowledgement token for compositor state identity,
+  not a synchronization primitive pretending to be a transaction. The
+  transaction is provided by section 4; the serial names which
+  configuration the client is acknowledging, and provides no atomicity
+  by itself.
 
 That distinction is what keeps I1 intact. The transaction is
 
@@ -203,19 +229,34 @@ current configuration, which is self-consistent and merely stale. That
 is an unresponsive application, which is a policy problem, and policy
 is NDE's.
 
-## 6. Client-requested size
+## 6. Client-requested size is deliberately NOT introduced
 
-Under I1 a client may not set its size, but it may ask.
-`request_size` (client to daemon) is advisory input to a compositor
-decision. The compositor may configure the requested geometry, a
-different one, or none. If it configures, the client learns through the
-ordinary `surface_configure` path; there is no separate reply and
-therefore no second mechanism to keep coherent.
+An earlier draft of this ADR added `request_size`, an advisory
+client-to-daemon request, with the compositor "provisionally" honoring
+a well-formed request from a surface's owner until NDE arrived to own
+such decisions.
 
-With no window manager yet, the compositor provisionally honors a
-well-formed request from a surface's owner. That is a **policy the
-compositor implements provisionally** and must be replaceable without
-protocol change when NDE arrives to own such decisions (section 8).
+That is rejected. The ADR's central invariant is that the compositor is
+the single authority for surface configuration (I1). Introducing a
+client request path *at the same time*, with a provisional
+honor-the-client policy behind it, creates a second geometry authority
+at precisely the moment the first one is being established. A
+placeholder that contradicts the invariant it is placed beside is not a
+placeholder; it is the thing the invariant forbids, deferred.
+
+It also violates the discipline this audit adopted: no new protocol
+primitive without a concrete client demonstrating the need. No client
+demonstrates it. `semadraw-term` does not need to request its own size;
+it needs to be *told* a size and render for it, which section 5
+provides. The demonstrated need is `surface_configure`, and that is
+what this ADR adds.
+
+Until a concrete window-management client requires negotiation, the
+compositor remains the sole geometry authority. When one does, the
+question is reopened as its own decision, and the likely shape is a
+compositor-mediated negotiation primitive rather than a client geometry
+setter. That distinction is the whole point and is easier to make from
+a clean starting position than from a deployed advisory path.
 
 ## 7. Protocol additions
 
@@ -226,19 +267,15 @@ protocol change when NDE arrives to own such decisions (section 8).
         scale:          f32
         config_serial:  u64
 
-    request_size        = 0x0038  // client to daemon (advisory)
-        surface_id:     SurfaceId
-        logical_width:  f32
-        logical_height: f32
-
     (commit extended)   = 0x0021
         surface_id:     SurfaceId
         flags:          u32   // existing, reserved
         config_serial:  u64   // NEW: the configuration this frame was drawn for
 
-Numbers verified free against the current enum: the highest allocated
-request is `idle_query = 0x0037`, the highest event is
-`session_unlocked = 0x9005`.
+One event is added and one existing request grows. No new request is
+added: see section 6. `0x9006` is verified free (the highest allocated
+event is `session_unlocked = 0x9005`), and `0x0038` is left unallocated
+rather than spent on a request this ADR declines to introduce.
 
 `CommitMsg` is `surface_id` plus a reserved `flags: u32` (SIZE 8) and
 grows to SIZE 16. The reserved `flags` word is left alone: a serial is
@@ -256,8 +293,8 @@ it and the `commit` wire change should ride a protocol version bump
 **When to change state.** The model makes state changes coherent. What
 should trigger one (a dragged border, a tiling rule, a fullscreen
 toggle, an output hotplug) is window-manager policy and belongs to NDE.
-The provisional honor-the-request policy in section 6 is a placeholder,
-explicitly not a position.
+Section 6 declines to introduce a client request path at all, so no
+provisional policy is smuggled in with the mechanism.
 
 **Roles.** The ratified NDE semantic design (C1) makes surface roles
 protocol-visible, and geometry policy will eventually key on role. This
@@ -285,6 +322,11 @@ decide on top of this model.
 - `commit` changes on the wire, and the state setters change in
   meaning. A protocol version bump is required.
 - D-9 (subsurfaces) gains the transaction substrate it needs.
+- Cursor hotspot semantics remain an open question, deliberately not
+  answered here.
+- No client-side geometry authority is created. The compositor is the
+  sole source of surface configuration, which is the position the ADR
+  can afford to hold precisely because it adds no request path.
 
 ## 10. Bench requirements
 
@@ -311,4 +353,6 @@ Ratification requires, on `bare-metal-test-bench`:
 6. **The reference client.** `semadraw-term`, resized, reflows its grid
    and its child process observes the new `TIOCSWINSZ`: that is,
    `pty.resize` is finally called and the shell sees the new size.
-7. **Authority.** A `request_size` from a non-owner is refused.
+7. **Authority.** The compositor is the only source of geometry. No
+   client path exists by which a surface can set its own size; the only
+   geometry a client may act on is one it was configured with.
