@@ -978,6 +978,12 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             break :blk std.mem.eql(u8, v, "console");
         };
 
+        // The layout selects BOTH the renderer and the action handler
+        // (ADR 0011), so the two can never disagree about which model is
+        // in force: a console screen is always driven by
+        // handleActionConsole, a centered screen always by handleAction.
+        state.console = console_layout;
+
         // Per-conversation status buffer. Auth attempts format
         // their failure messages here and hand a slice to
         // state.resetForRetry. Single buffer since the user only
@@ -1209,7 +1215,19 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             // down..." screen they can't escape. Clear power_action
             // and surface a status_message explaining what went wrong.
             // The user can try again or pick a different option.
-            if (state.power_action) |action| if (state.field == .power_menu and
+            // ADR 0011: the power view is reached differently in the two
+            // layouts. The centered layout opens a modal overlay and
+            // sets field = .power_menu; the console layout navigates to
+            // a peer view and sets view = .power, never touching field.
+            // Gate on whichever model is in force, or the console
+            // layout would arm power_action and have it silently
+            // ignored here, which presents as "power does nothing".
+            const in_power_ui = if (state.console)
+                state.view == .power
+            else
+                state.field == .power_menu;
+
+            if (state.power_action) |action| if (in_power_ui and
                 state.power_menu_phase != .in_progress)
             {
                 switch (action) {
@@ -1260,7 +1278,17 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
                         // pre_power_field, and continue.
                         state.power_action = null;
                         state.power_menu_phase = .choosing;
-                        state.field = state.pre_power_field;
+                        // ADR 0011: return to the resting state of
+                        // whichever model is in force. The console
+                        // layout has no pre_power_field bookmark,
+                        // because Power is a peer view that covered
+                        // nothing: it returns to the rail.
+                        if (state.console) {
+                            state.focus = .rail;
+                            state.rail_cursor = .power;
+                        } else {
+                            state.field = state.pre_power_field;
+                        }
                         if (rc != 0) {
                             state.status_message = std.fmt.bufPrint(
                                 &post_login_status_buf,

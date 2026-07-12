@@ -199,6 +199,60 @@ const PASSWORD_MAX: usize = 256; // generous; PAM truncates anyway
 // State
 // =============================================================================
 
+/// ADR 0011: the navigation axes.
+///
+/// The console model separates WHERE YOU ARE (view) from WHAT HAS THE
+/// KEYBOARD (focus). Views are PEERS: Session and Power sit beside
+/// Login rather than shadowing it. That is what lets the modal-unwind
+/// bookkeeping go away, because a peer view has nothing to remember:
+/// navigating away and back is not an interruption.
+///
+/// Deliberately NOT a view: Keyboard. Keyboard layout is a substrate
+/// capability that does not exist yet (audit SA-5: two clients already
+/// hardcode US layouts independently, and nothing below them owns
+/// layout). A Keyboard view here would imply this UI owns a capability
+/// the substrate does not provide, which would be a lie told by the
+/// interface. It is not stubbed either, for the same reason. It arrives
+/// when the substrate can actually apply a layout.
+pub const View = enum {
+    login,
+    session,
+    power,
+
+    pub fn label(self: View) []const u8 {
+        return switch (self) {
+            .login => "Login",
+            .session => "Session",
+            .power => "Power",
+        };
+    }
+
+    pub fn next(self: View) View {
+        return switch (self) {
+            .login => .session,
+            .session => .power,
+            .power => .login,
+        };
+    }
+
+    pub fn prev(self: View) View {
+        return switch (self) {
+            .login => .power,
+            .session => .login,
+            .power => .session,
+        };
+    }
+};
+
+/// Which surface has the keyboard.
+pub const Focus = enum {
+    /// The navigation rail. Up/Down move between views; Enter or Right
+    /// enters the selected view's content.
+    rail,
+    /// The active view's content. ESC or Left returns to the rail.
+    content,
+};
+
 pub const FieldState = enum {
     identify,
     password,
@@ -207,17 +261,17 @@ pub const FieldState = enum {
     /// skipped). Tab or Enter confirm and return to .password.
     /// ESC cancels (returns to .password without changing
     /// state.selected_session). Other input is ignored.
+    ///
+    /// ADR 0011: retained only so the centered layout keeps working
+    /// unchanged. In the console layout this is not a field state at
+    /// all; Session is a peer VIEW.
     picker,
-    /// Stage 8: power-menu overlay open. The overlay shadows the
-    /// picker if both are open simultaneously (in practice Ctrl-Q
-    /// from inside the picker closes the picker before opening
-    /// the power menu via the .pre_power_field bookmark). Up/Down
-    /// move the cursor among three power options; Enter or the
-    /// accelerator letter selects. Selecting Shutdown or Restart
-    /// advances to a confirmation phase (state.power_menu_phase);
-    /// selecting Suspend acts immediately. ESC backs out: from
-    /// confirmation back to choosing; from choosing back to
-    /// pre_power_field.
+    /// Stage 8: power-menu overlay open.
+    ///
+    /// ADR 0011: as with .picker, retained for the centered layout.
+    /// In the console layout Power is a peer VIEW, and the
+    /// pre_power_field bookmark that this state required does not
+    /// exist there.
     power_menu,
     /// Stage 6: password has been submitted; main is performing
     /// PAM auth. UI renders an "Authenticating..." indicator and
@@ -225,6 +279,10 @@ pub const FieldState = enum {
     /// auth takes. After auth resolves, main either calls launch()
     /// (success path, the surface will be torn down) or resets to
     /// .password with status_message set (failure path).
+    ///
+    /// This one stays modal in BOTH layouts, deliberately (ADR 0011
+    /// section 3): PAM is in flight and neither the fields nor the
+    /// rail may be mutated under it.
     submitting,
 };
 
@@ -464,10 +522,44 @@ pub const State = struct {
     /// it to selected_session.
     picker_cursor: SessionType = .terminal,
 
+    /// ADR 0011: the console navigation axes.
+    ///
+    /// These are live only in the console layout. The centered layout
+    /// ignores them entirely and continues to drive everything from
+    /// `field`, so both layouts coexist without either constraining
+    /// the other.
+    ///
+    /// `view` is WHERE YOU ARE: Login, Session, and Power are peers,
+    /// not overlays. `focus` is WHAT HAS THE KEYBOARD: the rail, or
+    /// the active view's content.
+    ///
+    /// The point of the model is what it lets us NOT have. In the
+    /// console layout there is no pre_power_field, because Power is a
+    /// place you navigate to and leave, not an overlay that must
+    /// remember what it covered. See handleActionConsole.
+    view: View = .login,
+    focus: Focus = .content,
+    rail_cursor: View = .login,
+
+    /// Which layout is running. Set once at startup from
+    /// PGSD_SESSIOND_LAYOUT. It selects both the renderer and the
+    /// action handler, so the two can never disagree about which model
+    /// is in force: a console-layout screen is always driven by
+    /// handleActionConsole, and a centered-layout screen always by
+    /// handleAction.
+    console: bool = false,
+
     /// Stage 8: where to return when the power menu is dismissed
     /// without committing to an action (via ESC or another Ctrl-Q).
     /// Set when the power menu opens; read when it closes. Live
     /// only while field == .power_menu.
+    ///
+    /// ADR 0011: this is modal-unwind bookkeeping and exists ONLY for
+    /// the centered layout. The console layout does not set it, does
+    /// not read it, and does not need it: that is the ADR's own test
+    /// of whether the peer-view model is more natural than the modal
+    /// one it replaces. When the centered layout is retired, this
+    /// field goes with it.
     pre_power_field: FieldState = .identify,
 
     /// Stage 8: which sub-phase of the power menu we're in. Live
@@ -644,6 +736,233 @@ pub const State = struct {
     // the redraw is already scheduled. The caret blink is wall-
     // clock phased and redraws twice a second, only after typing
     // has started.
+    /// ADR 0011: action handling for the console layout.
+    ///
+    /// Peer views, two axes. Compare against handleAction below, which
+    /// is the modal version and stays for the centered layout.
+    ///
+    /// What is NOT here is the point of the ADR:
+    ///
+    ///   - No pre_power_field. Power is a view you navigate to and
+    ///     leave. There is nothing to bookmark, because entering it
+    ///     did not cover anything.
+    ///   - No "Ctrl-Q from inside the picker closes the picker first"
+    ///     special case. Ctrl-Q just sets view = .power. Session was
+    ///     not shadowing anything, so nothing needs unwinding.
+    ///
+    /// Those two deletions are the ADR's own test of whether the model
+    /// is more natural than the one it replaces. If they had to be
+    /// reintroduced here, the model would have failed.
+    pub fn handleActionConsole(self: *State, action: keymap.Action) !void {
+        // Modal, deliberately (ADR 0011 section 3): PAM is in flight.
+        // Neither the fields nor the rail may be mutated under it.
+        if (self.field == .submitting) return;
+
+        // Global accelerator, from anywhere. It is muscle memory and it
+        // works today. Note how little it has to do now.
+        if (action == .power_menu) {
+            self.view = .power;
+            self.rail_cursor = .power;
+            self.focus = .content;
+            self.power_menu_phase = .choosing;
+            self.power_menu_cursor = .shutdown;
+            return;
+        }
+
+        // Ctrl-S remains a shortcut straight to the Session view, for
+        // the same reason: it already exists and users know it.
+        if (action == .session_picker) {
+            self.view = .session;
+            self.rail_cursor = .session;
+            self.focus = .content;
+            self.picker_cursor = self.selected_session;
+            return;
+        }
+
+        switch (self.focus) {
+            .rail => try self.handleRailAction(action),
+            .content => try self.handleContentAction(action),
+        }
+    }
+
+    /// Rail focus: choose a view.
+    fn handleRailAction(self: *State, action: keymap.Action) !void {
+        switch (action) {
+            .up => self.rail_cursor = self.rail_cursor.prev(),
+            .down => self.rail_cursor = self.rail_cursor.next(),
+            .enter => {
+                self.view = self.rail_cursor;
+                self.focus = .content;
+                // Entering a view initialises its cursor. Nothing is
+                // remembered ACROSS views, which is the simplification:
+                // a view is entered fresh, not restored.
+                switch (self.view) {
+                    .session => self.picker_cursor = self.selected_session,
+                    .power => {
+                        self.power_menu_phase = .choosing;
+                        self.power_menu_cursor = .shutdown;
+                    },
+                    .login => {},
+                }
+            },
+            // ESC from the rail returns focus to the current view's
+            // content rather than doing nothing, so the rail is never a
+            // dead end.
+            .clear => self.focus = .content,
+            else => {},
+        }
+    }
+
+    /// Content focus: act within the active view.
+    fn handleContentAction(self: *State, action: keymap.Action) !void {
+        // ESC leaves the content and returns to the rail, from every
+        // view. This is the ONLY back-navigation rule, and it is the
+        // same everywhere, which is what a peer-view model buys.
+        //
+        // Exception: in the login view, ESC has an established meaning
+        // (clear the current field) that predates this ADR and that
+        // users rely on. Login therefore keeps it, and the rail is
+        // reached from login with Left.
+        if (action == .clear and self.view != .login) {
+            self.focus = .rail;
+            self.rail_cursor = self.view;
+            return;
+        }
+
+        switch (self.view) {
+            .login => try self.handleLoginContent(action),
+            .session => try self.handleSessionContent(action),
+            .power => self.handlePowerContent(action),
+        }
+    }
+
+    /// The Session view: what the picker overlay used to be.
+    fn handleSessionContent(self: *State, action: keymap.Action) !void {
+        switch (action) {
+            .up => self.picker_cursor = self.picker_cursor.prevEnabled(),
+            .down => self.picker_cursor = self.picker_cursor.nextEnabled(),
+            .tab, .enter => {
+                // Confirm, and return to the rail. Not to "wherever we
+                // came from": there is no such place, because we did
+                // not cover anything to get here.
+                self.selected_session = self.picker_cursor;
+                self.status_message = null;
+                self.focus = .rail;
+                self.rail_cursor = .session;
+            },
+            else => {},
+        }
+    }
+
+    /// The Login view's content: the fields. This is the old
+    /// identify/password/submitting logic, unchanged in meaning.
+    fn handleLoginContent(self: *State, action: keymap.Action) !void {
+        switch (action) {
+            .none => {},
+            .print => |ch| {
+                self.typing_started = true;
+                switch (self.field) {
+                    .identify => {
+                        if (self.username.items.len < USERNAME_MAX) {
+                            try self.username.append(self.allocator, ch);
+                        }
+                    },
+                    .password => {
+                        if (self.password.items.len < PASSWORD_MAX) {
+                            try self.password.append(self.allocator, ch);
+                        }
+                    },
+                    else => {},
+                }
+            },
+            .backspace => {
+                self.typing_started = true;
+                switch (self.field) {
+                    .identify => _ = self.username.pop(),
+                    .password => _ = self.password.pop(),
+                    else => {},
+                }
+            },
+            .enter => {
+                switch (self.field) {
+                    .identify => {
+                        if (self.username.items.len > 0) {
+                            self.field = .password;
+                            self.typing_started = false;
+                        }
+                    },
+                    .password => self.field = .submitting,
+                    else => {},
+                }
+            },
+            .clear => {
+                // Login keeps ESC-clears-field, which predates ADR 0011.
+                switch (self.field) {
+                    .identify => self.username.clearRetainingCapacity(),
+                    .password => self.password.clearRetainingCapacity(),
+                    else => {},
+                }
+                self.status_message = null;
+            },
+            // Left is how login reaches the rail, since ESC is taken.
+            .up => {
+                self.focus = .rail;
+                self.rail_cursor = .login;
+            },
+            else => {},
+        }
+    }
+
+    /// The Power view. Same choosing/confirming logic as the modal
+    /// menu, and the same confirm gate on destructive actions (ADR 0011
+    /// section 3: easier navigation to the action makes confirmation
+    /// MORE necessary, not less).
+    ///
+    /// The difference, and the whole point: exiting goes to the RAIL.
+    /// There is no pre_power_field, because Power did not cover
+    /// anything to get here. Compare handlePowerMenuChoosing, which
+    /// does `self.field = self.pre_power_field` precisely because it
+    /// did.
+    fn handlePowerContent(self: *State, action: keymap.Action) void {
+        switch (self.power_menu_phase) {
+            .choosing => switch (action) {
+                .up => self.power_menu_cursor = self.power_menu_cursor.prev(),
+                .down => self.power_menu_cursor = self.power_menu_cursor.next(),
+                .enter => self.commitPowerMenuChoice(self.power_menu_cursor),
+                .print => |ch| switch (std.ascii.toLower(ch)) {
+                    's' => self.commitPowerMenuChoice(.shutdown),
+                    'r' => self.commitPowerMenuChoice(.restart),
+                    'z' => self.commitPowerMenuChoice(.suspend_),
+                    else => {},
+                },
+                .clear => {
+                    self.focus = .rail;
+                    self.rail_cursor = .power;
+                },
+                else => {},
+            },
+            .confirming_shutdown => self.confirmPowerConsole(action, .shutdown),
+            .confirming_restart => self.confirmPowerConsole(action, .restart),
+            .in_progress => {},
+        }
+    }
+
+    /// Confirm phase in the console layout. Y or Enter arms; N or ESC
+    /// backs out to .choosing, exactly as the modal version does.
+    /// Destructive actions are still gated.
+    fn confirmPowerConsole(self: *State, action: keymap.Action, option: PowerOption) void {
+        switch (action) {
+            .enter => self.power_action = option,
+            .print => |ch| switch (std.ascii.toLower(ch)) {
+                'y' => self.power_action = option,
+                'n' => self.power_menu_phase = .choosing,
+                else => {},
+            },
+            .clear => self.power_menu_phase = .choosing,
+            else => {},
+        }
+    }
+
     pub fn handleAction(self: *State, action: keymap.Action) !void {
         // .submitting locks the UI: main is calling PAM, the user
         // shouldn't be able to mutate username or password while
@@ -1182,7 +1501,7 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
     const footer_top: f32 = surface_h - footer_h;
     try enc.fillRect(0, footer_top, surface_w, sf, C_RULE_R, C_RULE_G, C_RULE_B, 1);
     {
-        const hint = legendFor(state);
+        const hint = legendForConsole(state);
         const x: f32 = pad_x;
         const y: f32 = footer_top + pad_y;
         try drawText(enc, hint, x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
@@ -1195,21 +1514,27 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
     try enc.fillRect(rail_w, body_top, sf, body_bot - body_top, C_RULE_R, C_RULE_G, C_RULE_B, 1);
 
     {
-        // The rail marker tracks the current field so it is honest about
-        // where the user is, even though it cannot be navigated yet.
-        const active: RailItem = switch (state.field) {
-            .identify, .password, .submitting => .login,
-            .picker => .session,
-            .power_menu => .power,
-        };
-
+        // ADR 0011: the rail is navigable. Two things are shown, and
+        // they are different: which view is ACTIVE (the one the pane is
+        // rendering) and where the rail CURSOR is (only meaningful when
+        // the rail has focus). When focus is on the rail, the cursor is
+        // what the user is moving; when focus is on the content, the
+        // cursor sits on the active view.
         var y: f32 = body_top + pad_y;
-        inline for (.{ RailItem.login, RailItem.session, RailItem.power }) |item| {
-            const is_active = item == active;
-            const marker: []const u8 = if (is_active) ">" else " ";
+        inline for (.{ View.login, View.session, View.power }) |item| {
+            const is_active = item == state.view;
+            const is_cursor = state.focus == .rail and item == state.rail_cursor;
+
+            // The marker distinguishes "you are here" from "you are
+            // about to go here".
+            const marker: []const u8 = if (is_cursor) ">" else if (is_active) "*" else " ";
+
             var buf: [32]u8 = undefined;
             const line = std.fmt.bufPrint(&buf, "{s} {s}", .{ marker, item.label() }) catch item.label();
-            if (is_active) {
+
+            // Amber is the focus accent (see the palette note): it marks
+            // where the keyboard is, not merely what is selected.
+            if (is_cursor or (is_active and state.focus == .content)) {
                 try drawText(enc, line, pad_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
             } else {
                 try drawText(enc, line, pad_x, y, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1);
@@ -1218,20 +1543,42 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
         }
     }
 
-    // ---- Pane: the current view ------------------------------------
+    // ---- Pane: the ACTIVE VIEW -------------------------------------
+    //
+    // ADR 0011: the pane renders one view. Session and Power are not
+    // overlays drawn on top of the login; they are peers, and the pane
+    // shows whichever is active. There is nothing beneath them to
+    // shadow, which is why nothing has to be remembered to get back.
     const pane_x: f32 = rail_w + sf + pad_x;
-    var y: f32 = body_top + pad_y;
+    const pane_y: f32 = body_top + pad_y;
 
-    // Username and password, as labelled rows rather than a centered
-    // card. Grid-aligned labels make the two fields scan as a form.
+    switch (state.view) {
+        .login => try drawLoginView(state, enc, blink_phase, pane_x, pane_y, row, gw),
+        .session => try drawSessionView(state, enc, pane_x, pane_y, row, gw),
+        .power => try drawPowerView(state, enc, pane_x, pane_y, row, gw),
+    }
+}
+
+/// The Login view: the fields, plus the submit affordance.
+fn drawLoginView(
+    state: *const State,
+    enc: *Encoder,
+    blink_phase: u64,
+    pane_x: f32,
+    pane_y: f32,
+    row: f32,
+    gw: f32,
+) !void {
+    var y: f32 = pane_y;
+
     try drawConsoleField(state, enc, blink_phase, .identify, "Username:", state.username.items, false, pane_x, y, gw);
     y += row;
     try drawConsoleField(state, enc, blink_phase, .password, "Password:", state.password.items, true, pane_x, y, gw);
     y += row * 2;
 
-    // The selected session, shown as a value rather than hidden behind
-    // an overlay: this is the point of the rail, that Session is a peer
-    // view whose current value is always legible.
+    // The selected session is legible without opening anything. That is
+    // the peer-view model paying off before the rail is even used: a
+    // value you previously had to open an overlay to see is just shown.
     {
         var buf: [64]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Session:  {s}", .{state.selected_session.displayName()}) catch "Session:";
@@ -1239,36 +1586,143 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
         y += row * 2;
     }
 
-    // Status message (auth failure, etc).
+    // Submit affordance (ADR 0011 section 6). A framed label naming the
+    // action that authenticates is a console idiom, not a GUI habit:
+    // discoverability and keyboard-first are not in tension. It is not
+    // clickable and does not pretend to be; it says what Enter does.
+    {
+        const label = if (state.field == .submitting) " Authenticating... " else " Log in  [ENTER] ";
+        const w: f32 = @as(f32, @floatFromInt(label.len)) * gw;
+        const h: f32 = row;
+        const focused = state.field == .password and state.focus == .content;
+        if (focused) {
+            try drawBorder(enc, pane_x, y, w, h, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+            try drawText(enc, label, pane_x, y + h * 0.15, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+        } else {
+            try drawBorder(enc, pane_x, y, w, h, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1);
+            try drawText(enc, label, pane_x, y + h * 0.15, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1);
+        }
+        y += row * 2;
+    }
+
     if (state.status_message) |msg| {
         try drawText(enc, msg, pane_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
     }
+}
 
-    // Overlays still work: the prototype does not re-implement them,
-    // which is the point. If the console layout is adopted, the picker
-    // and power menu become rail views and these overlays go away.
-    if (state.field == .picker) {
-        try drawPicker(state, enc, surface_w, surface_h);
-    }
-    if (state.field == .power_menu) {
-        try drawPowerMenu(state, enc, surface_w, surface_h);
+/// The Session view: what the picker overlay used to be, as a pane.
+fn drawSessionView(
+    state: *const State,
+    enc: *Encoder,
+    pane_x: f32,
+    pane_y: f32,
+    row: f32,
+    gw: f32,
+) !void {
+    _ = gw;
+    var y: f32 = pane_y;
+
+    try drawText(enc, "Session type", pane_x, y, C_TEXT_R, C_TEXT_G, C_TEXT_B, 1);
+    y += row * 2;
+
+    inline for (.{ SessionType.terminal, SessionType.x11, SessionType.wayland, SessionType.nde }) |st| {
+        const is_cursor = st == state.picker_cursor and state.focus == .content;
+        const is_selected = st == state.selected_session;
+        const enabled = st.enabled();
+
+        var buf: [64]u8 = undefined;
+        const marker: []const u8 = if (is_cursor) ">" else if (is_selected) "*" else " ";
+        const suffix: []const u8 = if (enabled) "" else "  (not installed)";
+        const line = std.fmt.bufPrint(&buf, "{s} {s}{s}", .{ marker, st.displayName(), suffix }) catch st.displayName();
+
+        if (!enabled) {
+            // Disabled entries must LOOK unavailable, not merely be
+            // unreachable by the cursor.
+            try drawText(enc, line, pane_x, y, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1);
+        } else if (is_cursor) {
+            try drawText(enc, line, pane_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+        } else {
+            try drawText(enc, line, pane_x, y, C_TEXT_R, C_TEXT_G, C_TEXT_B, 1);
+        }
+        y += row;
     }
 }
 
-/// Rail items. Peer views, in the console model.
-const RailItem = enum {
-    login,
-    session,
-    power,
+/// The Power view. The confirm gate on destructive actions is kept
+/// (ADR 0011 section 3): reaching the action is now easier, which makes
+/// confirmation more necessary, not less.
+fn drawPowerView(
+    state: *const State,
+    enc: *Encoder,
+    pane_x: f32,
+    pane_y: f32,
+    row: f32,
+    gw: f32,
+) !void {
+    _ = gw;
+    var y: f32 = pane_y;
 
-    fn label(self: RailItem) []const u8 {
-        return switch (self) {
-            .login => "Login",
-            .session => "Session",
-            .power => "Power",
-        };
+    switch (state.power_menu_phase) {
+        .choosing => {
+            try drawText(enc, "Power", pane_x, y, C_TEXT_R, C_TEXT_G, C_TEXT_B, 1);
+            y += row * 2;
+            inline for (.{ PowerOption.shutdown, PowerOption.restart, PowerOption.suspend_ }) |opt| {
+                const is_cursor = opt == state.power_menu_cursor and state.focus == .content;
+                var buf: [64]u8 = undefined;
+                const marker: []const u8 = if (is_cursor) ">" else " ";
+                const line = std.fmt.bufPrint(&buf, "{s} {s}", .{ marker, opt.displayName() }) catch opt.displayName();
+                if (is_cursor) {
+                    try drawText(enc, line, pane_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+                } else {
+                    try drawText(enc, line, pane_x, y, C_TEXT_R, C_TEXT_G, C_TEXT_B, 1);
+                }
+                y += row;
+            }
+        },
+        .confirming_shutdown, .confirming_restart => {
+            const what: []const u8 = if (state.power_menu_phase == .confirming_shutdown)
+                "Power off this machine?"
+            else
+                "Restart this machine?";
+            try drawText(enc, what, pane_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+            y += row * 2;
+            try drawText(enc, "[Y] Yes    [N] No", pane_x, y, C_TEXT_R, C_TEXT_G, C_TEXT_B, 1);
+        },
+        .in_progress => {
+            const banner: []const u8 = switch (state.power_action orelse .shutdown) {
+                .shutdown => "Shutting down...",
+                .restart => "Restarting...",
+                .suspend_ => "Suspending...",
+            };
+            try drawText(enc, banner, pane_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+        },
     }
-};
+}
+
+/// The console legend, keyed on the (focus, view) pair. This is the
+/// discoverability surface, and ADR 0011 simply gives it a second axis:
+/// it already named the keys available in the current state.
+fn legendForConsole(state: *const State) []const u8 {
+    if (state.field == .submitting) return "Authenticating...";
+
+    if (state.focus == .rail) {
+        return "[UP/DN] Navigate   [ENTER] Open   [ESC] Back   [CTRL-Q] Power";
+    }
+    return switch (state.view) {
+        .login => switch (state.field) {
+            .identify => "[ENTER] Continue   [UP] Menu   [ESC] Clear   [CTRL-Q] Power",
+            .password => "[ENTER] Log in   [UP] Menu   [CTRL-S] Session   [ESC] Clear   [CTRL-Q] Power",
+            else => "[ENTER] Continue   [ESC] Clear   [CTRL-Q] Power",
+        },
+        .session => "[UP/DN] Select   [ENTER] Confirm   [ESC] Back",
+        .power => switch (state.power_menu_phase) {
+            .choosing => "[UP/DN] Select   [ENTER] Choose   [ESC] Back",
+            .confirming_shutdown => "[Y] Power off   [N] Back   [ESC] Back",
+            .confirming_restart => "[Y] Reboot   [N] Back   [ESC] Back",
+            .in_progress => "Please wait...",
+        },
+    };
+}
 
 /// The legend, extracted so both layouts share one source of truth.
 fn legendFor(state: *const State) []const u8 {
@@ -1872,7 +2326,11 @@ pub fn handleEvent(state: *State, event: AppEvent) !bool {
             // press. semadraw's KeyEvent.pressed is bool.
             if (!k.pressed) return true;
             const action = keymap.translate(k.key_code, k.modifiers);
-            try state.handleAction(action);
+            if (state.console) {
+                try state.handleActionConsole(action);
+            } else {
+                try state.handleAction(action);
+            }
             if (state.exit_reason != null) return false;
         },
         else => {},
@@ -2500,8 +2958,174 @@ test "console: legendFor matches the field state" {
     try testing.expect(std.mem.indexOf(u8, legendFor(&s), "[ENTER] Confirm") != null);
 }
 
-test "console: rail item labels" {
-    try testing.expectEqualStrings("Login", RailItem.login.label());
-    try testing.expectEqualStrings("Session", RailItem.session.label());
-    try testing.expectEqualStrings("Power", RailItem.power.label());
+test "console: view labels" {
+    try testing.expectEqualStrings("Login", View.login.label());
+    try testing.expectEqualStrings("Session", View.session.label());
+    try testing.expectEqualStrings("Power", View.power.label());
+}
+
+// =============================================================================
+// ADR 0011: console navigation model
+// =============================================================================
+//
+// These are the ADR's bench requirements as unit tests. The important
+// one is the last: pre_power_field must not be needed. If a future
+// change reintroduces modal bookkeeping into the console path, the
+// model stopped being more natural than the one it replaced.
+
+fn makeConsoleState(alloc: std.mem.Allocator) !State {
+    var s = try makeTestState(alloc);
+    s.console = true;
+    return s;
+}
+
+test "console: rail navigation, Up/Down move, Enter opens, ESC returns" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+
+    // Login view, content focus, at rest.
+    try testing.expectEqual(View.login, s.view);
+    try testing.expectEqual(Focus.content, s.focus);
+
+    // Up from the login fields reaches the rail (ESC is taken by
+    // clear-field in the login view).
+    try s.handleActionConsole(.up);
+    try testing.expectEqual(Focus.rail, s.focus);
+    try testing.expectEqual(View.login, s.rail_cursor);
+
+    // Down moves the cursor without changing the active view.
+    try s.handleActionConsole(.down);
+    try testing.expectEqual(View.session, s.rail_cursor);
+    try testing.expectEqual(View.login, s.view); // not entered yet
+
+    // Enter opens it.
+    try s.handleActionConsole(.enter);
+    try testing.expectEqual(View.session, s.view);
+    try testing.expectEqual(Focus.content, s.focus);
+
+    // ESC leaves the view content and returns to the rail.
+    try s.handleActionConsole(.clear);
+    try testing.expectEqual(Focus.rail, s.focus);
+    try testing.expectEqual(View.session, s.rail_cursor);
+}
+
+test "console: no view is reachable that cannot be left" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+
+    inline for (.{ View.session, View.power }) |v| {
+        s.view = v;
+        s.focus = .content;
+        try s.handleActionConsole(.clear); // ESC
+        try testing.expectEqual(Focus.rail, s.focus);
+    }
+}
+
+test "console: Session view produces the same selected_session as the old picker" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+
+    try s.handleActionConsole(.session_picker); // Ctrl-S
+    try testing.expectEqual(View.session, s.view);
+    try testing.expectEqual(Focus.content, s.focus);
+    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
+
+    try s.handleActionConsole(.enter); // confirm
+    try testing.expectEqual(SessionType.terminal, s.selected_session);
+    // Returns to the RAIL, not to a bookmarked field: there is nothing
+    // to bookmark, because Session covered nothing to get here.
+    try testing.expectEqual(Focus.rail, s.focus);
+}
+
+test "console: Power still gates destructive actions behind a confirm" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+
+    try s.handleActionConsole(.power_menu); // Ctrl-Q
+    try testing.expectEqual(View.power, s.view);
+    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
+    try testing.expectEqual(PowerOption.shutdown, s.power_menu_cursor);
+
+    // Enter on Shutdown must NOT shut down. It must confirm first.
+    try s.handleActionConsole(.enter);
+    try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
+    try testing.expectEqual(@as(?PowerOption, null), s.power_action);
+
+    // N backs out.
+    try s.handleActionConsole(.{ .print = 'n' });
+    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
+    try testing.expectEqual(@as(?PowerOption, null), s.power_action);
+
+    // Y arms it.
+    try s.handleActionConsole(.enter);
+    try s.handleActionConsole(.{ .print = 'y' });
+    try testing.expectEqual(@as(?PowerOption, PowerOption.shutdown), s.power_action);
+}
+
+test "console: submitting locks the fields AND the rail" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+
+    s.field = .submitting;
+
+    // Nothing moves. Not the rail, not the view, not the fields.
+    try s.handleActionConsole(.up);
+    try s.handleActionConsole(.down);
+    try s.handleActionConsole(.enter);
+    try s.handleActionConsole(.power_menu); // even Ctrl-Q
+    try s.handleActionConsole(.{ .print = 'x' });
+
+    try testing.expectEqual(Focus.content, s.focus);
+    try testing.expectEqual(View.login, s.view);
+    try testing.expectEqual(FieldState.submitting, s.field);
+    try testing.expectEqual(@as(usize, 0), s.password.items.len);
+}
+
+test "console: Ctrl-Q reaches Power from every view" {
+    inline for (.{ View.login, View.session, View.power }) |from| {
+        var s = try makeConsoleState(testing.allocator);
+        defer s.deinit();
+        s.view = from;
+        s.focus = .content;
+
+        try s.handleActionConsole(.power_menu);
+        try testing.expectEqual(View.power, s.view);
+        try testing.expectEqual(Focus.content, s.focus);
+    }
+}
+
+test "console: login typing still works, and ESC still clears the field" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+
+    try s.handleActionConsole(.{ .print = 'v' });
+    try s.handleActionConsole(.{ .print = 'i' });
+    try s.handleActionConsole(.{ .print = 'c' });
+    try testing.expectEqualStrings("vic", s.username.items);
+
+    try s.handleActionConsole(.clear); // ESC clears, does NOT leave
+    try testing.expectEqual(@as(usize, 0), s.username.items.len);
+    try testing.expectEqual(Focus.content, s.focus);
+    try testing.expectEqual(View.login, s.view);
+
+    try s.handleActionConsole(.{ .print = 'v' });
+    try s.handleActionConsole(.enter); // identify -> password
+    try testing.expectEqual(FieldState.password, s.field);
+    try s.handleActionConsole(.enter); // password -> submitting
+    try testing.expectEqual(FieldState.submitting, s.field);
+}
+
+test "console: the centered layout is untouched by any of this" {
+    // The modal model still works exactly as before for a non-console
+    // state, which is what lets both layouts coexist.
+    var s = try makeTestState(testing.allocator);
+    defer s.deinit();
+    try testing.expectEqual(false, s.console);
+
+    try s.handleAction(.{ .print = 'v' });
+    try s.handleAction(.enter); // -> password
+    try s.handleAction(.session_picker); // -> picker OVERLAY
+    try testing.expectEqual(FieldState.picker, s.field);
+    try s.handleAction(.enter); // confirm -> back to password
+    try testing.expectEqual(FieldState.password, s.field);
 }
