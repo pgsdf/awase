@@ -1098,3 +1098,77 @@ was wrong.
 The test now asserts the thing that matters: after prepareVirtualMap,
 the ORIGINAL map carries virtual_start == physical_start for every
 runtime descriptor, and non-runtime descriptors are left alone.
+
+#### F9 VERIFIED (2026-07-12)
+
+    efirtc0: <EFI Realtime Clock>
+    efirtc0: registered as a time-of-day clock, resolution 1.000000s
+
+No "invalid pointer". No MOD_LOAD error 6. efirt does not merely stop
+failing: it ATTACHES and registers a working device, which means the
+kernel is successfully calling into EFI runtime services through the
+virtual map the loader now sets. That is positive proof of the whole
+chain, and a stronger result than the absence of an error.
+
+The transfer is unharmed: cr3 switched, next fetch OK, entry reached,
+and the kernel runs through cninit, mi_startup, vfs_mountroot and
+start_init to the mountroot prompt. (The prompt is expected: QEMU has
+no zroot pool. It is where this probe has always stopped and is not a
+fault.)
+
+**F9 is closed.** The loader now does what the reference does at the
+EFI handoff:
+
+  - identity-maps the runtime descriptors in the map it hands the
+    kernel (virtual_start = physical_start), which is what
+    efi_is_in_map() checks;
+  - does that BEFORE building the module chain, so the mapped
+    descriptors are what reach MODINFOMD_EFI_MAP;
+  - calls SetVirtualAddressMap after ExitBootServices, with the
+    compacted runtime subset;
+  - makes no firmware call between that and the kernel jump.
+
+#### What F9 cost, and what it teaches
+
+Four wrong turns, each the same mistake: a conclusion reached before the
+mechanism was checked.
+
+  1. A probe run with every landmark absent was read as a transfer
+     regression. gdb was not installed. The evidence column was an
+     artifact of a missing tool.
+  2. Error 6 was attributed to efirt.c:254 on a guess. efi_init() has
+     sixteen ENXIO returns and two could produce it, saying entirely
+     different things.
+  3. bootverbose was set through a kernel environment variable. It is a
+     boothowto BIT (RB_VERBOSE), and the env entry did nothing, so the
+     run that was supposed to settle (2) could not.
+  4. The vmap was built into a separate buffer, on the assumption that
+     the firmware call was the point. The point was the METADATA: the
+     reference's `desc->VirtualStart = desc->PhysicalStart` mutates the
+     buffer it later hands the kernel, and that line, which looks
+     incidental, is the entire mechanism.
+
+Every one of these was answerable from the FreeBSD source, and in every
+case the source was skimmed until something plausible was found rather
+than read until the mechanism was understood.
+
+The rule this finding earns:
+
+  When the kernel reports an error, make the kernel say WHICH error
+  before theorising about WHY. It knows. Ask it.
+
+#### Standing on F9
+
+Two of the three known F7-era defects in the EFI handoff are now
+corrected and verified in emulation: the console binding and ACPI RSDP
+(F7 itself), and the EFI runtime map (F9). One remains: F8, the
+sequencing divergence, where the reference builds all metadata before a
+tight GetMemoryMap/ExitBootServices loop and this loader interposes the
+chain rebuild between the map capture and the exit.
+
+ADR 0005 Decision 6 (metal arming retired) requires, for any reversal,
+an amendment stating what about the metal handoff has CHANGED. F9 is now
+a real, source-identified, verified correction to that handoff, and it
+is the first thing this campaign has produced that meets that bar. It is
+not sufficient on its own: F8 remains, and the amendment should be
+written against a handoff with both corrected, not one.
