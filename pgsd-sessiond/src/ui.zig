@@ -1021,67 +1021,74 @@ fn drawBorder(enc: *Encoder, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: 
 // -----------------------------------------------------------------
 // Console palette (PGSD_SESSIOND_LAYOUT=console)
 //
-// Background is a muted indigo, #3a3153: hue 256deg, lightness 26%,
-// saturation 26%. Every other colour here is chosen against it, and
-// every text tier was checked for contrast rather than picked by eye.
+// Background is a deep navy, #12375c: hue 210deg, lightness 22%,
+// saturation 67%. Primary text is white. Every other colour is derived
+// against the background, and every text tier is contrast-checked
+// rather than picked by eye, because the previous iteration taught
+// that the dim tiers are where a palette quietly breaks: they look
+// fine to the author and are unreadable on the bench.
 //
-// The amber survives unchanged in spirit because it is already the
-// right hue: #3a3153's complement sits at about 76deg, which is where
-// amber lives. Interactive elements therefore keep their meaning and
-// gain contrast (5.83:1) against the new background.
+// The role of colour changes here, and that is the point of the
+// white-text direction. Previously amber was the text. Now white is
+// the text and amber is the ACCENT: it marks focus (the active field's
+// label, the cursor, the selected rail item) rather than carrying the
+// content. That is a more conventional console reading and it lets the
+// eye find the focused thing instantly instead of scanning a field of
+// uniformly amber text.
 //
-// The cyan does NOT survive. At 180deg it is only 76deg from the
-// background's hue, same cool family, so it muddies against indigo
-// instead of separating from it. It is replaced by a mint-teal at
-// 165deg with lower saturation, which keeps the cool "this is
-// context, not something you act on" reading while actually
-// separating.
+// Amber remains the right accent hue by construction: #12375c's
+// complement sits at about 30deg, which is amber/orange. The
+// background chose the accent.
 //
-// The dim tiers are the ones that forced the work. Against black, dim
-// amber (2.57:1) and dim cyan (1.77:1) were legible enough; against
-// indigo they collapse. Both dim tiers are lifted so they clear 4:1.
+// A cool blue (CONTEXT) carries the header, keeping the established
+// semantic that the sysinfo block is read-once reference rather than
+// something you act on. It is close enough in hue to the background to
+// recede, and far enough in lightness to remain legible.
 //
-// Contrast against #3a3153 (WCAG: 4.5 body, 3.0 large/UI):
-//   AMBER      #ff9e2a   5.83  active interactive
-//   AMBER_DIM  #c98a3f   4.12  inactive interactive
-//   MINT       #7fd4bd   6.91  context, bright (hostname)
-//   MINT_DIM   #63a894   4.33  context, dim (network, memory)
-//   RULE       #6e5f96   2.14  deliberately low: a separator is
-//                              structure, not text
-//   PANEL      #2b2440   overlay fill; darker than the background so
-//                        overlays read as ON TOP rather than as holes
+// Contrast against #12375c (WCAG: 4.5 body, 3.0 large/UI):
+//   TEXT       #eaf2fb  10.77  primary text: field values
+//   TEXT_DIM   #9fb4cc   5.72  inactive labels, unselected rail items
+//   AMBER      #ffb454   6.90  accent: focus (active label, cursor)
+//   AMBER_DIM  #c98f45   4.34  accent, inactive
+//   CONTEXT    #7fc7e8   6.51  header: hostname
+//   CONTEXT_D  #5f8fb0   3.50  header: network, memory
+//   RULE       #2f5c8a   1.75  separators; deliberately low, a rule is
+//                              structure and not text
 //
-// Amber and mint sit close in luminance (1.18:1 between them) on
-// purpose. They are distinguished by hue, not by brightness, so
-// neither shouts over the other: the semantic distinction is colour,
-// which is the rationale the palette block above already states.
-const C_BG_R: f32 = 0.227; // #3a3153
-const C_BG_G: f32 = 0.192;
-const C_BG_B: f32 = 0.325;
+// TEXT and AMBER sit close in luminance (1.56:1) on purpose: they are
+// told apart by hue, not brightness, so the accent marks focus without
+// shouting over the content.
+const C_BG_R: f32 = 0.071; // #12375c
+const C_BG_G: f32 = 0.216;
+const C_BG_B: f32 = 0.361;
 
-const C_AMBER_R: f32 = 1.0; // #ff9e2a
-const C_AMBER_G: f32 = 0.620;
-const C_AMBER_B: f32 = 0.165;
+const C_TEXT_R: f32 = 0.918; // #eaf2fb  primary text
+const C_TEXT_G: f32 = 0.949;
+const C_TEXT_B: f32 = 0.984;
 
-const C_AMBER_DIM_R: f32 = 0.788; // #c98a3f
-const C_AMBER_DIM_G: f32 = 0.541;
-const C_AMBER_DIM_B: f32 = 0.247;
+const C_TEXT_DIM_R: f32 = 0.624; // #9fb4cc  secondary text
+const C_TEXT_DIM_G: f32 = 0.706;
+const C_TEXT_DIM_B: f32 = 0.800;
 
-const C_MINT_R: f32 = 0.498; // #7fd4bd
-const C_MINT_G: f32 = 0.831;
-const C_MINT_B: f32 = 0.741;
+const C_AMBER_R: f32 = 1.0; // #ffb454  accent: focus
+const C_AMBER_G: f32 = 0.706;
+const C_AMBER_B: f32 = 0.329;
 
-const C_MINT_DIM_R: f32 = 0.388; // #63a894
-const C_MINT_DIM_G: f32 = 0.659;
-const C_MINT_DIM_B: f32 = 0.580;
+const C_AMBER_DIM_R: f32 = 0.788; // #c98f45
+const C_AMBER_DIM_G: f32 = 0.561;
+const C_AMBER_DIM_B: f32 = 0.271;
 
-const C_RULE_R: f32 = 0.431; // #6e5f96
-const C_RULE_G: f32 = 0.373;
-const C_RULE_B: f32 = 0.588;
+const C_MINT_R: f32 = 0.498; // #7fc7e8  header context, bright
+const C_MINT_G: f32 = 0.780;
+const C_MINT_B: f32 = 0.910;
 
-const C_PANEL_R: f32 = 0.169; // #2b2440
-const C_PANEL_G: f32 = 0.141;
-const C_PANEL_B: f32 = 0.251;
+const C_MINT_DIM_R: f32 = 0.373; // #5f8fb0  header context, dim
+const C_MINT_DIM_G: f32 = 0.561;
+const C_MINT_DIM_B: f32 = 0.690;
+
+const C_RULE_R: f32 = 0.184; // #2f5c8a
+const C_RULE_G: f32 = 0.361;
+const C_RULE_B: f32 = 0.541;
 
 // =============================================================================
 // Console layout (prototype)
@@ -1205,7 +1212,7 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
             if (is_active) {
                 try drawText(enc, line, pad_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
             } else {
-                try drawText(enc, line, pad_x, y, C_AMBER_DIM_R, C_AMBER_DIM_G, C_AMBER_DIM_B, 1);
+                try drawText(enc, line, pad_x, y, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1);
             }
             y += row;
         }
@@ -1228,7 +1235,7 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
     {
         var buf: [64]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Session:  {s}", .{state.selected_session.displayName()}) catch "Session:";
-        try drawText(enc, line, pane_x, y, C_AMBER_DIM_R, C_AMBER_DIM_G, C_AMBER_DIM_B, 1);
+        try drawText(enc, line, pane_x, y, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1);
         y += row * 2;
     }
 
@@ -1296,9 +1303,9 @@ fn drawConsoleField(
         (which == .password and (state.field == .picker or state.field == .submitting));
 
     if (focused) {
-        try drawText(enc, label, x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+        try drawText(enc, label, x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1); // accent = focus
     } else {
-        try drawText(enc, label, x, y, C_AMBER_DIM_R, C_AMBER_DIM_G, C_AMBER_DIM_B, 1);
+        try drawText(enc, label, x, y, C_TEXT_DIM_R, C_TEXT_DIM_G, C_TEXT_DIM_B, 1); // unfocused label
     }
 
     const val_x: f32 = x + @as(f32, @floatFromInt(label.len + 2)) * gw;
@@ -1310,7 +1317,7 @@ fn drawConsoleField(
         for (0..n) |i| buf[i] = '*';
         shown = buf[0..n];
     }
-    try drawText(enc, shown, val_x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
+    try drawText(enc, shown, val_x, y, C_TEXT_R, C_TEXT_G, C_TEXT_B, 1); // content is text, not accent
 
     // Cursor: block, on the active field only, blinking unless the user
     // has not typed yet (steady-on invites the first keystroke).
