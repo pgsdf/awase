@@ -969,8 +969,12 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
         // centered login card. Presentation only: the same State is drawn
         // and no behavior changes, so the flag is safe to flip on a bench
         // and the prototype is deletable without touching anything else.
+        //
+        // compat.args.getenv, not std.posix.getenv: Zig 0.16 removed the
+        // latter, which is why the shim exists. Same pattern as
+        // semadrawd's UTF_PUMP_INSTRUMENT read.
         const console_layout: bool = blk: {
-            const v = std.posix.getenv("PGSD_SESSIOND_LAYOUT") orelse break :blk false;
+            const v = compat.args.getenv("PGSD_SESSIOND_LAYOUT") orelse break :blk false;
             break :blk std.mem.eql(u8, v, "console");
         };
 
@@ -1024,8 +1028,15 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             // prototype renders the same State and does not change any
             // behavior, so this is a pure presentation switch and is
             // safe to flip on a running bench.
-            const draw_fn = if (console_layout) ui.drawConsole else ui.draw;
-            draw_fn(&state, &encoder, blink_phase, surface_w_f, surface_h_f) catch |err| {
+            // Branch on the call rather than selecting a function value:
+            // Zig will not let a bare `fn` value depend on runtime control
+            // flow (it is comptime-only), and a *const fn pointer here
+            // would buy nothing over two call sites.
+            const draw_res = if (console_layout)
+                ui.drawConsole(&state, &encoder, blink_phase, surface_w_f, surface_h_f)
+            else
+                ui.draw(&state, &encoder, blink_phase, surface_w_f, surface_h_f);
+            draw_res catch |err| {
                 std.debug.print("ERROR: ui.draw failed: {s}\n", .{@errorName(err)});
                 surface.destroy();
                 conn.disconnect();
