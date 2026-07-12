@@ -859,3 +859,54 @@ boot chrome via loader.conf and OWNING the boot path: pgsd-loader
 carries no Forth, no Lua, no beastie, and no menu, because none of it
 was ever written into it. That is the architecturally correct answer to
 "remove the FreeBSD boot UI", and it is what completing F7 buys.
+
+#### F9 erratum: SetVirtualAddressMap must be the LAST firmware call
+
+The first implementation of F9 regressed the transfer. In emulation, on
+a path that had previously booted to the mountroot prompt, every kernel
+landmark went dark: entry not reached, transfer failed. The NVRAM
+evidence showed the vmap call itself had SUCCEEDED
+(`MARK_VMAP_SET` was present, so the firmware accepted the identity map,
+the descriptor size and version were right, and the walk was correct)
+and then the loader died before the kernel.
+
+The cause was the marker, not the map.
+
+`recordVerdict()` is `rs.setVariable()`, a RUNTIME service. The first
+cut recorded the outcome AFTER the vmap call:
+
+    ExitBootServices
+    recordVerdict("MARK_EXITED_BOOTSERVICES")   legal
+    SetVirtualAddressMap                        runtime services relocate
+    recordVerdict("MARK_VMAP_SET")              ILLEGAL: stale pointer
+    transferToKernel
+
+The UEFI spec requires that after SetVirtualAddressMap, runtime services
+be invoked through the NEW virtual mapping. The loader still holds the
+old `system_table.runtime_services` pointer, so calling through it is
+undefined. The write appeared to land (we read the marker back) but the
+firmware state it touched was no longer valid, and the transfer did not
+survive it.
+
+The reference does not make this mistake, and re-reading it makes the
+rule obvious: after efi_do_vmap (bootinfo.c:313) the loader only writes
+MEMORY (file_addmetadata) and then jumps. It makes no further firmware
+call. SetVirtualAddressMap is a one-way door.
+
+Corrected: the marker is written BEFORE the call
+(`MARK_VMAP_ATTEMPT`), recording intent rather than outcome, and
+nothing but the jump follows. The outcome remains knowable, because the
+kernel's own efirt attach is the authoritative report on whether the
+runtime services ended up usable: that is the error-6 signal this whole
+finding started from.
+
+The rule, for whoever touches this next:
+
+  Between SetVirtualAddressMap and the kernel jump, the loader may
+  touch memory and nothing else. No NVRAM write, no console output, no
+  runtime service of any kind.
+
+This is also a small vindication of the emulation-first discipline.
+This bug would have presented on metal as exactly what F7 has always
+presented as: a machine that does not boot and gives no reason. It cost
+a rebuild instead.

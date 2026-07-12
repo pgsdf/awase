@@ -389,28 +389,56 @@ pub fn main() uefi.Status {
                                         // not, returning ENXIO (errno 6).
                                         // That is the "MOD_LOAD efirt
                                         // error 6" we saw in emulation
-                                        // and wrongly called cosmetic: it
-                                        // was the kernel reporting this
-                                        // exact omission. Firmware that
-                                        // swaps its runtime-service
-                                        // implementations on this call
-                                        // (which the kernel comment says
-                                        // some do, and which OVMF does
-                                        // not) would be left with stale
-                                        // pointers without it.
+                                        // and wrongly called cosmetic.
                                         //
-                                        // A failure here is recorded and
-                                        // NOT fatal: the kernel's own
-                                        // check decides whether the
-                                        // runtime services are usable,
-                                        // and a loader that reaches the
+                                        // ORDERING, and it is not
+                                        // optional: SetVirtualAddressMap
+                                        // must be the LAST firmware call
+                                        // before the jump. After it, the
+                                        // UEFI spec requires runtime
+                                        // services to be invoked through
+                                        // the NEW virtual mapping, and we
+                                        // still hold the old
+                                        // system_table.runtime_services
+                                        // pointer. Calling through it is
+                                        // undefined.
+                                        //
+                                        // recordVerdict() is exactly such
+                                        // a call: it is rs.setVariable().
+                                        // The first cut of F9 recorded
+                                        // MARK_VMAP_SET *after* the vmap,
+                                        // through the stale pointer, and
+                                        // the transfer stopped reaching
+                                        // the kernel: every landmark went
+                                        // dark in emulation on a path
+                                        // that had previously booted to
+                                        // mountroot. The marker is
+                                        // therefore written BEFORE the
+                                        // call, recording the intent
+                                        // rather than the outcome.
+                                        //
+                                        // The outcome is still knowable:
+                                        // if the call fails we fall
+                                        // through to the jump anyway (a
                                         // kernel with no virtual map is
                                         // no worse off than the one that
-                                        // never made the call at all.
-                                        if (handoff.applyVirtualMap(vmap)) {
-                                            recordVerdict("MARK_VMAP_SET");
-                                        } else |_| {
-                                            recordVerdict("MARK_VMAP_FAILED");
+                                        // never made the call), and the
+                                        // kernel's own efirt attach is
+                                        // the authoritative report on
+                                        // whether the runtime services
+                                        // ended up usable.
+                                        //
+                                        // The reference does the same:
+                                        // after efi_do_vmap (bootinfo.c
+                                        // :313) it only writes memory
+                                        // (file_addmetadata) and jumps.
+                                        // It makes no further firmware
+                                        // call.
+                                        if (vmap.count > 0 and !vmap.truncated) {
+                                            recordVerdict("MARK_VMAP_ATTEMPT");
+                                            handoff.applyVirtualMap(vmap) catch {};
+                                        } else {
+                                            recordVerdict("MARK_VMAP_SKIPPED");
                                         }
 
                                         handoff.transferToKernel(lr.entry, pt.pml4, hrsp);
