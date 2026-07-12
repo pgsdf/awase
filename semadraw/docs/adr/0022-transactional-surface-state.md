@@ -170,6 +170,48 @@ client demonstrating the need). If an atomicity requirement for cursor
 state appears, it gets its own decision rather than inheriting this
 one.
 
+**Cursor surfaces are not included in transactional surface state.**
+(Clarification added 2026-07-12 during D-12 implementation, from the
+first concrete case that tested this ADR's boundary. This is a scope
+clarification, not a redesign.)
+
+Cursor position is compositor-owned input state, not client-rendered
+surface configuration. The distinction is semantic, not an exception:
+
+- A normal surface's position and geometry are **client-visible
+  configuration**. The client renders content against a
+  compositor-assigned configuration, and the frame it produces must be
+  paired atomically with that configuration. That pairing is what this
+  ADR exists to provide.
+- A cursor surface's position is **compositor-controlled pointer
+  state**. The daemon moves it in response to input events. There is no
+  client frame whose rendering must be atomically paired with the
+  cursor's location: the sprite's content does not depend on where the
+  pointer is.
+
+Forcing cursor motion through commit would use a transaction mechanism
+for a problem it was not designed for. Pointer motion is high-frequency
+input state, not frame state; it would create transaction traffic per
+motion event, couple cursor latency to the surface commit model, and
+imply an atomicity requirement that does not exist. It would also break
+the cursor pump's damage ordering, which per ADR 0005 section 4 damages
+underlying surfaces for both the old and new rects *before* the cursor
+moves, and depends on the move landing immediately.
+
+**Implementation invariant.** A cursor surface may bypass transactional
+position and visibility updates because it has no client rendering
+contract tied to its position. The daemon's cursor path writes current
+state directly; the client-facing setters stage pending state. The two
+are separate code paths, not one path with a role test, so the
+distinction is visible at the call site rather than hidden behind a
+shared API.
+
+This is recorded as the first concrete input defining this ADR's
+boundary: "surface" turned out to be too broad a category, and the
+transaction model exposed that rather than being defeated by it. Cursor
+transaction semantics remain deferred to SA-2 if a future requirement
+(drag-and-drop sprite atomicity is the plausible one) needs them.
+
 Consequences that follow immediately:
 
 - Multiple mutations in one frame are atomic. A client may move, raise,

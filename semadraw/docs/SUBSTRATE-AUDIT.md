@@ -314,6 +314,45 @@ its hotspot is used by the compositor to place the sprite at
 rather than only the cursor, with a comment anticipating a future
 hotspot-using feature such as drag-and-drop visual offsets.
 
+### Surface-user audit by role (2026-07-12, before D-12 implementation)
+
+Every `Surface` creator was audited to establish which surfaces the
+ADR 0022 transaction model applies to. There are exactly two
+categories, and the discriminator already exists in the tree.
+
+    Client content surfaces
+        Created by handleCreateSurface / handleRemoteCreateSurface
+        (semadrawd.zig:1641, 2468) with the client's session id and
+        peer_uid. These carry client-rendered content whose frame must
+        be paired atomically with its configuration.
+        TRANSACTIONAL (ADR 0022).
+
+    The cursor surface
+        Created by the daemon (semadrawd.zig:598) with
+        owner = CLIENT_ID_DAEMON and owner_uid = the daemon run_uid,
+        and tracked as Daemon.cursor_surface_id. Exactly one exists.
+        Its position is compositor-owned pointer state, moved by the
+        cursor pump on every pointer motion (semadrawd.zig:1016).
+        NOT TRANSACTIONAL.
+
+No third category exists today. The lock surface (ADR 0012) is a
+client surface adopted into a compositor mode, not a daemon-created
+one, so it is a client content surface and is transactional.
+
+Two findings from the audit shaped the implementation:
+
+- The cursor pump uses TWO of the four transactional setters:
+  `setVisible` (semadrawd.zig:1008) and `setPosition` (1016), not
+  position alone. Any cursor carve-out has to cover both.
+- The cursor pump depends on the writes landing immediately. Per ADR
+  0005 section 4 it damages underlying surfaces for both the old and
+  new displayed rects *before* moving or hiding the cursor. Staging
+  those writes would break that ordering, not merely delay the cursor.
+
+The cursor and client paths are already separate call sites; they
+merely share a setter. Splitting the setter is therefore a small,
+honest change rather than a special case bolted into shared logic.
+
 ### Why it is recorded rather than decided
 
 Including `setHotspot` in the transaction set by symmetry would be
