@@ -23,6 +23,22 @@ const handoff = @import("handoff.zig");
 // set it in boothowto so the kernel does not come up console-less.
 const RB_SERIAL: u32 = 0x1000;
 
+// FreeBSD sys/reboot.h: RB_VERBOSE (0x800) is what sets the kernel's
+// `bootverbose`. sys/kern/init_main.c: `if (boothowto & RB_VERBOSE)`.
+//
+// This is a bit in the boothowto word passed as MODINFOMD_HOWTO
+// metadata, NOT a kernel environment variable. An earlier attempt set
+// `boot_verbose=1` in the env, which does nothing: the kernel never
+// reads such a variable. The env is the wrong knob and the howto word
+// is the right one.
+//
+// We need it because the efirt attach failure (MOD_LOAD error 6) has
+// two possible causes in sys/dev/efidev/efirt.c and BOTH of their
+// distinguishing messages are printed only `if (bootverbose)`. Without
+// this bit the kernel cannot tell us which defect we have, which is
+// why F9 was built on a guess.
+const RB_VERBOSE: u32 = 0x800;
+
 // Vendor GUID for PGSD boot-evidence variables (generated for this
 // project; recorded in the L3a campaign ledger). The armed test
 // path writes its verdict here because this platform's console is
@@ -160,41 +176,12 @@ pub fn main() uefi.Status {
                     // device atpic requires a local APIC".
                     // vfs.root.mountfrom names the root to mount.
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
-                    // boot_verbose: F9 diagnostic, and the reason it is
-                    // here rather than guessed at.
-                    //
-                    // The kernel refuses to attach efirt with
-                    // "MOD_LOAD (efirt, ...) error 6". ENXIO is 6, and
-                    // sys/dev/efidev/efirt.c efi_init() has TWO ENXIO
-                    // paths that could produce it, saying very
-                    // different things:
-                    //
-                    //   efirt.c:234  "EFI runtime services table is not
-                    //                present"  -> efi_systbl->st_rt == 0,
-                    //                i.e. the system table we handed the
-                    //                kernel has a null runtime pointer.
-                    //
-                    //   efirt.c:254  "EFI runtime services table has an
-                    //                invalid pointer"  -> the GetTime
-                    //                pointer is not inside the EFI map.
-                    //                THIS is the one F9 was meant to
-                    //                fix, by calling
-                    //                SetVirtualAddressMap.
-                    //
-                    // Both messages are gated behind bootverbose, which
-                    // is why every probe so far has shown a bare
-                    // "error 6" and nothing else. F9 was implemented on
-                    // the ASSUMPTION that the second path was firing.
-                    // With the vmap now called and accepted by the
-                    // firmware, the error persists, so either the
-                    // assumption was wrong (it is the first path) or
-                    // F9's mechanism does not do what it should.
-                    //
-                    // Rather than guess a third time: ask the kernel.
-                    // With boot_verbose the message names the path, and
-                    // one probe run settles which defect we actually
-                    // have.
-                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00boot_verbose=1\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00";
+                    // The kernel env. console binding (F7) and the
+                    // ACPI RSDP (F7) live here. bootverbose does NOT:
+                    // it is a boothowto BIT (RB_VERBOSE), set where the
+                    // chain is built, not an environment variable. See
+                    // the RB_VERBOSE comment at the top of this file.
+                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00";
                     var env_len: usize = 0;
                     @memcpy(env_stage[0..env_fixed.len], env_fixed);
                     env_len = env_fixed.len;
@@ -238,7 +225,7 @@ pub fn main() uefi.Status {
                         .name = "kernel",
                         .addr = lr.base_paddr,
                         .size = image_span,
-                        .howto = RB_SERIAL,
+                        .howto = RB_SERIAL | RB_VERBOSE,
                     }, envp_kvo, fw_handle, efb, map_in)) |ch| {
                         const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);  // physical = staging + rel
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
@@ -375,7 +362,7 @@ pub fn main() uefi.Status {
                                             .name = "kernel",
                                             .addr = lr.base_paddr,
                                             .size = image_span,
-                                            .howto = RB_SERIAL,
+                                            .howto = RB_SERIAL | RB_VERBOSE,
                                         }, envp_rel + lr.base_paddr, fw_handle, efb, .{
                                             .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
                                             .descriptor_size = fmap.descriptor_size,

@@ -1007,3 +1007,31 @@ but it is the first thing to check if the message says "invalid
 pointer".
 
 Ask the kernel. Stop guessing.
+
+#### Erratum: boot_verbose is not an environment variable
+
+The `boot_verbose=1` kernel-environment entry added in the previous
+increment does nothing. The kernel does not read such a variable.
+
+`bootverbose` is set from a BIT in the boothowto word:
+sys/kern/init_main.c does `if (boothowto & RB_VERBOSE)`, and
+sys/sys/reboot.h defines `RB_VERBOSE` as 0x800. boothowto reaches the
+kernel as `MODINFOMD_HOWTO` (0x0007) metadata, which our loader does
+pass, with `RB_SERIAL` set so the console comes up. `RB_VERBOSE` was
+simply never set.
+
+So the probe run after that change was uninformative by construction:
+error 6 with no message, exactly as before, because the kernel still
+had bootverbose off and its two distinguishing messages are both
+printed only `if (bootverbose)`.
+
+Corrected: the howto word now carries `RB_SERIAL | RB_VERBOSE`, and the
+bogus env entry is removed.
+
+This is the third time in this finding that a conclusion was drawn
+before the mechanism was checked (the gdb-absent probe read as a
+regression; the efirt error attributed to one of two paths on a guess;
+bootverbose set through the wrong interface). The pattern is the same
+each time: a plausible story reached for before the source was read.
+The source has the answer in every case, and reading it first is
+cheaper than every one of these detours has been.
