@@ -349,6 +349,41 @@ pub fn main() uefi.Status {
                                     while (tries < 3) : (tries += 1) {
                                         const fmap = handoff.captureMemoryMap(bsp) catch break;
                                         recordVerdict("MARK_MAP_CAPTURED");
+
+                                        // F9: identity-map the runtime
+                                        // descriptors NOW, before the
+                                        // chain is built, because
+                                        // prepareVirtualMap writes
+                                        // virtual_start into fmap.buffer
+                                        // IN PLACE and the chain copies
+                                        // that buffer into the kernel's
+                                        // staging area as
+                                        // MODINFOMD_EFI_MAP.
+                                        //
+                                        // Order is the whole fix. The
+                                        // kernel's efi_is_in_map()
+                                        // (sys/dev/efidev/efirt.c) looks
+                                        // for the GetTime pointer inside
+                                        // p->md_virt, the descriptor's
+                                        // VIRTUAL start. If the map is
+                                        // copied to the kernel before
+                                        // virtual_start is filled in,
+                                        // the kernel sees zeros, cannot
+                                        // locate GetTime, and refuses to
+                                        // attach efirt with "EFI runtime
+                                        // services table has an invalid
+                                        // pointer" (error 6). That is
+                                        // exactly what the first cut of
+                                        // F9 produced: the firmware call
+                                        // succeeded and the metadata was
+                                        // wrong.
+                                        //
+                                        // The reference has no such bug
+                                        // because efi_do_vmap mutates
+                                        // the same buffer it later hands
+                                        // to file_addmetadata, and it
+                                        // runs first.
+                                        const vmap = handoff.prepareVirtualMap(fmap);
                                         // Rebuild the chain with the
                                         // final map so EFI_MAP is the
                                         // one whose key we exit on.
@@ -389,8 +424,10 @@ pub fn main() uefi.Status {
                                         // (bootinfo.c:313, after the exit
                                         // loop): SetVirtualAddressMap is
                                         // a RUNTIME service and survives.
-                                        const vmap = handoff.prepareVirtualMap(fmap);
-
+                                        // The vmap was prepared above,
+                                        // before the chain build, so the
+                                        // map the kernel receives already
+                                        // carries virtual_start.
                                         bsp.exitBootServices(uefi.handle, fmap.key) catch continue;
                                         // Past ExitBootServices: no boot
                                         // services, no console. One

@@ -1035,3 +1035,66 @@ bootverbose set through the wrong interface). The pattern is the same
 each time: a plausible story reached for before the source was read.
 The source has the answer in every case, and reading it first is
 cheaper than every one of these detours has been.
+
+#### F9 root cause, found: virtual_start was never written to the map the kernel receives
+
+With RB_VERBOSE finally set, the kernel named the failing check:
+
+    EFI runtime services table has an invalid pointer
+    module_register_init: MOD_LOAD (efirt, ...) error 6
+
+That is efirt.c:254, not efirt.c:234. So `efi_systbl->st_rt` is
+NON-null: the system table pointer we pass is good, and this was never
+a missing-metadata problem. The failure is that the kernel cannot find
+the GetTime pointer inside the EFI map.
+
+Reading what the kernel actually checks makes the bug exact.
+sys/dev/efidev/efirt.c efi_is_in_map():
+
+    if ((p->md_attr & EFI_MD_ATTR_RT) == 0)
+            continue;
+    if (addr >= p->md_virt &&
+        addr < p->md_virt + p->md_pages * EFI_PAGE_SIZE)
+            return (true);
+
+It tests the GetTime address against `p->md_virt`, the descriptor's
+VIRTUAL start. Not its physical start.
+
+And the reference fills that field in, on the very buffer it hands the
+kernel. stand/efi/loader/bootinfo.c efi_do_vmap():
+
+    if ((desc->Attribute & EFI_MEMORY_RUNTIME) != 0) {
+            ++nset;
+            desc->VirtualStart = desc->PhysicalStart;   <-- mutates mm
+            *viter = *desc;                             <-- then copies
+
+`desc` walks `mm`, and `mm` is what bi_load_efi_data later passes to
+file_addmetadata as MODINFOMD_EFI_MAP. The mutation looks incidental
+and is not: it is the entire mechanism by which the kernel can locate
+the runtime services.
+
+Two defects, both now fixed:
+
+1. prepareVirtualMap built the identity map into a SEPARATE buffer and
+   left the original untouched, so every virtual_start in the map handed
+   to the kernel was still zero. It now writes virtual_start into the
+   original map in place, as the reference does, and copies the mapped
+   descriptor into the compacted buffer the firmware call takes. The
+   firmware wants the runtime subset; the kernel wants the whole map
+   with virtual_start filled in. Both are now satisfied from one walk.
+
+2. ORDER. prepareVirtualMap ran AFTER buildChainFull, so even the
+   in-place fix would have been too late: the chain had already copied
+   the map into the kernel's staging area. It now runs immediately after
+   captureMemoryMap and before the chain is built. The reference has no
+   such bug because efi_do_vmap mutates the same buffer it later hands
+   to file_addmetadata, and it runs first.
+
+So F9's mechanism was right and its execution was wrong in two places,
+which is what the falsification said and what the kernel, once asked
+properly, confirmed. The firmware call always succeeded. The metadata
+was wrong.
+
+The test now asserts the thing that matters: after prepareVirtualMap,
+the ORIGINAL map carries virtual_start == physical_start for every
+runtime descriptor, and non-runtime descriptors are left alone.

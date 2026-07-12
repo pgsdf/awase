@@ -342,6 +342,36 @@ pub const VirtualMap = struct {
 ///
 /// Mirrors efi_do_vmap's walk: copy every descriptor with the
 /// memory_runtime attribute, setting virtual_start = physical_start.
+///
+/// CRITICAL, and the reason the first cut of F9 failed: this writes
+/// virtual_start into the ORIGINAL map as well as into the copy.
+///
+/// The reference does the same, and it is easy to miss because it looks
+/// incidental (stand/efi/loader/bootinfo.c efi_do_vmap):
+///
+///     if ((desc->Attribute & EFI_MEMORY_RUNTIME) != 0) {
+///             ++nset;
+///             desc->VirtualStart = desc->PhysicalStart;   <-- mutates mm
+///             *viter = *desc;                             <-- then copies
+///
+/// `desc` walks `mm`, the buffer the loader later hands the kernel as
+/// MODINFOMD_EFI_MAP. So the map the kernel receives has virtual_start
+/// FILLED IN for every runtime descriptor.
+///
+/// That matters because of what the kernel actually checks.
+/// sys/dev/efidev/efirt.c efi_is_in_map() tests the GetTime pointer
+/// against `p->md_virt`, the descriptor's VIRTUAL start, not its
+/// physical one:
+///
+///     if (addr >= p->md_virt &&
+///         addr < p->md_virt + p->md_pages * EFI_PAGE_SIZE)
+///
+/// The first cut of F9 built the vmap into a separate buffer and left
+/// the original untouched, so every virtual_start in the map handed to
+/// the kernel was still zero, efi_is_in_map could never match, and the
+/// kernel reported exactly what it saw: "EFI runtime services table has
+/// an invalid pointer", MOD_LOAD efirt error 6. The firmware call
+/// succeeded; the metadata was wrong.
 pub fn prepareVirtualMap(map: MemMap) VirtualMap {
     var out: usize = 0;
     var truncated = false;
@@ -349,10 +379,17 @@ pub fn prepareVirtualMap(map: MemMap) VirtualMap {
     var i: usize = 0;
     while (i < map.count) : (i += 1) {
         const off = i * map.descriptor_size;
-        const desc: *const uefi.tables.MemoryDescriptor =
+        const desc: *uefi.tables.MemoryDescriptor =
             @ptrCast(@alignCast(&map.buffer[off]));
 
         if (!desc.attribute.memory_runtime) continue;
+
+        // Identity-map IN PLACE, in the original map. This is the line
+        // the kernel's efi_is_in_map() depends on: the map we pass as
+        // MODINFOMD_EFI_MAP must carry virtual_start for its runtime
+        // descriptors, or the kernel cannot locate GetTime and refuses
+        // to attach efirt.
+        desc.virtual_start = desc.physical_start;
 
         if (out >= MAX_RT_DESCRIPTORS or
             (out + 1) * map.descriptor_size > vmap_buf.len)
@@ -361,18 +398,15 @@ pub fn prepareVirtualMap(map: MemMap) VirtualMap {
             break;
         }
 
+        // Then copy the (now identity-mapped) descriptor into the
+        // compacted buffer the firmware call takes. The firmware wants
+        // only the runtime subset; the kernel wants the whole map with
+        // virtual_start filled in. Both are now satisfied.
         const dst_off = out * map.descriptor_size;
         @memcpy(
             vmap_buf[dst_off .. dst_off + map.descriptor_size],
             map.buffer[off .. off + map.descriptor_size],
         );
-
-        // Identity map, exactly as the reference does: the kernel's
-        // 1:1 map means the runtime services keep working at their
-        // physical addresses.
-        const dst: *uefi.tables.MemoryDescriptor =
-            @ptrCast(@alignCast(&vmap_buf[dst_off]));
-        dst.virtual_start = dst.physical_start;
 
         out += 1;
     }
@@ -525,8 +559,6 @@ test "prepareVirtualMap: copies only runtime descriptors, identity-mapped" {
     try testing.expectEqual(dsize, vm.descriptor_size);
 
     // Each copied descriptor is identity-mapped: virtual == physical.
-    // If this regresses, the firmware relocates its runtime services to
-    // an address the kernel's 1:1 map does not cover.
     const expect_phys = [_]u64{ 0x2000, 0x4000, 0x5000 };
     for (expect_phys, 0..) |phys, i| {
         const d: *const uefi.tables.MemoryDescriptor =
@@ -534,6 +566,30 @@ test "prepareVirtualMap: copies only runtime descriptors, identity-mapped" {
         try testing.expectEqual(phys, d.physical_start);
         try testing.expectEqual(phys, d.virtual_start);
         try testing.expectEqual(true, d.attribute.memory_runtime);
+    }
+
+    // THE ONE THAT MATTERS. The ORIGINAL map must also carry
+    // virtual_start for its runtime descriptors, because that is the
+    // buffer the chain copies to the kernel as MODINFOMD_EFI_MAP, and
+    // the kernel's efi_is_in_map() looks for the GetTime pointer inside
+    // md_virt. The first cut of F9 mapped only the copy, the kernel saw
+    // zeros, and efirt refused to attach with "invalid pointer".
+    for ([_]struct { i: usize, p: u64, rt: bool }{
+        .{ .i = 0, .p = 0x1000, .rt = false },
+        .{ .i = 1, .p = 0x2000, .rt = true },
+        .{ .i = 2, .p = 0x3000, .rt = false },
+        .{ .i = 3, .p = 0x4000, .rt = true },
+        .{ .i = 4, .p = 0x5000, .rt = true },
+    }) |e| {
+        const d: *const uefi.tables.MemoryDescriptor =
+            @ptrCast(@alignCast(&buf[e.i * dsize]));
+        if (e.rt) {
+            try testing.expectEqual(e.p, d.virtual_start);
+        } else {
+            // Non-runtime descriptors are left alone, as the reference
+            // leaves them: only EFI_MEMORY_RUNTIME regions are mapped.
+            try testing.expectEqual(@as(u64, 0xdead_beef), d.virtual_start);
+        }
     }
 }
 
