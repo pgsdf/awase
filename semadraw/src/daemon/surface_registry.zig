@@ -423,33 +423,37 @@ pub const SurfaceRegistry = struct {
     // cursor.
 
     /// Set surface visibility. Transactional (ADR 0022).
+    ///
+    /// Stages only. Not visible to composition until commit promotes it.
     pub fn setVisible(self: *SurfaceRegistry, id: protocol.SurfaceId, visible: bool) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
         surface.pending.visible = visible;
-        if (surface.current.visible != visible) {
-            surface.current.visible = visible; // D-12.2 removes this line
-            self.order_dirty = true; // Visibility affects composition order
-        }
     }
 
     /// Set surface z-order. Transactional (ADR 0022).
+    ///
+    /// Stages only. order_dirty is NOT set here: staging changes
+    /// nothing about composition, so dirtying the order would force a
+    /// rebuild that reads current state and finds it unchanged. The
+    /// order is dirtied at promotion, where the composition-visible
+    /// value actually changes.
     pub fn setZOrder(self: *SurfaceRegistry, id: protocol.SurfaceId, z_order: i32) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
         surface.pending.z_order = z_order;
-        surface.current.z_order = z_order; // D-12.2 removes this line
-        self.order_dirty = true;
     }
 
     /// Set surface position. Transactional (ADR 0022).
+    ///
+    /// Stages only. Not visible to composition until commit promotes it.
     pub fn setPosition(self: *SurfaceRegistry, id: protocol.SurfaceId, x: f32, y: f32) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
         surface.pending.position_x = x;
         surface.pending.position_y = y;
-        surface.current.position_x = x; // D-12.2 removes this line
-        surface.current.position_y = y; // D-12.2 removes this line
     }
 
     /// Set surface logical dimensions. Transactional (ADR 0022).
+    ///
+    /// Stages only. Not visible to composition until commit promotes it.
     ///
     /// Historically this existed only for the AD-21 SET_CURSOR
     /// sprite-replace path, its own comment noting it was there for
@@ -462,8 +466,6 @@ pub const SurfaceRegistry = struct {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
         surface.pending.logical_width = width;
         surface.pending.logical_height = height;
-        surface.current.logical_width = width; // D-12.2 removes this line
-        surface.current.logical_height = height; // D-12.2 removes this line
     }
 
     // ---- Daemon-internal cursor paths (NOT transactional) ----------
@@ -665,6 +667,17 @@ test "SurfaceRegistry surface carries owner_uid" {
     try std.testing.expectEqual(@as(protocol.ClientId, 2), s2.owner);
 }
 
+// ADR 0022: this test previously asserted the pre-transaction contract,
+// that setZOrder and setVisible reached composition immediately. That
+// contract is deliberately gone: the setters stage, and commit promotes.
+// The test now expresses the new contract by committing.
+//
+// SEQUENCING: this test FAILS at D-12.2 and PASSES at D-12.3. At D-12.2
+// the setters stage but commit does not yet promote, so composition is
+// empty and the length assertion below fails. That failure is the
+// intended, asserted evidence that the promotion boundary is the missing
+// half, and it is why D-12.2 and D-12.3 are applied as one series and
+// D-12.2 is not deployed alone.
 test "SurfaceRegistry z-order sorting" {
     var registry = SurfaceRegistry.init(std.testing.allocator);
     defer registry.deinit();
@@ -680,6 +693,11 @@ test "SurfaceRegistry z-order sorting" {
     try registry.setVisible(s1.id, true);
     try registry.setVisible(s2.id, true);
     try registry.setVisible(s3.id, true);
+
+    // Staged state reaches composition only through commit.
+    _ = try registry.commit(s1.id);
+    _ = try registry.commit(s2.id);
+    _ = try registry.commit(s3.id);
 
     const order = try registry.getCompositionOrder();
     try std.testing.expectEqual(@as(usize, 3), order.len);
@@ -697,4 +715,79 @@ test "SurfaceRegistry z-order sorting" {
 
 fn closeFd(fd: posix.fd_t) void {
     _ = posix.system.close(fd);
+}
+
+// D-12.2 (ADR 0022): the ownership boundary.
+//
+// This test does not assert that the system works. It asserts that
+// client-facing setters no longer bypass the transaction boundary:
+// they stage into pending and leave current, which is what composition
+// reads, untouched. Until D-12.3 adds promotion, staged state is
+// therefore invisible by design, and this test is what makes that an
+// asserted model property rather than an accidental failure mode.
+test "SurfaceRegistry: client setters stage into pending, never current" {
+    const allocator = std.testing.allocator;
+    var registry = SurfaceRegistry.init(allocator);
+    defer registry.deinit();
+
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+    const id = surface.id;
+
+    // Creation geometry is current AND pending: both copies start
+    // identical and nothing is staged.
+    try std.testing.expectEqual(@as(f32, 800), surface.current.logical_width);
+    try std.testing.expectEqual(@as(f32, 800), surface.pending.logical_width);
+    try std.testing.expectEqual(false, surface.current.visible);
+
+    // Every transactional setter stages, and changes nothing current.
+    try registry.setVisible(id, true);
+    try std.testing.expectEqual(true, surface.pending.visible);
+    try std.testing.expectEqual(false, surface.current.visible);
+
+    try registry.setZOrder(id, 42);
+    try std.testing.expectEqual(@as(i32, 42), surface.pending.z_order);
+    try std.testing.expectEqual(@as(i32, 0), surface.current.z_order);
+
+    try registry.setPosition(id, 100, 200);
+    try std.testing.expectEqual(@as(f32, 100), surface.pending.position_x);
+    try std.testing.expectEqual(@as(f32, 200), surface.pending.position_y);
+    try std.testing.expectEqual(@as(f32, 0), surface.current.position_x);
+    try std.testing.expectEqual(@as(f32, 0), surface.current.position_y);
+
+    try registry.setLogicalSize(id, 1024, 768);
+    try std.testing.expectEqual(@as(f32, 1024), surface.pending.logical_width);
+    try std.testing.expectEqual(@as(f32, 768), surface.pending.logical_height);
+    try std.testing.expectEqual(@as(f32, 800), surface.current.logical_width);
+    try std.testing.expectEqual(@as(f32, 600), surface.current.logical_height);
+
+    // And composition, which reads current only, must not see any of
+    // it: the surface staged visible=true but is still not composited.
+    const order = try registry.getCompositionOrder();
+    try std.testing.expectEqual(@as(usize, 0), order.len);
+}
+
+// D-12.2 (ADR 0022 cursor boundary): the carve-out holds.
+//
+// The cursor is compositor-owned pointer state, not client-rendered
+// configuration, so its daemon-internal paths write current directly
+// and are unaffected by the staging change. If this regresses, the
+// cursor stops moving.
+test "SurfaceRegistry: cursor immediate paths write current, bypassing staging" {
+    const allocator = std.testing.allocator;
+    var registry = SurfaceRegistry.init(allocator);
+    defer registry.deinit();
+
+    const cursor = try registry.createSurface(protocol.CLIENT_ID_DAEMON, 0, 24, 24);
+    const id = cursor.id;
+
+    try registry.setVisibleCursorImmediate(id, true);
+    try std.testing.expectEqual(true, cursor.current.visible);
+
+    try registry.setPositionCursorImmediate(id, 300, 400);
+    try std.testing.expectEqual(@as(f32, 300), cursor.current.position_x);
+    try std.testing.expectEqual(@as(f32, 400), cursor.current.position_y);
+
+    // The cursor IS composited, with no commit anywhere.
+    const order = try registry.getCompositionOrder();
+    try std.testing.expectEqual(@as(usize, 1), order.len);
 }
