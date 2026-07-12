@@ -860,20 +860,14 @@ carries no Forth, no Lua, no beastie, and no menu, because none of it
 was ever written into it. That is the architecturally correct answer to
 "remove the FreeBSD boot UI", and it is what completing F7 buys.
 
-#### F9 erratum: SetVirtualAddressMap must be the LAST firmware call
+#### F9 erratum: the ordering rule is real; the regression it was blamed for was not
 
-The first implementation of F9 regressed the transfer. In emulation, on
-a path that had previously booted to the mountroot prompt, every kernel
-landmark went dark: entry not reached, transfer failed. The NVRAM
-evidence showed the vmap call itself had SUCCEEDED
-(`MARK_VMAP_SET` was present, so the firmware accepted the identity map,
-the descriptor size and version were right, and the walk was correct)
-and then the loader died before the kernel.
+Two things happened here and they must not be conflated, because the
+ledger briefly recorded the second as fact when it was not.
 
-The cause was the marker, not the map.
-
+**The ordering rule is real and the code is correct.**
 `recordVerdict()` is `rs.setVariable()`, a RUNTIME service. The first
-cut recorded the outcome AFTER the vmap call:
+cut of F9 recorded its outcome AFTER the vmap call:
 
     ExitBootServices
     recordVerdict("MARK_EXITED_BOOTSERVICES")   legal
@@ -884,21 +878,9 @@ cut recorded the outcome AFTER the vmap call:
 The UEFI spec requires that after SetVirtualAddressMap, runtime services
 be invoked through the NEW virtual mapping. The loader still holds the
 old `system_table.runtime_services` pointer, so calling through it is
-undefined. The write appeared to land (we read the marker back) but the
-firmware state it touched was no longer valid, and the transfer did not
-survive it.
-
-The reference does not make this mistake, and re-reading it makes the
-rule obvious: after efi_do_vmap (bootinfo.c:313) the loader only writes
-MEMORY (file_addmetadata) and then jumps. It makes no further firmware
-call. SetVirtualAddressMap is a one-way door.
-
-Corrected: the marker is written BEFORE the call
-(`MARK_VMAP_ATTEMPT`), recording intent rather than outcome, and
-nothing but the jump follows. The outcome remains knowable, because the
-kernel's own efirt attach is the authoritative report on whether the
-runtime services ended up usable: that is the error-6 signal this whole
-finding started from.
+undefined. The reference does not do this: after efi_do_vmap
+(bootinfo.c:313) it writes only MEMORY (file_addmetadata) and jumps,
+making no further firmware call.
 
 The rule, for whoever touches this next:
 
@@ -906,7 +888,59 @@ The rule, for whoever touches this next:
   touch memory and nothing else. No NVRAM write, no console output, no
   runtime service of any kind.
 
-This is also a small vindication of the emulation-first discipline.
-This bug would have presented on metal as exactly what F7 has always
-presented as: a machine that does not boot and gives no reason. It cost
-a rebuild instead.
+The marker is therefore written BEFORE the call
+(`MARK_VMAP_ATTEMPT`), recording intent rather than outcome. That
+change stands on the spec and on the reference, independently of any
+observation.
+
+**The "regression" it was blamed for did not exist.** An earlier
+revision of this section claimed the post-vmap marker had broken the
+transfer, citing an f7probe run in which every kernel landmark was
+absent. That run was invalid: `gdb` was not installed on the machine,
+so the probe could not attach a debugger and reported every landmark as
+not-reached. The all-absent column was an artifact of a missing tool,
+not evidence of a fault. A second run, with the same defect, was read
+the same way.
+
+With gdb present, the probe reports the transfer intact and unchanged
+by F9: cr3 switched, next fetch OK, entry reached, and the kernel runs
+through cninit, mi_startup, vfs_mountroot and start_init to the
+mountroot prompt with the FreeBSD banner on serial. SetVirtualAddressMap
+breaks nothing.
+
+The lesson is the one this campaign keeps teaching and which was
+ignored here: read the evidence before explaining it. A causal story
+was constructed for an observation that was never real, and it was
+written into this ledger as fact. The correction is recorded rather
+than quietly removed, because a ledger that hides its own errors is
+worth less than one that does not.
+
+
+#### F9 status after the first valid probe run (2026-07-12)
+
+With gdb installed and the probe therefore able to attach:
+
+    Transfer:     cr3 switched, next fetch OK, entry reached
+    Bring-up:     amd64_loadaddr, native_parse_preload_data, getmemsize,
+                  init_param1, cninit, mi_startup, vfs_mountroot,
+                  start_init all reached
+    Serial:       FreeBSD copyright banner present; reaches the
+                  mountroot> prompt
+    NVRAM:        MARK_MAP_CAPTURED, MARK_CHAIN_REBUILT,
+                  MARK_EXITED_BOOTSERVICES, MARK_VMAP_ATTEMPT
+
+Established: F9 does not break the transfer. SetVirtualAddressMap is
+called, the loader jumps, and the kernel boots exactly as it did before
+F9. The regression scare was a tooling artifact (see the erratum above).
+
+Not yet established, and the reason F9 exists: whether
+`MOD_LOAD efirt error 6` is gone from the serial log. That is F9's
+entire claim, and it is a single grep away. Until it is checked, F9 is
+implemented and harmless but unproven.
+
+    grep -i efirt /tmp/f7probe-serial.log
+
+If the error is gone, the efirt.c reading was right and a real defect in
+the handoff has been corrected: the first of the two ADR 0005 Decision 6
+requires. If it persists, F9's mechanism is wrong, the hypothesis dies
+cheaply, and the correction cost nothing but a rebuild.
