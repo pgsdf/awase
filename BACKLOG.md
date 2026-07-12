@@ -180,7 +180,74 @@ Management` and the semadraw D-10 and D-11 entries below.
 
 ---
 
-## Current theme: make DRM strictly optional
+## Current theme: prove the substrate before building the desktop
+
+Adopted 2026-07-12, superseding NDE-first sequencing.
+
+**Priority order: semadraw, then semadraw-term, then NDE.**
+
+The objective is not to get a desktop running as quickly as possible.
+It is to produce a substrate demonstrably capable of hosting real
+applications, so that NDE can later be designed against a mature,
+stable foundation rather than evolving the substrate and the desktop
+architecture simultaneously.
+
+**Why the reordering.** NDE-1 was the obvious next target: its
+substrate blocker closed with D-7 (2026-06-26) and Milestone 1 basic
+window policy (focus, raise, close) is fully provided. But scoping the
+Surface Manager ADR surfaced a three-way conflict in the NDE
+specifications, and building on conflicting specs would bake the
+conflict into code and surface it later as rework:
+
+- `semadraw/docs/WM_CLIENT_CONTRACT.md` (2026-06-08) assumes
+  NDE-tracked, compositor-invisible surface roles, and decorations as
+  NDE overlay surfaces positioned with set_position.
+- The ratified semantic design (`NDE-SEMANTIC-DESIGN.md`, Revision 2,
+  ratified 2026-06-13) requires the opposite: roles are
+  protocol-visible, declared at create or adopt time, with the window
+  manager's stacking, focus, and decoration policy keying on the role
+  ("replacing the NDE-tracked labels of the current plan"), and chrome
+  rendered semantically from the surface's tree.
+- NDE's own `DESIGN.md` section 3.2 and `docs/window-model.md` predate
+  the ratification and still describe the pre-semantic model. The
+  semantic design itself records the charter and DESIGN.md revision as
+  owed.
+
+Writing the Surface Manager ADR would have meant silently choosing
+between two ratified positions. Instead, NDE is deferred until it can
+be designed against a single authoritative architecture.
+
+**semadraw is now the primary product.** Focus: protocol correctness,
+rendering, focus and input, lifecycle, synchronization, the privilege
+model, client API quality, determinism and robustness. Where protocol
+deficiencies are found, fix semadraw rather than working around them
+in clients.
+
+**semadraw-term is the reference client**, and its purpose is to
+exercise the substrate hard enough to reveal missing primitives and
+awkward APIs: keyboard input, rendering, resizing, scrolling, process
+lifecycle, selection, performance, API ergonomics, clipboard later.
+When semadraw-term needs something, first ask whether the substrate
+should provide it generally.
+
+**Architectural principle.** Do not make desktop-policy decisions in
+semadraw, and do not compensate for substrate limitations in NDE. The
+substrate should become strong enough that NDE is simply one consumer
+of it.
+
+**Decision heuristic.** If multiple applications would benefit, it
+probably belongs in semadraw. If it only benefits terminal behavior,
+it belongs in semadraw-term. If it is desktop policy, shell behavior,
+or window-management policy, defer it to NDE.
+
+**When NDE resumes**: the semantic architecture is the starting point;
+the stale design documents are reconciled first; and the Surface
+Manager ADR is written against a single authoritative architecture
+rather than conflicting historical documents.
+
+---
+
+## Standing goal: make DRM strictly optional
 
 The goal is that the DRM-less swap path remains the unbreakable default
 and that DRM/KMS support is a strictly optional add-on. A user running
@@ -799,6 +866,29 @@ semadraw respectively.
 NDE Milestone 0 (vocabulary freeze, charter, design specification,
 repository skeleton) is complete. The items below correspond to NDE
 Milestone 1 (substrate validation) and beyond.
+
+**DEFERRED 2026-07-12. NDE is not the current implementation target.**
+See "Current theme: prove the substrate before building the desktop".
+Priority is now semadraw, then semadraw-term, then NDE. This is not
+because NDE is blocked by the substrate: D-7 closed the last blocker
+on 2026-06-26 and NDE-1 Milestone 1 (focus, raise, close) is fully
+provided today. It is deferred because the NDE specifications
+conflict with each other. `WM_CLIENT_CONTRACT.md` (2026-06-08) and
+NDE's `DESIGN.md` section 3.2 and `docs/window-model.md` describe
+NDE-tracked, compositor-invisible surface roles; the ratified semantic
+design (Revision 2, 2026-06-13) requires protocol-visible roles and
+semantically rendered chrome, explicitly "replacing the NDE-tracked
+labels of the current plan", and records the charter and DESIGN.md
+revision as owed. Writing the Surface Manager ADR would mean silently
+choosing between two ratified positions.
+
+Before NDE resumes: reconcile the stale documents to the ratified
+semantic architecture, then write the Surface Manager ADR against a
+single authoritative architecture. The items below are retained as
+written but must be re-scoped against the semantic contracts (C1
+surface roles in particular) before being started; several of their
+assumptions, notably NDE-tracked role labels and overlay-surface
+decorations, are superseded.
 
 **Relationship to LT-1 and LT-2.** NDE is usable today without
 the long-term retained-layer items; it can manage semadraw-term

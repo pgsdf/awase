@@ -1,13 +1,36 @@
 # semadraw window-manager-client contract (NDE-1 substrate validation)
 
-Status (updated 2026-07-12). NDE-1 has NO remaining substrate
-blocker. The original Gap 1 (privileged set-focus) was closed by D-7
-on 2026-06-26 under ADR 0011. Focus, raise, and close, the whole of
-NDE ROADMAP Milestone 1 basic window policy, are all provided today.
-The remaining gaps (D-8 grabs, D-9 subsurfaces) serve NDE Milestone 2
-and do not block NDE-1. Earlier revisions of this document listed
-Gap 1 as open and said keyboard focus was not driven at all; that is
-no longer true and the affected sections are corrected below.
+Status (updated 2026-07-12). Two things, and the second matters more.
+
+First: NDE-1 has NO remaining substrate blocker. The original Gap 1
+(privileged set-focus) was closed by D-7 on 2026-06-26 under ADR 0011.
+Focus, raise, and close, the whole of NDE ROADMAP Milestone 1 basic
+window policy, are all provided today. The remaining gaps (D-8 grabs,
+D-9 subsurfaces) serve NDE Milestone 2 and do not block NDE-1.
+Earlier revisions of this document listed Gap 1 as open and said
+keyboard focus was not driven at all; that is no longer true and the
+affected sections are corrected below.
+
+Second, and more important: PARTS OF THIS DOCUMENT ARE SUPERSEDED.
+It was written 2026-06-08, five days before the NDE semantic design
+was ratified (Revision 2, 2026-06-13). That design's C1 contract makes
+surface roles PROTOCOL-VISIBLE, declared at create or adopt time, with
+the window manager's stacking, focus, and decoration policy keying on
+the role, "replacing the NDE-tracked labels of the current plan". It
+also makes server-side decoration semantic: NDE renders chrome from
+the surface's tree and applications never draw titlebars. This
+document's two contrary claims, that toplevel-versus-popup roles are
+NDE-tracked with no protocol change, and that decorations are NDE
+overlay surfaces positioned with set_position, do not survive that
+ratification.
+
+Consequently NDE is DEFERRED (2026-07-12) and this document must not
+be used to scope a Surface Manager. Priority is semadraw, then
+semadraw-term, then NDE. What remains reliable here is the account of
+what the substrate PROVIDES today (the privileged-client model,
+stacking, geometry, visibility, input delivery, and set_focus); what
+is unreliable is its account of what NDE should BUILD on top. The
+substrate-provides sections are the reason this file is retained.
 
 Purpose. This documents the contract semadraw offers a privileged
 window-manager client, and validates it against what NDE-1's Surface
