@@ -3281,3 +3281,60 @@ plan: specified as a self-contained, parameterized section of
 BOOT-ARTIFACT-STORE at L3a (the sole current consumer);
 standalone extraction evaluated only after an L3a bench campaign
 has exercised publications, power events, and GC against it.
+
+### `[ ]` AD-63: unify elevation on mdo, and make root-run scripts elevation-agnostic  *(Open 2026-07-12, Small, P3; blocked on the SUDO_UID coupling below, do not sweep the docs first)*
+
+INSTALL.md tells the operator that mdo is the elevation mechanism
+and that install.sh will not run under sudo, then has them type
+sudo for every other command in the document. The mixed message is
+the visible half; the useful half is that sudo is a package on
+FreeBSD, not base, while mdo comes with mac_do, which Step 0 already
+provisions. A fresh machine that has not installed sudo cannot run
+the document's own `sudo pkg install ...` line, so the sudo
+dependency is latent breakage in a first-install path that otherwise
+needs nothing but base plus mac_do.
+
+Replacing sudo with mdo in the document is syntactically safe on its
+own: install.sh's own elevation helper is
+`priv() { "$PRIV" "$@"; }` with `PRIV="${PRIV:-mdo}"`, so
+`mdo cmd args` is invoked exactly the way `sudo cmd args` is; the
+mac_do rule (gid=0>uid=0,gid=*,+gid=*) grants a wheel member full
+root; Step 0 already establishes wheel membership; and shell
+expansions like `$(id -u)` resolve in the caller's shell before mdo
+runs. Two references must stay sudo regardless: the
+`PRIV=sudo sh install.sh` alternative, which documents the fallback
+for operators who do not want mac_do.
+
+**The hazard, and why this is not a documentation sweep.** Exactly
+one script depends on sudo's environment:
+pgsd-kernel/pgsd-kernel-build.sh phase_provision reads
+`owner_uid="${SUDO_UID:-0}"` to chown the freshly cloned /usr/src
+back to the invoking user. install.sh never has this problem,
+because it runs unprivileged and elevates individual commands, so
+`$(id -un)` inside it is always the real user. phase_provision is
+different: it runs wholly as root, cannot know who invoked it, and
+leans on SUDO_UID. Under mdo that variable is unset, the fallback
+makes owner_uid 0, and the chown SUCCEEDS, reporting
+`[PASS] cloned and chowned /usr/src to uid 0`. The tree is silently
+owned by root instead of the operator, and the consequence surfaces
+later and elsewhere (git operations in /usr/src wanting root, the
+module build scripts copying sources in). A silent wrong ownership
+that reports success is worse than a loud failure, which is exactly
+why a find-and-replace across INSTALL.md would create breakage.
+
+Correct order of work:
+
+1. Make phase_provision elevation-agnostic: determine the real
+   invoking user without assuming sudo. Options to weigh: an
+   explicit owner argument or PGSD_OWNER env var; read SUDO_UID but
+   fall back to stat on the repo checkout (which the operator owns)
+   rather than to 0; or restructure so provision runs unprivileged
+   and elevates only the steps needing root, matching install.sh's
+   model, which removes the question entirely and is probably the
+   right answer.
+2. Audit for any other elevation-environment assumptions. A grep for
+   SUDO_ found only this one on 2026-07-12; re-check at the time.
+3. Only then sweep INSTALL.md sudo -> mdo, keeping the two
+   PRIV=sudo alternative references.
+
+Until step 1 is done, INSTALL.md keeps sudo, which works.
