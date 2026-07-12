@@ -1241,3 +1241,45 @@ They were diagnostics, and they were being written in the one window
 where a firmware call is least defensible. The evidence they carried is
 now covered by MARK_EXITED_BOOTSERVICES (which partitions the fault
 either side of the exit) and by the fail-closed abort marker.
+
+#### F8 VERIFIED, and all three defects hold together (2026-07-12)
+
+Markers:
+
+    BOOT_ATTEMPT ...
+    MARK_EXITED_BOOTSERVICES
+    MARK_VMAP_ATTEMPT
+
+MARK_MAP_CAPTURED and MARK_CHAIN_REBUILT are gone: the two SetVariable
+calls are out of the exit window. The transfer is intact (cr3 switched,
+entry reached, kernel to the mountroot prompt), and:
+
+    efirtc0: <EFI Realtime Clock>
+    efirtc0: registered as a time-of-day clock, resolution 1.000000s
+
+F9 still holds after the F8 restructure. That was the check worth
+making: the F9 fix depends on prepareVirtualMap running before
+buildChainFull reads the map, and F8 moved both. They compose.
+
+**All three known EFI-handoff defects are now corrected and verified in
+emulation:**
+
+    F7  boot environment (console binding, ACPI RSDP)
+    F9  EFI runtime map (virtual_start, SetVirtualAddressMap)
+    F8  exit window (no firmware calls between GetMemoryMap and exit)
+
+Each identified against FreeBSD's own loader.efi, the reference that
+boots this bench today. None guessed.
+
+**ADR 0005 Decision 7 (2026-07-12)** records this as the amendment
+Decision 6 required, and unblocks metal arming under the Decision 4
+one-cycle protocol. It is deliberately not a recommendation: emulation
+success does not imply metal success (Decision 2), and F8's fix repairs
+a hazard OVMF does not exercise at all, so its value cannot be
+demonstrated in emulation. A third reinstall remains a possible outcome
+and the operator should accept that before arming.
+
+If the transfer fails on metal again with all three defects corrected,
+that is a significant finding in itself, and the campaign should not
+retry a fourth time without a new, specific, source-identified defect.
+The standard does not relax because we have run out of ideas.

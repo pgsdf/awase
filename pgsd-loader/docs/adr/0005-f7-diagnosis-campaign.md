@@ -171,6 +171,102 @@ header saying so; it is kept for reference, not use. Reversing this
 decision requires a new ADR amendment that first states what about
 the metal handoff has changed to justify another physical attempt.
 
+**Decision 7: metal arming may be reconsidered (2026-07-12).**
+
+Decision 6 retired metal arming and required, for any reversal, an
+amendment that first states WHAT ABOUT THE METAL HANDOFF HAS CHANGED.
+This is that statement.
+
+Three defects in the EFI handoff have been identified against the
+working reference (FreeBSD's own loader.efi, which boots this bench
+today), corrected, and verified in emulation. Each was a real
+divergence from what the reference does, not a guess:
+
+**F7: the boot environment was incomplete.** The loader published no
+serial console binding and no ACPI RSDP. The kernel ran cninit with no
+UART and produced no output, then panicked with "A valid RSDP was not
+found" because UEFI kernels get the RSDP only from the acpi.rsdp kenv
+(sys/x86/acpica/OsdEnvironment.c). Corrected: the loader now publishes
+console=comconsole, comconsole_speed, hw.uart.console, and an
+acpi.rsdp discovered by walking the EFI configuration tables, as
+stand/efi/loader/main.c does. Verified: the kernel boots to the
+mountroot prompt with the FreeBSD banner on serial.
+
+**F9: the EFI runtime map was never given to the kernel.** The loader
+never called SetVirtualAddressMap, and more consequentially never wrote
+virtual_start into the memory map it hands the kernel as
+MODINFOMD_EFI_MAP. The kernel's efi_is_in_map() (sys/dev/efidev/efirt.c)
+locates the runtime services by testing the GetTime pointer against each
+descriptor's md_virt, the VIRTUAL start; ours were all zero, so it could
+not find them and refused to attach efirt with "EFI runtime services
+table has an invalid pointer" (ENXIO, the MOD_LOAD error 6 we had seen
+and dismissed as cosmetic for weeks). The reference's efi_do_vmap()
+sets desc->VirtualStart = desc->PhysicalStart on the very buffer it
+later passes to file_addmetadata; that line looks incidental and is the
+entire mechanism. Corrected: the loader identity-maps the runtime
+descriptors in place, before the chain reads the map, and calls
+SetVirtualAddressMap after ExitBootServices as the reference does.
+Verified: efirt no longer merely stops failing, it ATTACHES:
+"efirtc0: registered as a time-of-day clock". The kernel is
+successfully calling into EFI runtime services.
+
+**F8: the exit window contained firmware calls.** Between the
+successful GetMemoryMap and ExitBootServices, the loader made two
+SetVariable calls (NVRAM breadcrumbs) and copied the module chain into
+kernel staging. The reference does NOTHING in that window, by
+construction, and its retry loop carries a comment recording that
+firmware has been observed changing the memory map during
+ExitBootServices "probably because callbacks are allocating memory".
+SetVariable is exactly that class of call, and we were making it twice
+inside the window the defence protects. Corrected: the chain is built
+into a local buffer before the exit (memory only, the analogue of
+file_addmetadata), the window now contains no firmware call at all, and
+the copy into kernel staging happens after the exit, as md_copymodules
+does. Verified: transfer intact, all three fixes hold together.
+
+**What this does and does not establish.**
+
+It establishes that three specific, source-identified divergences from
+the working reference existed in our EFI handoff, and that they are
+gone. The artifact that would be armed today is materially different
+from the one that took the bench down twice: it publishes a complete
+boot environment, it hands the kernel a usable EFI runtime map, and it
+does not touch the firmware in the window the firmware is documented to
+be fragile in.
+
+It does NOT establish that the metal transfer will now boot. Decision 2
+of this ADR was right when it was written and is right now: emulation
+success does not imply metal success, and the twice-reproduced metal
+failure is the reason Decision 6 exists. F8's fix in particular is a
+correction to a hazard that OVMF does not exercise (OVMF tolerated our
+firmware calls in the exit window; Apple firmware may not), so its
+value cannot be demonstrated in emulation at all. That is an argument
+for the fix, and simultaneously an argument for humility about what the
+green emulation run proves.
+
+**Consequently, metal arming is UNBLOCKED but not recommended lightly.**
+The operator may arm the bench under the Decision 4 one-cycle protocol.
+Before doing so:
+
+  - deploy.sh must be exercised end-to-end against the mock efibootmgr
+    harness again, since it has not been run since it was deprecated;
+  - the bench must have a tested recovery path (the Option-key firmware
+    picker did not save us last time, and a FreeBSD USB installer with a
+    known-good ESP restore should be to hand);
+  - the operator should accept, before arming, that a third reinstall
+    remains a possible outcome.
+
+If the transfer fails on metal again with all three defects corrected,
+that is itself a significant finding and the campaign should not retry
+a fourth time without a new, specific, source-identified defect. The
+standard Decision 6 set does not relax because we have run out of
+ideas.
+
+deploy.sh's deprecation header is amended to reflect this decision
+rather than removed: the path is no longer retired, but it remains
+dangerous, and its guard should require the operator to acknowledge
+Decision 7 rather than Decision 6.
+
 ## Closure criteria
 
 1. Step 1 executed and its outcome (breadcrumb recovered,
@@ -215,3 +311,11 @@ the metal handoff has changed to justify another physical attempt.
   fault-identified branch. Metal arming is retired; deploy.sh is
   deprecated as an arming path and kept for reference only. Remaining
   handoff-difference work moves to emulation and source.
+- 2026-07-12: Decision 7 added. Three source-identified defects in the
+  EFI handoff (F7 boot environment, F9 EFI runtime map, F8 firmware
+  calls in the exit window) corrected against the reference loader and
+  verified in emulation, with efirt now attaching. Metal arming is
+  unblocked under the Decision 4 one-cycle protocol, with the explicit
+  caveat that emulation cannot demonstrate F8's value (OVMF does not
+  exercise the hazard it fixes) and that a third reinstall remains a
+  possible outcome.

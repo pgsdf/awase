@@ -1,22 +1,37 @@
 #!/bin/sh
 # ======================================================================
-# DEPRECATED. DO NOT USE TO ARM PHYSICAL HARDWARE.
+# DANGEROUS. ARMS PHYSICAL HARDWARE. READ ADR 0005 DECISION 7 FIRST.
 #
-# This deployment path was retired (ADR 0005 Decision 6, 2026-07-11)
-# after repeated reproducible F7 failures on physical hardware: the
-# transfer that boots to the mountroot prompt in emulation does not
-# boot on this bench's Apple firmware, and each metal arming attempt
-# required a full FreeBSD reinstall to recover. It is retained for
-# historical and reference purposes only.
+# This path was retired by Decision 6 (2026-07-11) after the transfer
+# that booted in emulation failed twice on this bench's Apple firmware,
+# each attempt costing a full FreeBSD reinstall.
 #
-# Re-arming the bench to re-confirm a twice-reproduced failure has no
-# diagnostic value and a standing reinstall cost. Reversing this
-# requires a new ADR 0005 amendment that first states what about the
-# metal EFI handoff has changed to justify another physical attempt.
-# The remaining F7 work (why the EFI handoff differs from QEMU: EFI
-# runtime mapping, SetVirtualAddressMap, the memory-map handoff
-# diffed against the stock loader.efi) belongs in emulation and
-# source analysis, where the bench is never at risk.
+# Decision 7 (2026-07-12) unblocks it. Three source-identified defects
+# in the EFI handoff have since been found against the working
+# reference (FreeBSD's own loader.efi), corrected, and verified in
+# emulation:
+#
+#   F7  the boot environment was incomplete: no serial console binding,
+#       no ACPI RSDP. Now published.
+#   F9  the EFI runtime map was never given to the kernel: virtual_start
+#       was zero in the map we passed, so the kernel could not locate
+#       the runtime services and refused to attach efirt. Now
+#       identity-mapped in place, and SetVirtualAddressMap is called.
+#       efirt now attaches: "efirtc0: registered as a time-of-day clock".
+#   F8  the window between GetMemoryMap and ExitBootServices contained
+#       two SetVariable calls. The reference keeps that window empty by
+#       construction, because firmware has been observed changing the
+#       memory map during ExitBootServices. Now empty.
+#
+# The artifact is therefore materially different from the one that
+# bricked the bench. It is NOT proven on metal, and cannot be:
+# emulation success does not imply metal success (Decision 2), and F8's
+# fix in particular repairs a hazard OVMF does not even exercise.
+#
+# Arming remains a real risk of a third reinstall. Before using this:
+# exercise deploy.sh against the mock efibootmgr harness, have a
+# FreeBSD USB installer and a known-good ESP restore to hand, and
+# accept that outcome before you start.
 # ======================================================================
 #
 # deploy.sh: the sanctioned writer of the bench ESP and boot
@@ -120,12 +135,22 @@ cmd_arm_once() {
     # comment so the bench cannot be armed by habit or by skipping the
     # header. Overriding requires deliberately setting the variable
     # below, which is itself a signal to re-read Decision 6 first.
-    if [ "${PGSD_DEPLOY_OVERRIDE_RETIRED:-}" != "i-have-read-adr-0005-decision-6" ]; then
-        echo "deploy.sh: arm-once is RETIRED (ADR 0005 Decision 6)." >&2
-        echo "deploy.sh: metal arming was retired after F7 reproduced on" >&2
-        echo "deploy.sh: hardware twice, each needing a reinstall. This path" >&2
-        echo "deploy.sh: is kept for reference only. Do not arm the bench." >&2
-        echo "deploy.sh: remaining F7 work belongs in emulation and source." >&2
+    if [ "${PGSD_DEPLOY_ACK:-}" != "i-have-read-adr-0005-decision-7" ]; then
+        echo "deploy.sh: arm-once requires acknowledging ADR 0005 Decision 7." >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: Metal arming was retired (Decision 6) after the" >&2
+        echo "deploy.sh: transfer failed twice on this bench, each costing a" >&2
+        echo "deploy.sh: full FreeBSD reinstall. Decision 7 unblocks it: three" >&2
+        echo "deploy.sh: source-identified defects in the EFI handoff (F7 boot" >&2
+        echo "deploy.sh: environment, F9 EFI runtime map, F8 firmware calls in" >&2
+        echo "deploy.sh: the exit window) have been corrected against the" >&2
+        echo "deploy.sh: reference loader and verified in emulation." >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: This does NOT prove the metal transfer will boot." >&2
+        echo "deploy.sh: A third reinstall remains a possible outcome." >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: If you accept that, set:" >&2
+        echo "deploy.sh:   PGSD_DEPLOY_ACK=i-have-read-adr-0005-decision-7" >&2
         exit 1
     fi
     need_root arm-once
