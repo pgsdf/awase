@@ -183,17 +183,17 @@ const USAGE_TEXT =
     \\      attempts" message; the daemon does NOT exit on auth
     \\      failure.
     \\
-    \\      Stage 7 session picker: pressing Ctrl-S (or Tab) from the
-    \\      password field opens a four-option overlay (Terminal / X11 /
-    \\      Wayland / NDE). Only Terminal is enabled in v1; the
-    \\      others render as "(not installed)" and are
-    \\      uncrosseable by the cursor. Up/Down navigate enabled
-    \\      entries; Tab or Enter confirms; ESC cancels.
+    \\      Console navigation (ADR 0011): a persistent left rail names
+    \\      the views (Login, Session, Power) and the pane renders the
+    \\      active one. Up from the login fields reaches the rail;
+    \\      Up/Down move; Enter opens; ESC returns to the rail. Ctrl-S
+    \\      jumps straight to Session and Ctrl-Q to Power from anywhere.
     \\
-    \\      Ctrl-S is the reliable route. Bare Tab is not currently
-    \\      delivered to this daemon (Ctrl chords are), so Tab may
-    \\      not open the picker; it still works to confirm once the
-    \\      picker is open.
+    \\      Session offers Terminal / X11 / Wayland / NDE; only Terminal
+    \\      is enabled in v1 and the others render as "(not installed)".
+    \\
+    \\      Ctrl-S rather than Tab, because bare Tab is not currently
+    \\      delivered to this daemon while Ctrl chords are (audit SA-5).
     \\
     \\      On AUTH SUCCESS: resolves the selected session type to
     \\      a .session file (Terminal -> default.session), tears
@@ -964,25 +964,6 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
         var needs_redraw = true;
         var last_blink_phase: u64 = 0;
 
-        // Layout prototype selection, read once. PGSD_SESSIOND_LAYOUT=console
-        // renders the two-pane operating-system console instead of the
-        // centered login card. Presentation only: the same State is drawn
-        // and no behavior changes, so the flag is safe to flip on a bench
-        // and the prototype is deletable without touching anything else.
-        //
-        // compat.args.getenv, not std.posix.getenv: Zig 0.16 removed the
-        // latter, which is why the shim exists. Same pattern as
-        // semadrawd's UTF_PUMP_INSTRUMENT read.
-        const console_layout: bool = blk: {
-            const v = compat.args.getenv("PGSD_SESSIOND_LAYOUT") orelse break :blk false;
-            break :blk std.mem.eql(u8, v, "console");
-        };
-
-        // The layout selects BOTH the renderer and the action handler
-        // (ADR 0011), so the two can never disagree about which model is
-        // in force: a console screen is always driven by
-        // handleActionConsole, a centered screen always by handleAction.
-        state.console = console_layout;
 
         // Per-conversation status buffer. Auth attempts format
         // their failure messages here and hand a slice to
@@ -1034,15 +1015,7 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             // prototype renders the same State and does not change any
             // behavior, so this is a pure presentation switch and is
             // safe to flip on a running bench.
-            // Branch on the call rather than selecting a function value:
-            // Zig will not let a bare `fn` value depend on runtime control
-            // flow (it is comptime-only), and a *const fn pointer here
-            // would buy nothing over two call sites.
-            const draw_res = if (console_layout)
-                ui.drawConsole(&state, &encoder, blink_phase, surface_w_f, surface_h_f)
-            else
-                ui.draw(&state, &encoder, blink_phase, surface_w_f, surface_h_f);
-            draw_res catch |err| {
+            ui.draw(&state, &encoder, blink_phase, surface_w_f, surface_h_f) catch |err| {
                 std.debug.print("ERROR: ui.draw failed: {s}\n", .{@errorName(err)});
                 surface.destroy();
                 conn.disconnect();
@@ -1215,19 +1188,9 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             // down..." screen they can't escape. Clear power_action
             // and surface a status_message explaining what went wrong.
             // The user can try again or pick a different option.
-            // ADR 0011: the power view is reached differently in the two
-            // layouts. The centered layout opens a modal overlay and
-            // sets field = .power_menu; the console layout navigates to
-            // a peer view and sets view = .power, never touching field.
-            // Gate on whichever model is in force, or the console
-            // layout would arm power_action and have it silently
-            // ignored here, which presents as "power does nothing".
-            const in_power_ui = if (state.console)
-                state.view == .power
-            else
-                state.field == .power_menu;
-
-            if (state.power_action) |action| if (in_power_ui and
+            // ADR 0011: Power is a peer view, so the armed action is
+            // gated on the VIEW, not on a modal field.
+            if (state.power_action) |action| if (state.view == .power and
                 state.power_menu_phase != .in_progress)
             {
                 switch (action) {
@@ -1278,17 +1241,11 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
                         // pre_power_field, and continue.
                         state.power_action = null;
                         state.power_menu_phase = .choosing;
-                        // ADR 0011: return to the resting state of
-                        // whichever model is in force. The console
-                        // layout has no pre_power_field bookmark,
-                        // because Power is a peer view that covered
-                        // nothing: it returns to the rail.
-                        if (state.console) {
-                            state.focus = .rail;
-                            state.rail_cursor = .power;
-                        } else {
-                            state.field = state.pre_power_field;
-                        }
+                        // ADR 0011: Power covered nothing to get here,
+                        // so there is nothing to restore. Return to the
+                        // rail.
+                        state.focus = .rail;
+                        state.rail_cursor = .power;
                         if (rc != 0) {
                             state.status_message = std.fmt.bufPrint(
                                 &post_login_status_buf,

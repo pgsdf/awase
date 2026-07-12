@@ -2,7 +2,17 @@
 
 ## Status
 
-Proposed 2026-07-12. Not ratified. Awaiting operator review.
+**Accepted. Ratified 2026-07-12 (operator). Implemented, and the
+centered layout is RETIRED.**
+
+The ADR set itself a falsifiable test in section 2: `pre_power_field`
+and the modal-unwind special cases must be DELETED, not ported, or the
+peer-view model is not more natural than the modal one it replaces.
+
+It passed, and then the retirement of the centered layout removed the
+field from the codebase entirely. The net change was 121 lines added
+and 1,277 removed: the model paid for itself by deleting the machinery
+that existed only to unwind modality.
 
 Scoped deliberately: this ADR settles the STATE MODEL, which is
 architectural, and explicitly does not settle the header contents,
@@ -170,8 +180,12 @@ drops privilege per-session after auth.
 - Adding a future view (Diagnostics, Keyboard, Accessibility) becomes
   an addition rather than a redesign. That is the property being bought
   and the reason the model is worth the revision.
-- The centered layout can be retired once the console layout is
-  ratified, or kept as an alternative. Not decided here.
+- The centered layout was retired on ratification (2026-07-12). Its
+  renderer (draw, drawField, drawPicker, drawPowerMenu, legendFor), its
+  modal handlers (handleAction, handlePowerMenuInput,
+  handlePowerMenuChoosing, handlePowerMenuConfirming, openPowerMenu),
+  the PGSD_SESSIOND_LAYOUT flag, and pre_power_field are all gone.
+  Net: 121 lines added, 1,277 removed.
 
 ## 9. Bench requirements
 

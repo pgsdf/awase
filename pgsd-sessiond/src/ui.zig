@@ -6,49 +6,48 @@
 // power management via a Ctrl-Q-invoked menu, and orchestrates
 // the auth lifecycle in cooperation with main.runUiOnly.
 //
-// State machine (Stage 8):
+// Navigation model (ADR 0011, ratified; the modal layout was retired
+// 2026-07-12 and its overlay machinery deleted with it):
 //
-//   START
-//     | connection established, surface shown
-//     V
-//   IDENTIFY
-//     | keystrokes accumulate into username
-//     | Enter (non-empty username) -> PASSWORD
-//     | ESC clears username, stays in IDENTIFY
-//     | Tab is a no-op here
-//     | Ctrl-Q -> POWER_MENU (pre = IDENTIFY)
-//     V
-//   PASSWORD
-//     | keystrokes accumulate into password buffer (drawn as bullets)
-//     | Enter -> SUBMITTING
-//     | Tab -> PICKER (overlay; password buffer preserved)
-//     | ESC clears password (stays in PASSWORD)
-//     | Ctrl-Q -> POWER_MENU (pre = PASSWORD)
-//     V
-//   PICKER (overlay on top of PASSWORD)
-//     | Up/Down move picker_cursor among ENABLED session types,
-//     |   wrapping; disabled types are skipped.
-//     | Tab or Enter commits picker_cursor to selected_session
-//     |   and returns to PASSWORD.
-//     | ESC discards picker_cursor; returns to PASSWORD with
-//     |   selected_session unchanged.
-//     | Ctrl-Q -> closes picker, opens POWER_MENU (pre = PASSWORD)
-//     V
-//   POWER_MENU (overlay; reachable from IDENTIFY, PASSWORD, PICKER)
-//     | Sub-phase .choosing: Up/Down cycle through {Shutdown,
-//     |   Restart, Suspend}. Enter or S/R/Z selects.
-//     |   Shutdown/Restart advance to .confirming_*; Suspend arms
-//     |   state.power_action directly.
-//     |   ESC or Ctrl-Q returns to pre_power_field.
-//     | Sub-phase .confirming_shutdown / .confirming_restart:
-//     |   Y or Enter arms state.power_action.
-//     |   N or ESC returns to .choosing.
-//     |   Ctrl-Q closes the entire menu (returns to pre_power_field).
-//     | When state.power_action becomes non-null, main.runUiOnly
-//     | reads it and invokes the corresponding FreeBSD command.
-//     V
-//   SUBMITTING
-//     | main.runUiOnly sees this state and runs PAM auth.
+//   Two axes. VIEW is where you are; FOCUS is what has the keyboard.
+//
+//     view:  { login, session, power }   peers, not overlays
+//     focus: { rail, content }
+//
+//   RAIL focus
+//     | Up/Down move rail_cursor between views
+//     | Enter opens the selected view (focus -> content)
+//     | ESC returns focus to the current view's content
+//
+//   CONTENT focus, view = LOGIN
+//     | keystrokes fill username, then password
+//     | Enter: identify -> password -> submitting
+//     | ESC clears the current field (predates this ADR)
+//     | Up reaches the rail (ESC is taken)
+//
+//   CONTENT focus, view = SESSION
+//     | Up/Down move picker_cursor among ENABLED session types
+//     | Enter confirms into selected_session, returns to the rail
+//     | ESC returns to the rail, selection unchanged
+//
+//   CONTENT focus, view = POWER
+//     | Up/Down choose; Enter or S/R/Z selects
+//     | Shutdown and Restart advance to a CONFIRM phase; Suspend arms
+//     |   directly. Destructive actions are always gated.
+//     | ESC returns to the rail
+//
+//   Global: Ctrl-Q -> Power view, Ctrl-S -> Session view, from anywhere.
+//
+//   SUBMITTING is the one modal state that survives, deliberately: PAM
+//   is in flight and neither the fields nor the rail may be mutated
+//   under it.
+//
+// What this model does NOT have, and the previous one needed:
+// pre_power_field, the bookmark an overlay kept so it could restore
+// what it covered. A peer view covers nothing, so there is nothing to
+// restore. That deletion was ADR 0011's own test of the model, and
+// retiring the modal layout removed the field from the codebase.
+
 //     | UI ignores ALL input here (including Ctrl-Q) for the brief
 //     |   window auth takes; the user can wait.
 //     | On AUTH SUCCESS: main resolves selected_session.sessionId()
@@ -540,28 +539,6 @@ pub const State = struct {
     view: View = .login,
     focus: Focus = .content,
     rail_cursor: View = .login,
-
-    /// Which layout is running. Set once at startup from
-    /// PGSD_SESSIOND_LAYOUT. It selects both the renderer and the
-    /// action handler, so the two can never disagree about which model
-    /// is in force: a console-layout screen is always driven by
-    /// handleActionConsole, and a centered-layout screen always by
-    /// handleAction.
-    console: bool = false,
-
-    /// Stage 8: where to return when the power menu is dismissed
-    /// without committing to an action (via ESC or another Ctrl-Q).
-    /// Set when the power menu opens; read when it closes. Live
-    /// only while field == .power_menu.
-    ///
-    /// ADR 0011: this is modal-unwind bookkeeping and exists ONLY for
-    /// the centered layout. The console layout does not set it, does
-    /// not read it, and does not need it: that is the ADR's own test
-    /// of whether the peer-view model is more natural than the modal
-    /// one it replaces. When the centered layout is retired, this
-    /// field goes with it.
-    pre_power_field: FieldState = .identify,
-
     /// Stage 8: which sub-phase of the power menu we're in. Live
     /// only while field == .power_menu. .choosing is the landing
     /// state; .confirming_* is entered when the user selects
@@ -647,7 +624,6 @@ pub const State = struct {
             .status_message = null,
             .selected_session = .terminal,
             .picker_cursor = .terminal,
-            .pre_power_field = .identify,
             .power_menu_phase = .choosing,
             .power_menu_cursor = .shutdown,
             .power_action = null,
@@ -753,7 +729,7 @@ pub const State = struct {
     /// Those two deletions are the ADR's own test of whether the model
     /// is more natural than the one it replaces. If they had to be
     /// reintroduced here, the model would have failed.
-    pub fn handleActionConsole(self: *State, action: keymap.Action) !void {
+    pub fn handleAction(self: *State, action: keymap.Action) !void {
         // Modal, deliberately (ADR 0011 section 3): PAM is in flight.
         // Neither the fields nor the rail may be mutated under it.
         if (self.field == .submitting) return;
@@ -861,6 +837,12 @@ pub const State = struct {
             .none => {},
             .print => |ch| {
                 self.typing_started = true;
+                // Clear a stale status message once the user starts
+                // typing: a previous failure is no longer relevant
+                // context the moment they begin a fresh attempt. This
+                // behaviour predates ADR 0011 and was carried over from
+                // the retired modal handler, where it was easy to lose.
+                self.status_message = null;
                 switch (self.field) {
                     .identify => {
                         if (self.username.items.len < USERNAME_MAX) {
@@ -878,8 +860,12 @@ pub const State = struct {
             .backspace => {
                 self.typing_started = true;
                 switch (self.field) {
-                    .identify => _ = self.username.pop(),
-                    .password => _ = self.password.pop(),
+                    .identify => {
+                        if (self.username.pop() != null) self.status_message = null;
+                    },
+                    .password => {
+                        if (self.password.pop() != null) self.status_message = null;
+                    },
                     else => {},
                 }
             },
@@ -962,249 +948,6 @@ pub const State = struct {
             else => {},
         }
     }
-
-    pub fn handleAction(self: *State, action: keymap.Action) !void {
-        // .submitting locks the UI: main is calling PAM, the user
-        // shouldn't be able to mutate username or password while
-        // the auth call is in flight. The power menu is also locked
-        // out here; if the user wants to power off they can wait
-        // for PAM to finish (a few seconds at most).
-        if (self.field == .submitting) {
-            return;
-        }
-
-        // Stage 8: .power_menu is the most modal overlay. Handle
-        // it before anything else (including picker) so that
-        // entering the menu can shadow the picker if necessary.
-        if (self.field == .power_menu) {
-            self.handlePowerMenuInput(action);
-            return;
-        }
-
-        // Stage 7: .picker is a modal overlay over the .password
-        // field. Different keybinding semantics: arrows move,
-        // Tab/Enter confirm, ESC cancels, everything else ignored.
-        // Handle it here as a separate switch from the main
-        // identify/password input path.
-        if (self.field == .picker) {
-            switch (action) {
-                .power_menu => {
-                    // Ctrl-Q from inside the picker: close the
-                    // picker (without committing the cursor
-                    // selection) and open the power menu rooted
-                    // at .password (the picker's parent state).
-                    // openPowerMenu sets self.field = .power_menu;
-                    // ESC from the menu will return to .password.
-                    self.openPowerMenu(.password);
-                },
-                .up => self.picker_cursor = self.picker_cursor.prevEnabled(),
-                .down => self.picker_cursor = self.picker_cursor.nextEnabled(),
-                .tab, .enter => {
-                    // Confirm: commit picker_cursor to selected_session
-                    // and return to the password field. picker_cursor
-                    // is guaranteed to point at an enabled entry
-                    // because (a) it was initialised to .terminal
-                    // (enabled) on open, and (b) up/down only move
-                    // to enabled entries.
-                    self.selected_session = self.picker_cursor;
-                    self.field = .password;
-                    // Clear any status message; the user has now
-                    // committed a choice, prior auth failures are
-                    // no longer relevant context.
-                    self.status_message = null;
-                },
-                .clear => {
-                    // ESC: discard picker_cursor, return to password
-                    // with selected_session unchanged.
-                    self.field = .password;
-                },
-                // print, backspace, none: ignored while picker is open.
-                else => {},
-            }
-            return;
-        }
-
-        switch (action) {
-            .none => {},
-            .power_menu => {
-                // Stage 8: Ctrl-Q opens the power menu from identify
-                // or password. Reachable from either state so the
-                // user can power off without having first identified.
-                self.openPowerMenu(self.field);
-            },
-            .clear => {
-                self.activeField().clearRetainingCapacity();
-                self.status_message = null;
-            },
-            .backspace => {
-                const f = self.activeField();
-                if (f.items.len > 0) {
-                    _ = f.pop();
-                    self.status_message = null;
-                }
-            },
-            .print => |ch| {
-                self.typing_started = true;
-                self.status_message = null;
-                const f = self.activeField();
-                const cap = self.activeFieldMax();
-                if (f.items.len < cap) {
-                    try f.append(self.allocator, ch);
-                }
-            },
-            .enter => {
-                switch (self.field) {
-                    .identify => {
-                        if (self.username.items.len > 0) {
-                            self.field = .password;
-                            self.typing_started = false;
-                        }
-                    },
-                    .password => {
-                        // Stage 6: transition to .submitting and let
-                        // main pick up the request via state.field on
-                        // the next loop iteration. Don't set
-                        // exit_reason; we want the UI to keep
-                        // rendering an "Authenticating..." indicator.
-                        self.field = .submitting;
-                    },
-                    .picker, .power_menu, .submitting => unreachable, // guarded above
-                }
-            },
-            .session_picker => {
-                // Stage 7: Ctrl-S opens the session picker overlay.
-                // Same behavior and same guard as .tab below: only from
-                // the password field, because selected_session is
-                // per-login and there is no point choosing one before
-                // the user has identified themselves.
-                //
-                // This exists because bare Tab stopped being delivered
-                // to this daemon while Ctrl chords kept arriving. See
-                // keymap.translate. Both routes are kept.
-                if (self.field == .password) {
-                    self.picker_cursor = self.selected_session;
-                    self.field = .picker;
-                    self.status_message = null;
-                }
-            },
-            .tab => {
-                // Stage 7: Tab opens the session picker overlay,
-                // but ONLY from the password field. From identify,
-                // Tab is a no-op (we don't want users tabbing to a
-                // picker before they've identified themselves; the
-                // selected_session is per-login anyway).
-                if (self.field == .password) {
-                    self.picker_cursor = self.selected_session;
-                    self.field = .picker;
-                    self.status_message = null;
-                }
-            },
-            .up, .down => {
-                // Arrow keys outside the picker/power-menu are
-                // ignored. The login fields are single-line, so
-                // there's nothing to navigate.
-            },
-        }
-    }
-
-    /// Stage 8 helper: open the power menu, recording the field
-    /// to return to on ESC/cancel. Cursor starts at .shutdown
-    /// (intentionally; users who Ctrl-Q out of muscle memory
-    /// should see the confirm step rather than slip into Suspend).
-    fn openPowerMenu(self: *State, return_to: FieldState) void {
-        // Defensive: power menu can't be the return target.
-        // .submitting also shouldn't appear here (we never call
-        // openPowerMenu while submitting). Coerce both to
-        // .identify so the user lands somewhere sane on ESC.
-        const safe_return: FieldState = switch (return_to) {
-            .identify, .password => return_to,
-            .picker, .power_menu, .submitting => .identify,
-        };
-        self.pre_power_field = safe_return;
-        self.power_menu_phase = .choosing;
-        self.power_menu_cursor = .shutdown;
-        self.field = .power_menu;
-        self.status_message = null;
-    }
-
-    /// Stage 8 helper: input handling for the power menu states.
-    /// Separated from handleAction so the main switch stays small
-    /// and the menu's state machine is self-contained.
-    fn handlePowerMenuInput(self: *State, action: keymap.Action) void {
-        switch (self.power_menu_phase) {
-            .choosing => self.handlePowerMenuChoosing(action),
-            .confirming_shutdown => self.handlePowerMenuConfirming(action, .shutdown),
-            .confirming_restart => self.handlePowerMenuConfirming(action, .restart),
-            .in_progress => {
-                // Command has been invoked; ignore all input. For
-                // shutdown/restart we'll be killed by init shortly;
-                // for suspend the system is already asleep.
-            },
-        }
-    }
-
-    fn handlePowerMenuChoosing(self: *State, action: keymap.Action) void {
-        switch (action) {
-            .up => self.power_menu_cursor = self.power_menu_cursor.prev(),
-            .down => self.power_menu_cursor = self.power_menu_cursor.next(),
-            .enter => self.commitPowerMenuChoice(self.power_menu_cursor),
-            .print => |ch| {
-                // Accelerator letters: S/R/Z (case-insensitive).
-                const lower: u8 = if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
-                switch (lower) {
-                    's' => self.commitPowerMenuChoice(.shutdown),
-                    'r' => self.commitPowerMenuChoice(.restart),
-                    'z' => self.commitPowerMenuChoice(.suspend_),
-                    else => {},
-                }
-            },
-            .clear, .power_menu => {
-                // ESC or another Ctrl-Q closes the menu, returning
-                // to whatever field the user opened it from.
-                self.field = self.pre_power_field;
-            },
-            // tab, backspace, none: ignored in the menu.
-            else => {},
-        }
-    }
-
-    fn handlePowerMenuConfirming(self: *State, action: keymap.Action, option: PowerOption) void {
-        switch (action) {
-            .print => |ch| {
-                const lower: u8 = if (ch >= 'A' and ch <= 'Z') ch + 32 else ch;
-                switch (lower) {
-                    'y' => {
-                        // Confirm: arm the action for main to read.
-                        self.power_action = option;
-                        // Stay in .power_menu so the UI renders
-                        // "Shutting down..." or similar until main
-                        // takes over.
-                    },
-                    'n' => {
-                        // Cancel back to choosing.
-                        self.power_menu_phase = .choosing;
-                    },
-                    else => {},
-                }
-            },
-            .enter => {
-                // Enter on the confirm screen treats as Y.
-                self.power_action = option;
-            },
-            .clear => {
-                // ESC backs out of confirm to choosing.
-                self.power_menu_phase = .choosing;
-            },
-            .power_menu => {
-                // Ctrl-Q from confirm closes the menu entirely,
-                // same as ESC twice. Returns to pre_power_field.
-                self.field = self.pre_power_field;
-            },
-            // up, down, tab, backspace, none: ignored.
-            else => {},
-        }
-    }
-
     /// Stage 8 helper: act on a choice from the power menu's
     /// choosing phase. Shutdown and Restart advance to confirm;
     /// Suspend arms the action immediately.
@@ -1461,7 +1204,7 @@ const C_RULE_B: f32 = 0.541;
 // versus GENERIC is the single most operationally relevant fact, and a
 // login header that stated it would have saved real time. Add
 // sysinfo.kernelIdent() and a State field, then put it in the header.
-pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32, surface_h: f32) !void {
+pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32, surface_h: f32) !void {
     const sf: f32 = @floatFromInt(SCALE);
     const gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
     const gh: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * sf;
@@ -1501,7 +1244,7 @@ pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface
     const footer_top: f32 = surface_h - footer_h;
     try enc.fillRect(0, footer_top, surface_w, sf, C_RULE_R, C_RULE_G, C_RULE_B, 1);
     {
-        const hint = legendForConsole(state);
+        const hint = legendFor(state);
         const x: f32 = pad_x;
         const y: f32 = footer_top + pad_y;
         try drawText(enc, hint, x, y, C_AMBER_R, C_AMBER_G, C_AMBER_B, 1);
@@ -1702,7 +1445,7 @@ fn drawPowerView(
 /// The console legend, keyed on the (focus, view) pair. This is the
 /// discoverability surface, and ADR 0011 simply gives it a second axis:
 /// it already named the keys available in the current state.
-fn legendForConsole(state: *const State) []const u8 {
+fn legendFor(state: *const State) []const u8 {
     if (state.field == .submitting) return "Authenticating...";
 
     if (state.focus == .rail) {
@@ -1723,23 +1466,6 @@ fn legendForConsole(state: *const State) []const u8 {
         },
     };
 }
-
-/// The legend, extracted so both layouts share one source of truth.
-fn legendFor(state: *const State) []const u8 {
-    return switch (state.field) {
-        .power_menu => switch (state.power_menu_phase) {
-            .choosing => "[UP/DN] Select   [ENTER] Choose   [ESC] Cancel",
-            .confirming_shutdown => "[Y] Power off   [N] Back   [ESC] Cancel",
-            .confirming_restart => "[Y] Reboot   [N] Back   [ESC] Cancel",
-            .in_progress => "Please wait...",
-        },
-        .picker => "[UP/DN] Select   [ENTER] Confirm   [ESC] Cancel",
-        .password => "[ENTER] Log in   [CTRL-S] Change session   [ESC] Clear   [CTRL-Q] Power",
-        .identify => "[ENTER] Continue   [ESC] Clear   [CTRL-Q] Power",
-        .submitting => "Authenticating...",
-    };
-}
-
 /// A labelled field row, grid-aligned. The console analogue of drawField.
 fn drawConsoleField(
     state: *const State,
@@ -1783,531 +1509,6 @@ fn drawConsoleField(
         }
     }
 }
-
-pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32, surface_h: f32) !void {
-    const sf: f32 = @floatFromInt(SCALE);
-    const scaled_gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
-    const scaled_gh: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * sf;
-    const line_step: f32 = scaled_gh + 8.0 * sf; // line height + leading
-
-    // Background: pure black covering the full surface.
-    try enc.fillRect(0, 0, surface_w, surface_h, 0, 0, 0, 1);
-
-    // System info block, centered horizontally, anchored near the
-    // top quarter of the surface. Four lines: hostname, network,
-    // realmem, physmem. Rendered in the cyan palette to mark
-    // them as non-interactive context (see palette block at top
-    // of file for rationale).
-    const sysinfo_top: f32 = surface_h * 0.18;
-
-    // Hostname (bright cyan).
-    {
-        const text = state.hostname;
-        const w: f32 = @as(f32, @floatFromInt(text.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        try drawText(enc, text, x, sysinfo_top, CYAN_R, CYAN_G, CYAN_B, CYAN_A);
-    }
-    // Network status (dim cyan).
-    {
-        var buf: [128]u8 = undefined;
-        const text = std.fmt.bufPrint(&buf, "network: {s}", .{state.network_str}) catch state.network_str;
-        const w: f32 = @as(f32, @floatFromInt(text.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        try drawText(enc, text, x, sysinfo_top + line_step, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
-    }
-    // Real mem (dim cyan).
-    {
-        var buf: [128]u8 = undefined;
-        const text = std.fmt.bufPrint(&buf, "real mem   = {s}", .{state.realmem_str}) catch state.realmem_str;
-        const w: f32 = @as(f32, @floatFromInt(text.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        try drawText(enc, text, x, sysinfo_top + 2 * line_step, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
-    }
-    // Actual mem (dim cyan).
-    {
-        var buf: [128]u8 = undefined;
-        const text = std.fmt.bufPrint(&buf, "actual mem = {s}", .{state.physmem_str}) catch state.physmem_str;
-        const w: f32 = @as(f32, @floatFromInt(text.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        try drawText(enc, text, x, sysinfo_top + 3 * line_step, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
-    }
-
-    // Fields, centered vertically. The Identify field sits slightly
-    // above center; the Password field sits below it. Both fields'
-    // y positions are computed from the surface height so they look
-    // right regardless of resolution.
-    const fields_center: f32 = surface_h * 0.55;
-    const field_height: f32 = scaled_gh + 12.0 * sf;
-    const field_spacing: f32 = field_height + 24.0 * sf;
-
-    // Identify field (always visible).
-    try drawField(
-        state,
-        enc,
-        blink_phase,
-        .identify,
-        "IDENTIFY:",
-        state.username.items,
-        false,
-        fields_center - field_height / 2 - field_spacing / 2,
-        surface_w,
-    );
-
-    // Password field: shown once the user has advanced past
-    // Identify, in any of .password (active typing), .picker
-    // (session-picker overlay open above), or .submitting
-    // (auth in flight). The picker is drawn as an overlay on top;
-    // it does not replace the field underneath, so the user
-    // retains context for where they were when they opened the
-    // picker.
-    // Password field: shown once the user has advanced past
-    // Identify, in any of .password (active typing), .picker
-    // (session-picker overlay open above), .power_menu (overlay
-    // open above, but only when the menu was opened from
-    // password), or .submitting (auth in flight). The picker
-    // and power menu are drawn as overlays on top; they do not
-    // replace the field underneath, so the user retains context
-    // for where they were when they opened the overlay.
-    const password_visible = state.field == .password or
-        state.field == .picker or
-        state.field == .submitting or
-        (state.field == .power_menu and state.pre_power_field == .password);
-    if (password_visible) {
-        try drawField(
-            state,
-            enc,
-            blink_phase,
-            .password,
-            "PASSWORD:",
-            state.password.items,
-            true,
-            fields_center - field_height / 2 + field_spacing / 2,
-            surface_w,
-        );
-    }
-
-    // Stage 6: "Authenticating..." indicator while PAM auth is in
-    // flight. Drawn between the field and the hint line.
-    if (state.field == .submitting) {
-        const msg = "Authenticating...";
-        const w: f32 = @as(f32, @floatFromInt(msg.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        const y: f32 = fields_center + field_height * 1.5 + line_step;
-        try drawText(enc, msg, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-    }
-
-    // Stage 6: status message (auth failures, fatal errors).
-    // Drawn just above the hint line in amber.
-    if (state.status_message) |status| {
-        const w: f32 = @as(f32, @floatFromInt(status.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        const y: f32 = surface_h - line_step * 3.5;
-        try drawText(enc, status, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-    }
-
-    // Stage 7: session-picker overlay.
-    if (state.field == .picker) {
-        try drawPicker(state, enc, surface_w, surface_h);
-    }
-
-    // Stage 8: power-menu overlay.
-    if (state.field == .power_menu) {
-        try drawPowerMenu(state, enc, surface_w, surface_h);
-    }
-
-    // Hint line, anchored near the bottom of the surface. Hint
-    // text varies by state. Accessibility note: keybindings are
-    // essential information for operating the UI, so the hint
-    // line is rendered in bright amber rather than dim. The prior
-    // dim treatment under-prioritised the user's most direct
-    // affordance for what they can do next; bright amber matches
-    // the rest of the UI's foreground colour and ensures the
-    // hint is read first, not last.
-    //
-    // Format: legend style "[KEY] Action   [KEY] Action ..."
-    // - Key names in ALL CAPS inside square brackets, matching
-    //   how the physical keyboard labels them.
-    // - Action verb in Title Case immediately after the bracket.
-    // - Three spaces separate legend chips so the brackets
-    //   visually group each chip without needing dividers.
-    // - States that accept no input (.submitting,
-    //   .in_progress) show an informational status instead of
-    //   a legend, since legend chips would imply pressable
-    //   keys.
-    {
-        // Shared with drawConsole: one legend, both layouts.
-        const hint = legendFor(state);
-        const w: f32 = @as(f32, @floatFromInt(hint.len)) * scaled_gw;
-        const x: f32 = (surface_w - w) / 2;
-        const y: f32 = surface_h - line_step * 2;
-        try drawText(enc, hint, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-    }
-}
-
-fn drawPicker(
-    state: *const State,
-    enc: *Encoder,
-    surface_w: f32,
-    surface_h: f32,
-) !void {
-    const sf: f32 = @floatFromInt(SCALE);
-    const scaled_gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
-    const scaled_gh: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * sf;
-    const row_pad_y: f32 = 6.0 * sf;
-    const panel_pad: f32 = 16.0 * sf;
-
-    // Title and entry layout.
-    const title = "Session type:";
-
-    // Filter to enabled session types only. Unavailable sessions
-    // (X11, Wayland, NDE in v1) are not shown to the user. The
-    // picker is still opened to confirm the chosen session even
-    // when only one option exists; that confirmation has value
-    // even without a meaningful choice. Accessibility note: the
-    // earlier behaviour drew all four entries with three of them
-    // labelled "not installed", which created visual scanning
-    // noise. Hiding unavailable entries entirely is consistent
-    // with the SessionType.enabled() contract and reduces the
-    // number of rows the eye has to track.
-    const all = [_]SessionType{ .terminal, .x11, .wayland, .nde };
-    var enabled_buf: [4]SessionType = undefined;
-    var enabled_n: usize = 0;
-    for (all) |t| {
-        if (t.enabled()) {
-            enabled_buf[enabled_n] = t;
-            enabled_n += 1;
-        }
-    }
-    const enabled = enabled_buf[0..enabled_n];
-
-    // Defensive: if no session types are enabled at all, drawing
-    // an empty picker makes no sense. This is unreachable in v1
-    // (Terminal is always enabled) and the picker code path is
-    // not reached in that hypothetical state - main would never
-    // launch the UI without a usable session. Bail silently
-    // rather than divide by zero or draw a degenerate panel.
-    if (enabled.len == 0) return;
-
-    // Compute panel dimensions from the widest row.
-    //   "  DisplayName    detail"
-    // where the row starts at a constant indent (no cursor prefix
-    // - the cursor is now a reverse-video bar drawn behind the
-    // row, see below), DisplayName is left-padded to a fixed
-    // column so detail aligns across rows.
-    const NAME_COL_WIDTH: usize = 10; // "Wayland   " padded
-    const ROW_INDENT: usize = 2;       // leading spaces before the name
-    var max_chars: usize = title.len;
-    for (enabled) |t| {
-        const row_chars: usize = ROW_INDENT + NAME_COL_WIDTH + t.detail().len;
-        if (row_chars > max_chars) max_chars = row_chars;
-    }
-    const content_w: f32 = @as(f32, @floatFromInt(max_chars)) * scaled_gw;
-    const row_h: f32 = scaled_gh + row_pad_y;
-    // title + blank + N rows. Panel height grows with enabled_n,
-    // so a single-enabled picker is appropriately short.
-    const content_h: f32 = (@as(f32, @floatFromInt(enabled.len + 2))) * row_h;
-    const panel_w: f32 = content_w + 2 * panel_pad;
-    const panel_h: f32 = content_h + 2 * panel_pad;
-    const panel_x: f32 = (surface_w - panel_w) / 2;
-    const panel_y: f32 = (surface_h - panel_h) / 2;
-
-    // Solid black panel background to occlude what's underneath,
-    // then amber border.
-    try enc.fillRect(panel_x, panel_y, panel_w, panel_h, 0, 0, 0, 1);
-    try drawBorder(enc, panel_x, panel_y, panel_w, panel_h, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-
-    // Title row (bright amber).
-    const text_x: f32 = panel_x + panel_pad;
-    var y: f32 = panel_y + panel_pad;
-    try drawText(enc, title, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-    y += row_h * 2; // skip a blank row after the title
-
-    // Selection bar geometry. The bar is wider than the text on
-    // each side by bar_pad_x, and vertically extends a few pixels
-    // above and below the glyph row so the text sits centred in
-    // the bar with visible padding. Accessibility note: a full-
-    // row reverse-video bar (amber background, black foreground)
-    // makes the cursor row unmistakable even at a glance, which
-    // a two-character "[>] " prefix cannot achieve. The earlier
-    // prefix-only treatment relied on the user actively scanning
-    // for the marker; the bar makes the focus visible at the
-    // pre-attentive level.
-    const bar_pad_x: f32 = 4.0 * sf;
-    const bar_pad_y: f32 = row_pad_y / 2.0;
-
-    // Session rows.
-    for (enabled) |t| {
-        const is_cursor = (t == state.picker_cursor);
-
-        // Pad the display name to NAME_COL_WIDTH so detail columns line up.
-        const name = t.displayName();
-        var name_padded: [NAME_COL_WIDTH]u8 = undefined;
-        @memset(&name_padded, ' ');
-        const copy_n = @min(name.len, NAME_COL_WIDTH);
-        @memcpy(name_padded[0..copy_n], name[0..copy_n]);
-
-        // Indent + name + detail. No cursor-prefix glyphs; the bar
-        // carries the focus indication on its own.
-        var line_buf: [64]u8 = undefined;
-        const line = std.fmt.bufPrint(
-            &line_buf,
-            "  {s}{s}",
-            .{ name_padded[0..NAME_COL_WIDTH], t.detail() },
-        ) catch line_buf[0..0];
-
-        if (is_cursor) {
-            // Reverse-video selection bar. Fill amber background
-            // across the panel's content area for this row, then
-            // draw the text in black on top. Both rects share
-            // bar_pad_x / bar_pad_y so the highlight looks like a
-            // proper button rather than a tight box around the
-            // glyphs.
-            try enc.fillRect(
-                text_x - bar_pad_x,
-                y - bar_pad_y,
-                content_w + 2 * bar_pad_x,
-                scaled_gh + 2 * bar_pad_y,
-                AMBER_R,
-                AMBER_G,
-                AMBER_B,
-                AMBER_A,
-            );
-            try drawText(enc, line, text_x, y, 0, 0, 0, 1);
-        } else {
-            // Non-selected enabled row: bright amber on black,
-            // same as before this accessibility pass. (Disabled
-            // rows used to render in DIM but are now filtered out
-            // entirely; the dim-row path is dead.)
-            try drawText(enc, line, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-        }
-        y += row_h;
-    }
-}
-
-fn drawPowerMenu(
-    state: *const State,
-    enc: *Encoder,
-    surface_w: f32,
-    surface_h: f32,
-) !void {
-    const sf: f32 = @floatFromInt(SCALE);
-    const scaled_gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
-    const scaled_gh: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * sf;
-    const row_pad_y: f32 = 6.0 * sf;
-    const panel_pad: f32 = 16.0 * sf;
-    const row_h: f32 = scaled_gh + row_pad_y;
-
-    switch (state.power_menu_phase) {
-        .choosing => {
-            const title = "Power options:";
-            const all = [_]PowerOption{ .shutdown, .restart, .suspend_ };
-
-            // Compute panel dimensions from widest row.
-            //   "  [S] Shutdown" -> 2 + 4 + name
-            // where the row starts at a constant indent (no cursor
-            // prefix - the cursor is a reverse-video bar drawn
-            // behind the row, see below), "[S] " is the accelerator
-            // letter in brackets, and the name is the displayName.
-            // Accessibility note: a full-row reverse-video bar
-            // (amber background, black foreground) makes the
-            // cursor row unmistakable. The prior "[>] " prefix
-            // required active scanning; the bar carries the focus
-            // indication pre-attentively.
-            const ROW_INDENT: usize = 2;
-            var max_chars: usize = title.len;
-            for (all) |opt| {
-                const row_chars: usize = ROW_INDENT + 4 + opt.displayName().len;
-                if (row_chars > max_chars) max_chars = row_chars;
-            }
-            const content_w: f32 = @as(f32, @floatFromInt(max_chars)) * scaled_gw;
-            const content_h: f32 = (@as(f32, @floatFromInt(all.len + 2))) * row_h;
-            const panel_w: f32 = content_w + 2 * panel_pad;
-            const panel_h: f32 = content_h + 2 * panel_pad;
-            const panel_x: f32 = (surface_w - panel_w) / 2;
-            const panel_y: f32 = (surface_h - panel_h) / 2;
-
-            try enc.fillRect(panel_x, panel_y, panel_w, panel_h, 0, 0, 0, 1);
-            try drawBorder(enc, panel_x, panel_y, panel_w, panel_h, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-
-            const text_x: f32 = panel_x + panel_pad;
-            var y: f32 = panel_y + panel_pad;
-            try drawText(enc, title, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-            y += row_h * 2;
-
-            // Selection bar geometry matches drawPicker's so the
-            // two overlays look visually consistent.
-            const bar_pad_x: f32 = 4.0 * sf;
-            const bar_pad_y: f32 = row_pad_y / 2.0;
-
-            for (all) |opt| {
-                const is_cursor = (opt == state.power_menu_cursor);
-                var buf: [64]u8 = undefined;
-                const accel = opt.accelerator();
-                // Indent + accelerator + name. No cursor prefix
-                // glyphs; the bar carries the focus.
-                const line = std.fmt.bufPrint(
-                    &buf,
-                    "  [{c}] {s}",
-                    .{ accel, opt.displayName() },
-                ) catch buf[0..0];
-
-                if (is_cursor) {
-                    try enc.fillRect(
-                        text_x - bar_pad_x,
-                        y - bar_pad_y,
-                        content_w + 2 * bar_pad_x,
-                        scaled_gh + 2 * bar_pad_y,
-                        AMBER_R,
-                        AMBER_G,
-                        AMBER_B,
-                        AMBER_A,
-                    );
-                    try drawText(enc, line, text_x, y, 0, 0, 0, 1);
-                } else {
-                    try drawText(enc, line, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-                }
-                y += row_h;
-            }
-        },
-        .confirming_shutdown, .confirming_restart => {
-            const is_shutdown = state.power_menu_phase == .confirming_shutdown;
-            const title = if (is_shutdown) "Confirm shutdown?" else "Confirm restart?";
-            const yes_line = if (is_shutdown)
-                "[Y] Yes, power off"
-            else
-                "[Y] Yes, reboot";
-            const no_line = "[N] No, cancel";
-
-            // Compute panel dimensions from widest row.
-            var max_chars: usize = title.len;
-            if (yes_line.len > max_chars) max_chars = yes_line.len;
-            if (no_line.len > max_chars) max_chars = no_line.len;
-            const content_w: f32 = @as(f32, @floatFromInt(max_chars)) * scaled_gw;
-            // title + blank + Y + N = 4 rows
-            const content_h: f32 = 4 * row_h;
-            const panel_w: f32 = content_w + 2 * panel_pad;
-            const panel_h: f32 = content_h + 2 * panel_pad;
-            const panel_x: f32 = (surface_w - panel_w) / 2;
-            const panel_y: f32 = (surface_h - panel_h) / 2;
-
-            try enc.fillRect(panel_x, panel_y, panel_w, panel_h, 0, 0, 0, 1);
-            try drawBorder(enc, panel_x, panel_y, panel_w, panel_h, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-
-            const text_x: f32 = panel_x + panel_pad;
-            var y: f32 = panel_y + panel_pad;
-            try drawText(enc, title, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-            y += row_h * 2;
-            try drawText(enc, yes_line, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-            y += row_h;
-            try drawText(enc, no_line, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-        },
-        .in_progress => {
-            // Action has been invoked. Display a single-line status
-            // banner appropriate to the action that was armed.
-            const action = state.power_action orelse .shutdown;
-            const banner: []const u8 = switch (action) {
-                .shutdown => "Shutting down...",
-                .restart => "Restarting...",
-                .suspend_ => "Suspending...",
-            };
-
-            const content_w: f32 = @as(f32, @floatFromInt(banner.len)) * scaled_gw;
-            const content_h: f32 = row_h;
-            const panel_w: f32 = content_w + 2 * panel_pad;
-            const panel_h: f32 = content_h + 2 * panel_pad;
-            const panel_x: f32 = (surface_w - panel_w) / 2;
-            const panel_y: f32 = (surface_h - panel_h) / 2;
-
-            try enc.fillRect(panel_x, panel_y, panel_w, panel_h, 0, 0, 0, 1);
-            try drawBorder(enc, panel_x, panel_y, panel_w, panel_h, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-
-            const text_x: f32 = panel_x + panel_pad;
-            const y: f32 = panel_y + panel_pad;
-            try drawText(enc, banner, text_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-        },
-    }
-}
-
-fn drawField(
-    state: *const State,
-    enc: *Encoder,
-    blink_phase: u64,
-    which: FieldState,
-    label: []const u8,
-    contents: []const u8,
-    mask: bool,
-    y_top: f32,
-    surface_w: f32,
-) !void {
-    const sf: f32 = @floatFromInt(SCALE);
-    const scaled_gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
-    const scaled_gh: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * sf;
-    const inner_pad: f32 = FIELD_INNER_PAD_U * sf;
-    const label_gap: f32 = 12.0 * sf;
-    const field_height: f32 = scaled_gh + 12.0 * sf;
-    const text_y_offset: f32 = 6.0 * sf;
-
-    const label_w: f32 = @as(f32, @floatFromInt(label.len)) * scaled_gw;
-    const field_w: f32 = @as(f32, @floatFromInt(FIELD_WIDTH_CHARS)) * scaled_gw + 2 * inner_pad;
-    const total_w: f32 = label_w + label_gap + field_w;
-    const x_label: f32 = (surface_w - total_w) / 2;
-    const x_field: f32 = x_label + label_w + label_gap;
-
-    // Label: amber for the active field, dim for the inactive one.
-    const is_active = (which == state.field);
-    if (is_active) {
-        try drawText(enc, label, x_label, y_top + text_y_offset, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-    } else {
-        try drawText(enc, label, x_label, y_top + text_y_offset, DIM_R, DIM_G, DIM_B, DIM_A);
-    }
-
-    // Field border (always amber if the field is shown).
-    try drawBorder(enc, x_field, y_top, field_w, field_height, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-
-    // Field contents: either the literal text or a row of asterisks
-    // (one per byte). Asterisks are simpler than a block glyph and
-    // require no special font handling; they're a safe ASCII choice.
-    if (mask) {
-        var buf: [PASSWORD_MAX]u8 = undefined;
-        const n = @min(contents.len, buf.len);
-        @memset(buf[0..n], '*');
-        try drawText(
-            enc,
-            buf[0..n],
-            x_field + inner_pad,
-            y_top + text_y_offset,
-            AMBER_R,
-            AMBER_G,
-            AMBER_B,
-            AMBER_A,
-        );
-    } else {
-        try drawText(
-            enc,
-            contents,
-            x_field + inner_pad,
-            y_top + text_y_offset,
-            AMBER_R,
-            AMBER_G,
-            AMBER_B,
-            AMBER_A,
-        );
-    }
-
-    // Cursor (only on the active field). Width and height both
-    // scale with SCALE so the cursor looks proportionate to text.
-    if (is_active) {
-        const show_cursor = !state.typing_started or blink_phase == 0;
-        if (show_cursor) {
-            const cx: f32 = x_field + inner_pad +
-                @as(f32, @floatFromInt(contents.len)) * scaled_gw;
-            const cy: f32 = y_top + text_y_offset;
-            const cursor_w: f32 = 2.0 * sf;
-            try enc.fillRect(cx, cy, cursor_w, scaled_gh, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
-        }
-    }
-}
-
 // =============================================================================
 // Event handling
 // =============================================================================
@@ -2326,11 +1527,7 @@ pub fn handleEvent(state: *State, event: AppEvent) !bool {
             // press. semadraw's KeyEvent.pressed is bool.
             if (!k.pressed) return true;
             const action = keymap.translate(k.key_code, k.modifiers);
-            if (state.console) {
-                try state.handleActionConsole(action);
-            } else {
-                try state.handleAction(action);
-            }
+            try state.handleAction(action);
             if (state.exit_reason != null) return false;
         },
         else => {},
@@ -2368,7 +1565,6 @@ fn makeTestState(allocator: std.mem.Allocator) !State {
         .status_message = null,
         .selected_session = .terminal,
         .picker_cursor = .terminal,
-        .pre_power_field = .identify,
         .power_menu_phase = .choosing,
         .power_menu_cursor = .shutdown,
         .power_action = null,
@@ -2419,29 +1615,6 @@ test "Enter on password state transitions to submitting (Stage 6)" {
     try testing.expectEqualStrings("pw", s.password.items);
 }
 
-test "submitting state ignores all input including Ctrl-Q (Stage 8 lock)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.{ .print = 'p' });
-    try s.handleAction(.enter); // -> submitting
-    try testing.expectEqual(FieldState.submitting, s.field);
-
-    // Print, backspace, enter, clear, Ctrl-Q: all no-ops.
-    // Stage 8 changed the .submitting lock to be complete (no
-    // emergency escape via Ctrl-Q) since the auth call is
-    // synchronous and brief; the user can wait.
-    try s.handleAction(.{ .print = 'x' });
-    try s.handleAction(.backspace);
-    try s.handleAction(.enter);
-    try s.handleAction(.clear);
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.submitting, s.field);
-    try testing.expectEqualStrings("v", s.username.items);
-    try testing.expectEqualStrings("p", s.password.items);
-    try testing.expect(s.exit_reason == null);
-}
 
 test "resetForRetry returns to password state, clears password, sets status" {
     var s = try makeTestState(testing.allocator);
@@ -2462,22 +1635,7 @@ test "resetForRetry returns to password state, clears password, sets status" {
     try testing.expectEqualStrings("authentication failed", s.status_message.?);
 }
 
-test "status_message is cleared on next print" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    s.status_message = "some prior failure";
-    try s.handleAction(.{ .print = 'x' });
-    try testing.expect(s.status_message == null);
-}
 
-test "status_message is cleared on backspace (when something is deleted)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'x' });
-    s.status_message = "stale failure";
-    try s.handleAction(.backspace);
-    try testing.expect(s.status_message == null);
-}
 
 test "status_message is cleared on ESC" {
     var s = try makeTestState(testing.allocator);
@@ -2530,16 +1688,6 @@ test "ESC in password state clears password, not username, stays in password" {
     try testing.expectEqual(FieldState.password, s.field);
 }
 
-test "Ctrl-Q from identify opens the power menu (Stage 8)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.power_menu, s.field);
-    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
-    try testing.expectEqual(PowerOption.shutdown, s.power_menu_cursor);
-    try testing.expectEqual(FieldState.identify, s.pre_power_field);
-    try testing.expect(s.exit_reason == null);
-}
 
 test "Username buffer caps at USERNAME_MAX" {
     var s = try makeTestState(testing.allocator);
@@ -2586,151 +1734,16 @@ test "SessionType.nextEnabled/prevEnabled with only one enabled entry stays put"
 // Stage 7: picker state machine
 // =============================================================================
 
-test "Tab from identify is a no-op" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.tab);
-    try testing.expectEqual(FieldState.identify, s.field);
-}
 
-test "Tab from password opens picker overlay" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter); // identify -> password
-    try testing.expectEqual(FieldState.password, s.field);
 
-    try s.handleAction(.tab); // password -> picker
-    try testing.expectEqual(FieldState.picker, s.field);
-    // Cursor starts on the current selection.
-    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
-    // selected_session unchanged until confirm.
-    try testing.expectEqual(SessionType.terminal, s.selected_session);
-}
 
-test "Ctrl-S from password opens picker overlay" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter); // identify -> password
-    try testing.expectEqual(FieldState.password, s.field);
 
-    try s.handleAction(.session_picker); // password -> picker
-    try testing.expectEqual(FieldState.picker, s.field);
-    // Same behavior as the Tab route: cursor starts on the current
-    // selection, and selected_session is unchanged until confirm.
-    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
-    try testing.expectEqual(SessionType.terminal, s.selected_session);
-}
 
-test "Ctrl-S from identify is a no-op" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try testing.expectEqual(FieldState.identify, s.field);
 
-    try s.handleAction(.session_picker);
-    // Same guard as Tab: no picker before the user has identified.
-    try testing.expectEqual(FieldState.identify, s.field);
-}
 
-test "Picker: Enter confirms cursor selection, returns to password" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.tab); // -> picker
 
-    try s.handleAction(.enter); // confirm
-    try testing.expectEqual(FieldState.password, s.field);
-    try testing.expectEqual(SessionType.terminal, s.selected_session);
-}
 
-test "Picker: Tab also confirms (acts like Enter)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.tab); // -> picker
 
-    try s.handleAction(.tab); // confirm
-    try testing.expectEqual(FieldState.password, s.field);
-    try testing.expectEqual(SessionType.terminal, s.selected_session);
-}
-
-test "Picker: ESC cancels without changing selection" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    s.selected_session = .terminal;
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.tab); // -> picker
-
-    // Pretend the cursor moved (in v1 it can't, but force the
-    // state to verify ESC doesn't commit picker_cursor).
-    s.picker_cursor = .x11;
-
-    try s.handleAction(.clear); // ESC
-    try testing.expectEqual(FieldState.password, s.field);
-    // selected_session must NOT have been overwritten with picker_cursor.
-    try testing.expectEqual(SessionType.terminal, s.selected_session);
-}
-
-test "Picker: Up/Down skip disabled entries (v1: cursor stays on terminal)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.tab); // -> picker
-
-    try s.handleAction(.down);
-    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
-
-    try s.handleAction(.up);
-    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
-}
-
-test "Picker: print/backspace are ignored" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.{ .print = 'p' });
-    try s.handleAction(.tab); // -> picker
-
-    try s.handleAction(.{ .print = 'x' });
-    try s.handleAction(.backspace);
-
-    // Username and password unchanged; still in picker.
-    try testing.expectEqual(FieldState.picker, s.field);
-    try testing.expectEqualStrings("v", s.username.items);
-    try testing.expectEqualStrings("p", s.password.items);
-}
-
-test "Picker: Ctrl-Q closes picker and opens power menu (Stage 8)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.tab); // -> picker
-
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.power_menu, s.field);
-    // Pre_power_field is .password (not .picker) so ESC from the
-    // menu returns to the password field. The picker is gone;
-    // user can reopen with Tab if they still want it.
-    try testing.expectEqual(FieldState.password, s.pre_power_field);
-    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
-}
-
-test "Picker: opening clears status_message" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    s.status_message = "stale failure";
-    try s.handleAction(.tab); // -> picker
-    try testing.expect(s.status_message == null);
-}
 
 // =============================================================================
 // Stage 8: PowerOption helpers
@@ -2765,198 +1778,24 @@ test "PowerOption display labels and accelerators" {
 // Stage 8: power-menu state machine
 // =============================================================================
 
-test "Ctrl-Q from password opens power menu rooted at password" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter); // -> password
 
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.power_menu, s.field);
-    try testing.expectEqual(FieldState.password, s.pre_power_field);
-    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
-}
 
-test "Power menu: Up/Down cycle through options" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
 
-    try testing.expectEqual(PowerOption.shutdown, s.power_menu_cursor);
-    try s.handleAction(.down);
-    try testing.expectEqual(PowerOption.restart, s.power_menu_cursor);
-    try s.handleAction(.down);
-    try testing.expectEqual(PowerOption.suspend_, s.power_menu_cursor);
-    try s.handleAction(.down);
-    try testing.expectEqual(PowerOption.shutdown, s.power_menu_cursor); // wrap
 
-    try s.handleAction(.up);
-    try testing.expectEqual(PowerOption.suspend_, s.power_menu_cursor); // wrap back
-}
 
-test "Power menu: Enter on shutdown advances to confirm_shutdown" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    // cursor is on .shutdown by default
-    try s.handleAction(.enter);
-    try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
-    try testing.expect(s.power_action == null); // not armed yet
-}
 
-test "Power menu: 'S' accelerator advances to confirm_shutdown" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 's' });
-    try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
-}
 
-test "Power menu: 'R' accelerator advances to confirm_restart" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 'r' });
-    try testing.expectEqual(PowerMenuPhase.confirming_restart, s.power_menu_phase);
-}
 
-test "Power menu: 'Z' (suspend) arms action immediately, no confirm" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 'z' });
-    // No confirm phase; action is armed directly.
-    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
-    try testing.expect(s.power_action != null);
-    try testing.expectEqual(PowerOption.suspend_, s.power_action.?);
-}
 
-test "Power menu: accelerators are case-insensitive" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 'S' });
-    try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
-}
 
-test "Power menu confirm: Y arms the shutdown action" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 's' });
-    try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
 
-    try s.handleAction(.{ .print = 'y' });
-    try testing.expect(s.power_action != null);
-    try testing.expectEqual(PowerOption.shutdown, s.power_action.?);
-}
 
-test "Power menu confirm: Enter is equivalent to Y" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 'r' });
-    try s.handleAction(.enter);
-    try testing.expect(s.power_action != null);
-    try testing.expectEqual(PowerOption.restart, s.power_action.?);
-}
 
-test "Power menu confirm: N returns to choosing without arming" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 's' });
 
-    try s.handleAction(.{ .print = 'n' });
-    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
-    try testing.expect(s.power_action == null);
-}
 
-test "Power menu confirm: ESC returns to choosing without arming" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 's' });
-
-    try s.handleAction(.clear);
-    try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
-    try testing.expect(s.power_action == null);
-}
-
-test "Power menu choosing: ESC returns to pre_power_field" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter); // -> password
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.power_menu, s.field);
-
-    try s.handleAction(.clear);
-    try testing.expectEqual(FieldState.password, s.field);
-    try testing.expect(s.power_action == null);
-}
-
-test "Power menu choosing: Ctrl-Q closes menu (like ESC)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.identify, s.field);
-    try testing.expect(s.power_action == null);
-}
-
-test "Power menu confirm: Ctrl-Q closes the entire menu (not back to choosing)" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.power_menu);
-    try s.handleAction(.{ .print = 's' });
-    try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
-
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.identify, s.field);
-    try testing.expect(s.power_action == null);
-}
-
-test "Power menu: opening from picker roots at password" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter);
-    try s.handleAction(.tab); // -> picker
-    try testing.expectEqual(FieldState.picker, s.field);
-
-    try s.handleAction(.power_menu);
-    try testing.expectEqual(FieldState.power_menu, s.field);
-    try testing.expectEqual(FieldState.password, s.pre_power_field);
-}
-
-test "Power menu: opening clears status_message" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-    s.status_message = "previous failure";
-    try s.handleAction(.power_menu);
-    try testing.expect(s.status_message == null);
-}
 
 // Console layout prototype: the legend is shared, so a change to one
 // layout's hints cannot silently diverge from the other's.
-test "console: legendFor matches the field state" {
-    var s = try makeTestState(testing.allocator);
-    defer s.deinit();
-
-    try testing.expect(std.mem.indexOf(u8, legendFor(&s), "[ENTER] Continue") != null);
-
-    try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter); // -> password
-    const pw = legendFor(&s);
-    try testing.expect(std.mem.indexOf(u8, pw, "[CTRL-S] Change session") != null);
-    // The legend must not advertise TAB, which is not delivered.
-    try testing.expect(std.mem.indexOf(u8, pw, "[TAB]") == null);
-
-    try s.handleAction(.session_picker); // -> picker
-    try testing.expect(std.mem.indexOf(u8, legendFor(&s), "[ENTER] Confirm") != null);
-}
 
 test "console: view labels" {
     try testing.expectEqualStrings("Login", View.login.label());
@@ -2974,9 +1813,7 @@ test "console: view labels" {
 // model stopped being more natural than the one it replaced.
 
 fn makeConsoleState(alloc: std.mem.Allocator) !State {
-    var s = try makeTestState(alloc);
-    s.console = true;
-    return s;
+    return makeTestState(alloc);
 }
 
 test "console: rail navigation, Up/Down move, Enter opens, ESC returns" {
@@ -2989,22 +1826,22 @@ test "console: rail navigation, Up/Down move, Enter opens, ESC returns" {
 
     // Up from the login fields reaches the rail (ESC is taken by
     // clear-field in the login view).
-    try s.handleActionConsole(.up);
+    try s.handleAction(.up);
     try testing.expectEqual(Focus.rail, s.focus);
     try testing.expectEqual(View.login, s.rail_cursor);
 
     // Down moves the cursor without changing the active view.
-    try s.handleActionConsole(.down);
+    try s.handleAction(.down);
     try testing.expectEqual(View.session, s.rail_cursor);
     try testing.expectEqual(View.login, s.view); // not entered yet
 
     // Enter opens it.
-    try s.handleActionConsole(.enter);
+    try s.handleAction(.enter);
     try testing.expectEqual(View.session, s.view);
     try testing.expectEqual(Focus.content, s.focus);
 
     // ESC leaves the view content and returns to the rail.
-    try s.handleActionConsole(.clear);
+    try s.handleAction(.clear);
     try testing.expectEqual(Focus.rail, s.focus);
     try testing.expectEqual(View.session, s.rail_cursor);
 }
@@ -3016,7 +1853,7 @@ test "console: no view is reachable that cannot be left" {
     inline for (.{ View.session, View.power }) |v| {
         s.view = v;
         s.focus = .content;
-        try s.handleActionConsole(.clear); // ESC
+        try s.handleAction(.clear); // ESC
         try testing.expectEqual(Focus.rail, s.focus);
     }
 }
@@ -3025,12 +1862,12 @@ test "console: Session view produces the same selected_session as the old picker
     var s = try makeConsoleState(testing.allocator);
     defer s.deinit();
 
-    try s.handleActionConsole(.session_picker); // Ctrl-S
+    try s.handleAction(.session_picker); // Ctrl-S
     try testing.expectEqual(View.session, s.view);
     try testing.expectEqual(Focus.content, s.focus);
     try testing.expectEqual(SessionType.terminal, s.picker_cursor);
 
-    try s.handleActionConsole(.enter); // confirm
+    try s.handleAction(.enter); // confirm
     try testing.expectEqual(SessionType.terminal, s.selected_session);
     // Returns to the RAIL, not to a bookmarked field: there is nothing
     // to bookmark, because Session covered nothing to get here.
@@ -3041,24 +1878,24 @@ test "console: Power still gates destructive actions behind a confirm" {
     var s = try makeConsoleState(testing.allocator);
     defer s.deinit();
 
-    try s.handleActionConsole(.power_menu); // Ctrl-Q
+    try s.handleAction(.power_menu); // Ctrl-Q
     try testing.expectEqual(View.power, s.view);
     try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
     try testing.expectEqual(PowerOption.shutdown, s.power_menu_cursor);
 
     // Enter on Shutdown must NOT shut down. It must confirm first.
-    try s.handleActionConsole(.enter);
+    try s.handleAction(.enter);
     try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
     try testing.expectEqual(@as(?PowerOption, null), s.power_action);
 
     // N backs out.
-    try s.handleActionConsole(.{ .print = 'n' });
+    try s.handleAction(.{ .print = 'n' });
     try testing.expectEqual(PowerMenuPhase.choosing, s.power_menu_phase);
     try testing.expectEqual(@as(?PowerOption, null), s.power_action);
 
     // Y arms it.
-    try s.handleActionConsole(.enter);
-    try s.handleActionConsole(.{ .print = 'y' });
+    try s.handleAction(.enter);
+    try s.handleAction(.{ .print = 'y' });
     try testing.expectEqual(@as(?PowerOption, PowerOption.shutdown), s.power_action);
 }
 
@@ -3069,11 +1906,11 @@ test "console: submitting locks the fields AND the rail" {
     s.field = .submitting;
 
     // Nothing moves. Not the rail, not the view, not the fields.
-    try s.handleActionConsole(.up);
-    try s.handleActionConsole(.down);
-    try s.handleActionConsole(.enter);
-    try s.handleActionConsole(.power_menu); // even Ctrl-Q
-    try s.handleActionConsole(.{ .print = 'x' });
+    try s.handleAction(.up);
+    try s.handleAction(.down);
+    try s.handleAction(.enter);
+    try s.handleAction(.power_menu); // even Ctrl-Q
+    try s.handleAction(.{ .print = 'x' });
 
     try testing.expectEqual(Focus.content, s.focus);
     try testing.expectEqual(View.login, s.view);
@@ -3088,7 +1925,7 @@ test "console: Ctrl-Q reaches Power from every view" {
         s.view = from;
         s.focus = .content;
 
-        try s.handleActionConsole(.power_menu);
+        try s.handleAction(.power_menu);
         try testing.expectEqual(View.power, s.view);
         try testing.expectEqual(Focus.content, s.focus);
     }
@@ -3098,34 +1935,83 @@ test "console: login typing still works, and ESC still clears the field" {
     var s = try makeConsoleState(testing.allocator);
     defer s.deinit();
 
-    try s.handleActionConsole(.{ .print = 'v' });
-    try s.handleActionConsole(.{ .print = 'i' });
-    try s.handleActionConsole(.{ .print = 'c' });
+    try s.handleAction(.{ .print = 'v' });
+    try s.handleAction(.{ .print = 'i' });
+    try s.handleAction(.{ .print = 'c' });
     try testing.expectEqualStrings("vic", s.username.items);
 
-    try s.handleActionConsole(.clear); // ESC clears, does NOT leave
+    try s.handleAction(.clear); // ESC clears, does NOT leave
     try testing.expectEqual(@as(usize, 0), s.username.items.len);
     try testing.expectEqual(Focus.content, s.focus);
     try testing.expectEqual(View.login, s.view);
 
-    try s.handleActionConsole(.{ .print = 'v' });
-    try s.handleActionConsole(.enter); // identify -> password
+    try s.handleAction(.{ .print = 'v' });
+    try s.handleAction(.enter); // identify -> password
     try testing.expectEqual(FieldState.password, s.field);
-    try s.handleActionConsole(.enter); // password -> submitting
+    try s.handleAction(.enter); // password -> submitting
     try testing.expectEqual(FieldState.submitting, s.field);
 }
 
-test "console: the centered layout is untouched by any of this" {
-    // The modal model still works exactly as before for a non-console
-    // state, which is what lets both layouts coexist.
-    var s = try makeTestState(testing.allocator);
+
+// Coverage carried over from the retired modal tests. The BEHAVIOUR
+// survived the retirement; only the way it is reached changed, so the
+// tests are rewritten against the view model rather than dropped.
+
+test "console: power accelerators S/R/Z work, case-insensitively" {
+    inline for (.{ 's', 'S' }) |ch| {
+        var s = try makeConsoleState(testing.allocator);
+        defer s.deinit();
+        try s.handleAction(.power_menu);
+        try s.handleAction(.{ .print = ch });
+        try testing.expectEqual(PowerMenuPhase.confirming_shutdown, s.power_menu_phase);
+    }
+    inline for (.{ 'r', 'R' }) |ch| {
+        var s = try makeConsoleState(testing.allocator);
+        defer s.deinit();
+        try s.handleAction(.power_menu);
+        try s.handleAction(.{ .print = ch });
+        try testing.expectEqual(PowerMenuPhase.confirming_restart, s.power_menu_phase);
+    }
+}
+
+test "console: suspend arms immediately, with no confirm step" {
+    var s = try makeConsoleState(testing.allocator);
     defer s.deinit();
-    try testing.expectEqual(false, s.console);
+    try s.handleAction(.power_menu);
+    try s.handleAction(.{ .print = 'z' });
+    // Suspend is not destructive in the way shutdown and restart are:
+    // it arms directly. This asymmetry is deliberate and predates
+    // ADR 0011.
+    try testing.expectEqual(@as(?PowerOption, PowerOption.suspend_), s.power_action);
+}
+
+test "console: status_message is cleared once the user starts typing" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+    s.status_message = "Authentication failed";
 
     try s.handleAction(.{ .print = 'v' });
-    try s.handleAction(.enter); // -> password
-    try s.handleAction(.session_picker); // -> picker OVERLAY
-    try testing.expectEqual(FieldState.picker, s.field);
-    try s.handleAction(.enter); // confirm -> back to password
-    try testing.expectEqual(FieldState.password, s.field);
+    try testing.expectEqual(@as(?[]const u8, null), s.status_message);
+}
+
+test "console: Session view cursor skips disabled entries" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+    try s.handleAction(.session_picker);
+
+    // v1: only .terminal is enabled, so the cursor cannot leave it.
+    try s.handleAction(.down);
+    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
+    try s.handleAction(.up);
+    try testing.expectEqual(SessionType.terminal, s.picker_cursor);
+}
+
+test "console: entering the Session view clears a stale status message" {
+    var s = try makeConsoleState(testing.allocator);
+    defer s.deinit();
+    s.status_message = "Authentication failed";
+
+    try s.handleAction(.session_picker);
+    try s.handleAction(.enter); // confirm
+    try testing.expectEqual(@as(?[]const u8, null), s.status_message);
 }
