@@ -530,8 +530,46 @@ pub const SurfaceRegistry = struct {
     }
 
     /// Mark surface as having a pending commit
+    /// Commit: the ADR 0022 transaction boundary.
+    ///
+    /// A frame is the pair (surface state snapshot, command stream).
+    /// This is where the pair is formed: the staged surface state is
+    /// promoted to current, together with whatever command stream is
+    /// attached, and the two become visible to composition at the same
+    /// instant. A presented frame therefore cannot be rasterized
+    /// against a state it was not drawn for; the guarantee is
+    /// structural, not enforced by a check.
+    ///
+    /// The promotion is a single struct assignment, so it is atomic
+    /// with respect to composition by construction: the compositor
+    /// reads current, and current is never partially written.
+    ///
+    /// SEMANTIC INVARIANT (ADR 0022): the client owns rendering against
+    /// a compositor-provided configuration; the compositor owns
+    /// configuration authority. Commit is the client saying "I have
+    /// produced a frame for the configuration I hold", not "make me
+    /// this size".
+    ///
+    /// The cursor does not come through here (ADR 0022 cursor
+    /// boundary; audit SA-2). Its daemon-internal paths write current
+    /// directly, because cursor position is compositor-owned pointer
+    /// state with no client frame that must be atomic with it.
     pub fn commit(self: *SurfaceRegistry, id: protocol.SurfaceId) !u64 {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+
+        // Composition order depends on visibility and z-order. Dirty it
+        // only if promotion actually changes one of them: this is the
+        // point where the composition-visible value changes, which is
+        // why order_dirty belongs here and not on the setters.
+        if (surface.current.visible != surface.pending.visible or
+            surface.current.z_order != surface.pending.z_order)
+        {
+            self.order_dirty = true;
+        }
+
+        // Promote. One assignment: current is never half-updated.
+        surface.current = surface.pending;
+
         surface.pending_commit = true;
         surface.frame_number += 1;
         return surface.frame_number;
@@ -790,4 +828,90 @@ test "SurfaceRegistry: cursor immediate paths write current, bypassing staging" 
     // The cursor IS composited, with no commit anywhere.
     const order = try registry.getCompositionOrder();
     try std.testing.expectEqual(@as(usize, 1), order.len);
+}
+
+// D-12.3 (ADR 0022): the transaction boundary.
+//
+// This test asserts that commit is the ONLY promotion path: staged
+// state is invisible until commit, and commit makes the whole staged
+// set visible at once. It is the counterpart to the D-12.2 ownership
+// test, which asserts that setters cannot bypass this boundary.
+test "SurfaceRegistry: commit promotes pending to current" {
+    const allocator = std.testing.allocator;
+    var registry = SurfaceRegistry.init(allocator);
+    defer registry.deinit();
+
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+    const id = surface.id;
+
+    try registry.setVisible(id, true);
+    try registry.setPosition(id, 100, 200);
+    try registry.setLogicalSize(id, 1024, 768);
+    try registry.setZOrder(id, 7);
+
+    // Staged, not promoted: composition still sees nothing.
+    try std.testing.expectEqual(false, surface.current.visible);
+    try std.testing.expectEqual(@as(usize, 0), (try registry.getCompositionOrder()).len);
+
+    const frame = try registry.commit(id);
+    try std.testing.expectEqual(@as(u64, 1), frame);
+
+    // Promoted: every staged field is now current, together.
+    try std.testing.expectEqual(true, surface.current.visible);
+    try std.testing.expectEqual(@as(f32, 100), surface.current.position_x);
+    try std.testing.expectEqual(@as(f32, 200), surface.current.position_y);
+    try std.testing.expectEqual(@as(f32, 1024), surface.current.logical_width);
+    try std.testing.expectEqual(@as(f32, 768), surface.current.logical_height);
+    try std.testing.expectEqual(@as(i32, 7), surface.current.z_order);
+
+    // And it is composited.
+    try std.testing.expectEqual(@as(usize, 1), (try registry.getCompositionOrder()).len);
+
+    // current and pending are coherent after promotion: a commit with
+    // nothing staged since is a no-op on state.
+    try std.testing.expectEqual(surface.pending.position_x, surface.current.position_x);
+    _ = try registry.commit(id);
+    try std.testing.expectEqual(@as(f32, 100), surface.current.position_x);
+}
+
+// D-12.3 (ADR 0022 invariant I3): a frame is self-consistent.
+//
+// The defect this whole increment exists to fix. A mutation arriving
+// while the client is mid-draw must not be observable by composition
+// until the client commits a stream drawn for it. Before D-12, the
+// mutation landed on current immediately and the next composite picked
+// it up, so a frame could be composited against state its command
+// stream was never drawn for.
+//
+// This is bench requirement 2 (position change during draw) expressed
+// as a unit test: it is the one that proves the general mechanism
+// rather than a resize special case, and it fails on pre-D-12 code.
+test "SurfaceRegistry: mid-draw mutation is not visible until commit (I3)" {
+    const allocator = std.testing.allocator;
+    var registry = SurfaceRegistry.init(allocator);
+    defer registry.deinit();
+
+    const surface = try registry.createSurface(1, 1000, 100, 100);
+    const id = surface.id;
+
+    // Frame 1: the client draws and commits at position (0, 0).
+    try registry.setVisible(id, true);
+    _ = try registry.commit(id);
+    try std.testing.expectEqual(@as(f32, 0), surface.current.position_x);
+
+    // The client begins drawing frame 2 for the CURRENT position.
+    // Meanwhile, a position change arrives (a window manager moving it,
+    // say). It must stage, and must NOT be visible to the composite
+    // that presents the in-flight frame.
+    try registry.setPosition(id, 500, 500);
+
+    // Composite now: the in-flight frame is presented at the position
+    // it was drawn for, not the newly staged one. This is I3.
+    try std.testing.expectEqual(@as(f32, 0), surface.current.position_x);
+    try std.testing.expectEqual(@as(f32, 0), surface.current.position_y);
+
+    // The client now commits a frame drawn for the new position.
+    _ = try registry.commit(id);
+    try std.testing.expectEqual(@as(f32, 500), surface.current.position_x);
+    try std.testing.expectEqual(@as(f32, 500), surface.current.position_y);
 }
