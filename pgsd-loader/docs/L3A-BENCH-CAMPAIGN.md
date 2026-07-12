@@ -756,3 +756,106 @@ MOD_LOAD efirt error 6, or SetVirtualAddressMap handling).
    the mountroot prompt (no regression).
 4. Leave the physical-hardware question open unless a future explicit
    decision, under ADR 0005 Decision 6, authorizes another bench test.
+
+### F9: pgsd-loader never calls SetVirtualAddressMap, and the kernel says so
+
+**Status: open. Strongest F7 lead to date. Source-grounded, emulation-testable.**
+
+Recorded 2026-07-12, while re-reading the reference loader to plan F8.
+It supersedes F8's priority: F8 remains a real sequencing divergence,
+but F9 is a missing call, not a reordering, and the kernel already told
+us about it.
+
+#### The evidence chain
+
+**1. We never call it.** A search of `pgsd-loader/src/` for
+`SetVirtualAddressMap` returns nothing. The loader exits boot services
+and jumps to the kernel without ever setting the EFI virtual address
+map.
+
+**2. The reference loader does, and AFTER ExitBootServices.**
+`stand/efi/loader/bootinfo.c`:
+
+- `efi_do_vmap()` (line 143) walks the memory map and, for every
+  descriptor carrying `EFI_MEMORY_RUNTIME`, sets
+  `VirtualStart = PhysicalStart` (an identity map), then calls
+  `RS->SetVirtualAddressMap(nset * mmsz, mmsz, mmver, vmap)` (line 166).
+- `bi_load_efi_data()` calls it at line 313, which is AFTER the
+  `ExitBootServices` retry loop (~line 294). This is legal and
+  deliberate: SetVirtualAddressMap is a RUNTIME service, not a boot
+  service, so it survives the exit.
+
+So the reference sequence is: build metadata, tight
+GetMemoryMap/ExitBootServices loop, THEN SetVirtualAddressMap, then
+jump. We do the first two (modulo F8's sequencing) and omit the third
+entirely.
+
+**3. The kernel detects the omission, and the error code matches what
+we saw.** `sys/dev/efidev/efirt.c` (line ~238) says it outright:
+
+  "Some UEFI implementations have multiple implementations of the
+  RS->GetTime function. They switch from one we can only use early in
+  the boot process to one valid as a RunTime service only when we call
+  RS->SetVirtualAddressMap. As this is not always the case, e.g. with
+  an old loader.efi, check if the RS->GetTime function is within the
+  EFI map, and fail to attach if not."
+
+It then returns `ENXIO`, which is errno **6**.
+
+That is exactly the `MOD_LOAD efirt error 6` observed in the emulation
+runs and dismissed at the time as cosmetic. It was not cosmetic. It was
+the kernel reporting, precisely, that this loader never called
+SetVirtualAddressMap.
+
+#### Why this fits the metal-versus-QEMU split
+
+The kernel comment describes firmware that KEEPS TWO IMPLEMENTATIONS of
+its runtime services and switches to the real one only when
+SetVirtualAddressMap is called. OVMF (QEMU) does not do this: its
+runtime pointers are valid without the call, so omitting it costs
+nothing but a failed efirt attach, which is what we saw and shrugged
+off. Apple firmware is exactly the class of implementation the comment
+is warning about.
+
+This is a hypothesis about the mechanism, not an established cause. What
+IS established: we omit a call the reference makes, the kernel detects
+the omission, and it reports it with the error code we observed and
+ignored.
+
+#### What would support or falsify it
+
+Support: implementing efi_do_vmap's identity-mapping walk and calling
+SetVirtualAddressMap after ExitBootServices makes the `MOD_LOAD efirt
+error 6` disappear in emulation. That is directly testable, costs
+nothing, and is the immediate next step.
+
+Falsify: the error persists after the call is added correctly, meaning
+the runtime pointer still is not in the map and something else is wrong.
+
+Neither outcome proves anything about metal on its own. But a loader
+that no longer omits a call the working reference makes, and that no
+longer draws an error from the kernel saying so, is a materially
+different artifact from the one that failed twice.
+
+#### Relationship to ADR 0005 Decision 6
+
+Decision 6 retired metal arming and requires, for any reversal, an
+amendment that first states WHAT ABOUT THE METAL HANDOFF HAS CHANGED.
+
+F9 is a candidate answer to that question, and F8 is a second. Neither
+is sufficient yet: they are changes to make and verify in emulation.
+The bar Decision 6 sets is not "we have a new idea", it is "we have
+corrected a specific, source-identified defect in the handoff, and the
+correction is verified". F9 is the first defect that meets the
+"specific and source-identified" half.
+
+Metal arming remains retired until the corrections are made, verified in
+emulation, and an amendment is written.
+
+#### Ownership context
+
+F7 is not a curiosity. It is the difference between disabling FreeBSD's
+boot chrome via loader.conf and OWNING the boot path: pgsd-loader
+carries no Forth, no Lua, no beastie, and no menu, because none of it
+was ever written into it. That is the architecturally correct answer to
+"remove the FreeBSD boot UI", and it is what completing F7 buys.
