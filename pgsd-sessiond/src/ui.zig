@@ -1177,7 +1177,13 @@ pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32
                 .in_progress => "Please wait...",
             },
             .picker => "[UP/DN] Select   [ENTER] Confirm   [ESC] Cancel",
-            .password => "[ENTER] Log in   [TAB] Change session   [ESC] Clear   [CTRL-Q] Power",
+            // Advertise CTRL-S, not TAB. Bare Tab is not currently
+            // delivered to this daemon (Ctrl chords are), so a legend
+            // chip saying [TAB] tells the user to press a key that does
+            // nothing. Tab still works to confirm inside the picker,
+            // which the .picker legend does not need to mention because
+            // [ENTER] is the one users reach for.
+            .password => "[ENTER] Log in   [CTRL-S] Change session   [ESC] Clear   [CTRL-Q] Power",
             .identify => "[ENTER] Continue   [ESC] Clear   [CTRL-Q] Power",
             .submitting => "Authenticating...",
         };
