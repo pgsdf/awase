@@ -345,55 +345,91 @@ pub fn main() uefi.Status {
                                     // markers are best-effort: a failed
                                     // post-exit write is information,
                                     // not a step to retry.
+                                    // F8: the exit sequence, restructured to
+                                    // match the reference.
+                                    //
+                                    // stand/efi/loader/bootinfo.c bi_load()
+                                    // does, in this order:
+                                    //
+                                    //   file_addmetadata(HOWTO, ENVP, ...)  build records
+                                    //   bi_load_efi_data(kfp, exit_bs)      map, EXIT, vmap
+                                    //   md_copymodules(0, is64)             THEN copy the
+                                    //                                       chain to kernel
+                                    //                                       memory
+                                    //
+                                    // The module chain is serialized into
+                                    // kernel memory AFTER ExitBootServices.
+                                    // Everything before the exit is
+                                    // file_addmetadata, which appends records
+                                    // to a list in the loader's own heap: no
+                                    // firmware call, no allocation from the
+                                    // firmware.
+                                    //
+                                    // The invariant that buys is exact:
+                                    // between the successful GetMemoryMap and
+                                    // ExitBootServices, the reference does
+                                    // NOTHING. Its inner for(;;) loop grows
+                                    // the buffer and re-fetches the map, so
+                                    // the final GetMemoryMap has no
+                                    // allocation after it; the outer
+                                    // for(retry=2) loop re-runs the whole
+                                    // thing if the exit fails on a stale key.
+                                    // That structure, and the Matthew Garrett
+                                    // comment above it, exist because
+                                    // firmware can change the memory map
+                                    // under a loader that does work in that
+                                    // window.
+                                    //
+                                    // We used to do five things in that
+                                    // window, two of them firmware calls:
+                                    //
+                                    //   recordVerdict("MARK_MAP_CAPTURED")   SetVariable!
+                                    //   prepareVirtualMap(fmap)
+                                    //   buildChainFull(...)
+                                    //   memcpy(staging, chain)
+                                    //   recordVerdict("MARK_CHAIN_REBUILT")  SetVariable!
+                                    //
+                                    // SetVariable is precisely the class of
+                                    // call that can perturb the map, which is
+                                    // what the retry loop is defending
+                                    // against. We were doing it twice, inside
+                                    // the window the defence protects.
+                                    //
+                                    // Now: build the chain into a LOCAL
+                                    // buffer first (no firmware, no staging
+                                    // write), then capture-and-exit with
+                                    // nothing in between, then copy the chain
+                                    // into kernel staging once boot services
+                                    // are gone and nothing can move the map.
+                                    //
+                                    // ADR 0005 Decision 3 (fail closed) is
+                                    // preserved: the chain is still built
+                                    // from the FINAL map, because
+                                    // prepareVirtualMap and buildChainFull
+                                    // both run against the map we exit on. A
+                                    // rebuild failure still aborts to
+                                    // chainload rather than exiting boot
+                                    // services on a stale map. The only
+                                    // change is WHERE the bytes land and WHEN.
                                     var tries: u8 = 0;
                                     while (tries < 3) : (tries += 1) {
                                         const fmap = handoff.captureMemoryMap(bsp) catch break;
-                                        recordVerdict("MARK_MAP_CAPTURED");
 
                                         // F9: identity-map the runtime
-                                        // descriptors NOW, before the
-                                        // chain is built, because
-                                        // prepareVirtualMap writes
-                                        // virtual_start into fmap.buffer
-                                        // IN PLACE and the chain copies
-                                        // that buffer into the kernel's
-                                        // staging area as
-                                        // MODINFOMD_EFI_MAP.
-                                        //
-                                        // Order is the whole fix. The
-                                        // kernel's efi_is_in_map()
-                                        // (sys/dev/efidev/efirt.c) looks
-                                        // for the GetTime pointer inside
-                                        // p->md_virt, the descriptor's
-                                        // VIRTUAL start. If the map is
-                                        // copied to the kernel before
-                                        // virtual_start is filled in,
-                                        // the kernel sees zeros, cannot
-                                        // locate GetTime, and refuses to
-                                        // attach efirt with "EFI runtime
-                                        // services table has an invalid
-                                        // pointer" (error 6). That is
-                                        // exactly what the first cut of
-                                        // F9 produced: the firmware call
-                                        // succeeded and the metadata was
-                                        // wrong.
-                                        //
-                                        // The reference has no such bug
-                                        // because efi_do_vmap mutates
-                                        // the same buffer it later hands
-                                        // to file_addmetadata, and it
-                                        // runs first.
+                                        // descriptors in place, before the
+                                        // chain reads the map. The kernel's
+                                        // efi_is_in_map() looks for GetTime
+                                        // inside md_virt, so the map handed to
+                                        // the kernel must carry virtual_start.
                                         const vmap = handoff.prepareVirtualMap(fmap);
-                                        // Rebuild the chain with the
-                                        // final map so EFI_MAP is the
-                                        // one whose key we exit on.
-                                        // ADR 0005 Decision 3: fail
-                                        // closed. A failed rebuild means
-                                        // the kernel would receive a
-                                        // stale map; record and abort to
-                                        // chainload rather than exit
-                                        // boot services on it.
-                                        if (metadata.buildChainFull(&chain_buf, chain_rel + lr.base_paddr, .{
+
+                                        // Build the chain into a LOCAL buffer.
+                                        // Memory only: no firmware call, no
+                                        // write to kernel staging. This is the
+                                        // analogue of file_addmetadata, which
+                                        // the reference also does before the
+                                        // exit.
+                                        const fch = metadata.buildChainFull(&chain_buf, chain_rel + lr.base_paddr, .{
                                             .name = "kernel",
                                             .addr = lr.base_paddr,
                                             .size = image_span,
@@ -402,96 +438,54 @@ pub fn main() uefi.Status {
                                             .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
                                             .descriptor_size = fmap.descriptor_size,
                                             .descriptor_version = fmap.descriptor_version,
-                                        })) |fch| {
-                                            const cs: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
-                                            @memcpy(cs[0..fch.len], chain_buf[0..fch.len]);
-                                        } else |_| {
+                                        }) catch {
+                                            // Fail closed (ADR 0005 Decision 3):
+                                            // a stale map must never reach the
+                                            // kernel. Boot services are still
+                                            // live here, so this marker is a
+                                            // legal call and chainload is still
+                                            // reachable.
                                             recordVerdict("MARK_REBUILD_FAILED abort=chainload");
                                             ho_note = "boot=REBUILD_FAILED";
                                             break;
-                                        }
-                                        recordVerdict("MARK_CHAIN_REBUILT");
+                                        };
 
-                                        // F9: build the identity virtual
-                                        // map BEFORE exiting. It must be
-                                        // built here because the copy
-                                        // needs no allocator but the map
-                                        // it reads was allocated with a
-                                        // BOOT service; after the exit we
-                                        // could neither allocate nor
-                                        // re-fetch. Applying it comes
-                                        // after, as the reference does
-                                        // (bootinfo.c:313, after the exit
-                                        // loop): SetVirtualAddressMap is
-                                        // a RUNTIME service and survives.
-                                        // The vmap was prepared above,
-                                        // before the chain build, so the
-                                        // map the kernel receives already
-                                        // carries virtual_start.
+                                        // THE WINDOW. Nothing between the map
+                                        // capture above and the exit below
+                                        // touches the firmware. No marker is
+                                        // written here, deliberately: a
+                                        // SetVariable in this window is exactly
+                                        // what the reference's retry loop
+                                        // exists to survive, and writing one
+                                        // would be doing the thing the defence
+                                        // defends against.
                                         bsp.exitBootServices(uefi.handle, fmap.key) catch continue;
+
                                         // Past ExitBootServices: no boot
-                                        // services, no console. One
-                                        // marker here, in physical mode
-                                        // before the cr3 load, partitions
-                                        // the fault: present means EBS
-                                        // returned and the fault is in
-                                        // the trampoline or the kernel;
-                                        // absent (with MARK_CHAIN_REBUILT
-                                        // present) means EBS itself reset.
+                                        // services, no console. One marker
+                                        // here, in physical mode before the
+                                        // cr3 load, partitions the fault:
+                                        // present means EBS returned and the
+                                        // fault is in the trampoline or the
+                                        // kernel; absent means EBS itself
+                                        // reset.
                                         recordVerdict("MARK_EXITED_BOOTSERVICES");
 
-                                        // F9: apply it. The kernel checks
-                                        // (efirt.c) whether its GetTime
-                                        // pointer lies within the EFI map
-                                        // and refuses to attach efirt if
-                                        // not, returning ENXIO (errno 6).
-                                        // That is the "MOD_LOAD efirt
-                                        // error 6" we saw in emulation
-                                        // and wrongly called cosmetic.
-                                        //
-                                        // ORDERING, and it is not
-                                        // optional: SetVirtualAddressMap
-                                        // must be the LAST firmware call
-                                        // before the jump. After it, the
-                                        // UEFI spec requires runtime
-                                        // services to be invoked through
-                                        // the NEW virtual mapping, and we
-                                        // still hold the old
-                                        // system_table.runtime_services
-                                        // pointer. Calling through it is
-                                        // undefined.
-                                        //
-                                        // recordVerdict() is exactly such
-                                        // a call: it is rs.setVariable().
-                                        // The first cut of F9 recorded
-                                        // MARK_VMAP_SET *after* the vmap,
-                                        // through the stale pointer, and
-                                        // the transfer stopped reaching
-                                        // the kernel: every landmark went
-                                        // dark in emulation on a path
-                                        // that had previously booted to
-                                        // mountroot. The marker is
-                                        // therefore written BEFORE the
-                                        // call, recording the intent
-                                        // rather than the outcome.
-                                        //
-                                        // The outcome is still knowable:
-                                        // if the call fails we fall
-                                        // through to the jump anyway (a
-                                        // kernel with no virtual map is
-                                        // no worse off than the one that
-                                        // never made the call), and the
-                                        // kernel's own efirt attach is
-                                        // the authoritative report on
-                                        // whether the runtime services
-                                        // ended up usable.
-                                        //
-                                        // The reference does the same:
-                                        // after efi_do_vmap (bootinfo.c
-                                        // :313) it only writes memory
-                                        // (file_addmetadata) and jumps.
-                                        // It makes no further firmware
-                                        // call.
+                                        // Now copy the chain into kernel
+                                        // staging, as the reference does with
+                                        // md_copymodules AFTER the exit.
+                                        // Plain memory: boot services are gone
+                                        // and nothing can move the map under
+                                        // us.
+                                        const cs: [*]u8 = @ptrFromInt(lr.staging + chain_rel);
+                                        @memcpy(cs[0..fch.len], chain_buf[0..fch.len]);
+
+                                        // F9: apply the virtual map. Last
+                                        // firmware call before the jump; the
+                                        // marker is written BEFORE it, because
+                                        // after SetVirtualAddressMap the
+                                        // runtime-services pointer we hold is
+                                        // no longer valid to call through.
                                         if (vmap.count > 0 and !vmap.truncated) {
                                             recordVerdict("MARK_VMAP_ATTEMPT");
                                             handoff.applyVirtualMap(vmap) catch {};

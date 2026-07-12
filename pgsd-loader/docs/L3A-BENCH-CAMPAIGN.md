@@ -1172,3 +1172,72 @@ a real, source-identified, verified correction to that handoff, and it
 is the first thing this campaign has produced that meets that bar. It is
 not sufficient on its own: F8 remains, and the amendment should be
 written against a handoff with both corrected, not one.
+
+#### F8 root cause and fix: the exit window had two firmware calls in it
+
+F8 was recorded as "a sequencing divergence": the reference builds all
+metadata before a tight GetMemoryMap/ExitBootServices loop and this
+loader interposes the chain rebuild. Reading bi_load() properly makes it
+exact, and worse than recorded.
+
+**The reference exits boot services BEFORE serializing the chain.**
+stand/efi/loader/bootinfo.c bi_load():
+
+    file_addmetadata(HOWTO, ENVP, KERNEND, MODULEP, FW_HANDLE, ...)
+    bi_load_efi_data(kfp, exit_bs)   <- captures map, EXITS, does vmap
+    md_copymodules(0, is64)          <- THEN copies the chain into
+                                        kernel memory
+
+Everything before the exit is file_addmetadata, which appends records to
+a list in the loader's OWN heap. No firmware call. No allocation from
+the firmware. The bytes only reach kernel memory afterwards, when boot
+services are gone and nothing can move the map.
+
+And inside bi_load_efi_data, the window is empty by construction. The
+inner `for (;;)` grows the buffer and re-fetches the map, so the final
+successful GetMemoryMap has no allocation after it; the outer
+`for (retry = 2; ...)` re-runs the whole thing if ExitBootServices fails
+on a stale key. That structure exists for a reason the comment states:
+Matthew Garrett observed firmware changing the memory map during
+ExitBootServices, "probably because callbacks are allocating memory".
+
+**We were doing five things in that window, two of them firmware
+calls:**
+
+    recordVerdict("MARK_MAP_CAPTURED")     <- SetVariable
+    prepareVirtualMap(fmap)
+    buildChainFull(...)
+    memcpy(kernel staging, chain)
+    recordVerdict("MARK_CHAIN_REBUILT")    <- SetVariable
+
+SetVariable is exactly the class of call the retry loop is defending
+against. We were making it twice, inside the window the defence
+protects, and then copying into kernel staging as well.
+
+**Fixed.** The chain is now built into a LOCAL buffer before the exit
+(memory only, the analogue of file_addmetadata), the window between
+captureMemoryMap and exitBootServices contains no firmware call at all,
+and the copy into kernel staging happens AFTER the exit, as
+md_copymodules does. The success path is now:
+
+    captureMemoryMap        (allocates, then fetches: key valid after)
+    prepareVirtualMap       (memory: writes virtual_start in place)
+    buildChainFull          (memory: into a local buffer)
+    ---- exitBootServices ----   nothing between it and the capture
+    MARK_EXITED_BOOTSERVICES
+    memcpy -> kernel staging     (memory, boot services gone)
+    MARK_VMAP_ATTEMPT
+    SetVirtualAddressMap         (last firmware call)
+    transferToKernel
+
+ADR 0005 Decision 3 (fail closed) is preserved: the chain is still built
+from the FINAL map, and a rebuild failure still aborts to chainload
+rather than exiting boot services on a stale one. The marker on that
+path is legal because boot services are still live there. Only the
+success path changed, and only in where the bytes land and when.
+
+The MARK_MAP_CAPTURED and MARK_CHAIN_REBUILT breadcrumbs are gone.
+They were diagnostics, and they were being written in the one window
+where a firmware call is least defensible. The evidence they carried is
+now covered by MARK_EXITED_BOOTSERVICES (which partitions the fault
+either side of the exit) and by the fail-closed abort marker.
