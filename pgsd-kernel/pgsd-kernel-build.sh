@@ -942,11 +942,25 @@ Remove them now? (default: Remove)" 16 70; then
             done
 
             # Regenerate linker.hints so autoload doesn't reference
-            # the now-gone modules.
+            # the now-gone modules. This is not optional cleanup: the
+            # removal of the .ko files is only half the reap. If
+            # linker.hints still advertises PNP entries for the
+            # suppressed HID drivers, the autoloader still tries to
+            # match them at device probe and inputfs does not get the
+            # devices, which presents as no keyboard and no mouse at
+            # the login prompt even though the .ko files are gone.
+            # A kldxref failure therefore fails the closure; it must
+            # not pass silently as it did before (it was a bare note,
+            # so an install could report success and still boot with
+            # no input).
             if kldxref /boot/kernel 2>/dev/null; then
-                note "ran: kldxref /boot/kernel"
+                ok "regenerated /boot/kernel/linker.hints"
             else
-                note "WARN: kldxref /boot/kernel failed; rerun manually"
+                fail "kldxref /boot/kernel FAILED; linker.hints is stale"
+                note "the .ko files were removed but the hints still"
+                note "  advertise them, so HID autoload will still fight"
+                note "  inputfs and you will boot with no keyboard/mouse"
+                note "run before rebooting: sudo kldxref /boot/kernel"
             fi
 
             # Re-verify cleanup actually completed.
@@ -980,6 +994,12 @@ Remove them now? (default: Remove)" 16 70; then
     fi
 
     # 2. linker.hints must not advertise PNP for the suppressed drivers.
+    # This is a FAIL, not a WARN. Stale hints that still advertise the
+    # AD-8 HID drivers make the autoloader try to match them at device
+    # probe even after the .ko files are gone, so inputfs does not get
+    # the USB HID devices and the system boots to the pgsd-sessiond
+    # login prompt with no keyboard and no mouse. Reported as a WARN
+    # once, which let an install pass while leaving exactly that state.
     if [ -f /boot/kernel/linker.hints ]; then
         hid_alt=$(echo "$AD8_HID_MODULES" | tr ' ' '|')
         hints_leak=$(strings /boot/kernel/linker.hints 2>/dev/null | \
@@ -989,8 +1009,24 @@ Remove them now? (default: Remove)" 16 70; then
         if [ "$hints_leak" = "0" ]; then
             ok "/boot/kernel/linker.hints has no suppressed-driver entries"
         else
-            warn "/boot/kernel/linker.hints advertises $hints_leak suppressed-driver entries"
-            note "rerun: sudo kldxref /boot/kernel"
+            note "linker.hints advertises $hints_leak suppressed-driver entries; regenerating"
+            if kldxref /boot/kernel 2>/dev/null; then
+                # Re-measure: regeneration must actually clear them.
+                hints_leak=$(strings /boot/kernel/linker.hints 2>/dev/null | \
+                    grep -cE "(${hid_alt})\.ko" || true)
+                : "${hints_leak:=0}"
+                if [ "$hints_leak" = "0" ]; then
+                    ok "regenerated linker.hints; no suppressed-driver entries"
+                else
+                    fail "linker.hints still advertises $hints_leak suppressed-driver entries after kldxref"
+                    note "the suppressed .ko may still be present in /boot/kernel/"
+                    note "booting now would give no keyboard and no mouse"
+                fi
+            else
+                fail "linker.hints advertises $hints_leak suppressed-driver entries and kldxref failed"
+                note "booting now would give no keyboard and no mouse"
+                note "run: sudo kldxref /boot/kernel"
+            fi
         fi
     fi
 
