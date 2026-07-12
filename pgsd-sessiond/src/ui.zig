@@ -1018,6 +1018,246 @@ fn drawBorder(enc: *Encoder, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: 
 /// supplies the surface dimensions (queried from the daemon) so
 /// the layout can center on the real display rather than assuming
 /// a fixed size.
+// =============================================================================
+// Console layout (prototype)
+// =============================================================================
+//
+// An alternative to the centered login card: a two-pane operating-system
+// console. Borrowed from workstation-console INTERACTION (keyboard-first,
+// persistent navigation, information-dense, predictable layout), not from
+// VT artwork. Modern typography and the existing palette are kept.
+//
+//   +--------------------------------------------------------------+
+//   | hostname            network              mem                  |  header rule
+//   +--------------+-----------------------------------------------+
+//   | > Login      | Username: ______                              |
+//   |   Session    | Password: ******                              |  rail | pane
+//   |   Power      |                                               |
+//   |              | Session: Terminal                             |
+//   +--------------+-----------------------------------------------+
+//   | [ENTER] Log in   [CTRL-S] Change session   [CTRL-Q] Power    |  legend
+//   +--------------------------------------------------------------+
+//
+// PROTOTYPE SCOPE, deliberately narrow so this is cheap and reversible:
+// this function renders the EXISTING State. It does not touch
+// handleAction or FieldState. The rail is DECORATIVE: it shows the
+// structure (Login / Session / Power as peer views) without implementing
+// navigation, and its marker tracks state.field so it is at least
+// honest about where you are. Making the rail navigable is a real
+// state-machine revision (a focus axis of {rail, content} crossed with
+// a view axis) and is deliberately NOT attempted here.
+//
+// The question this prototype exists to answer is the only one that
+// matters: does this feel like an operating-system console, or like a
+// busy dialog? If it does not, delete this function.
+//
+// Selected by PGSD_SESSIOND_LAYOUT=console.
+//
+// Layout snaps to the character grid. The renderer is monospace
+// (8x16 glyphs scaled by SCALE), so a console layout is what these
+// primitives are actually for; the centered card computes floating
+// centers on a grid substrate, which is part of why it reads as an
+// application dialog rather than system chrome.
+//
+// Header content, per the design review: hostname answers "am I at the
+// right machine", network answers "can it reach anything". Memory is
+// shown because State already carries it, but it is the metric that is
+// easy to get rather than the one that is useful at a login prompt, and
+// it is rendered dim for that reason.
+//
+// TODO (needs sysinfo + State, so out of scope for a draw()-only
+// prototype): kernel identity. On this machine "n283562-...  PGSD"
+// versus GENERIC is the single most operationally relevant fact, and a
+// login header that stated it would have saved real time. Add
+// sysinfo.kernelIdent() and a State field, then put it in the header.
+pub fn drawConsole(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32, surface_h: f32) !void {
+    const sf: f32 = @floatFromInt(SCALE);
+    const gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
+    const gh: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * sf;
+    const row: f32 = gh + 6.0 * sf; // line height + leading
+
+    // Cell-snapped padding.
+    const pad_x: f32 = gw;
+    const pad_y: f32 = row * 0.5;
+
+    try enc.fillRect(0, 0, surface_w, surface_h, 0, 0, 0, 1);
+
+    // ---- Header: system status line, not application branding -------
+    const header_h: f32 = row + pad_y * 2;
+    {
+        const y: f32 = pad_y;
+
+        // Hostname, bright cyan: the machine's identity is the most
+        // important thing in the header.
+        try drawText(enc, state.hostname, pad_x, y, CYAN_R, CYAN_G, CYAN_B, CYAN_A);
+
+        // Network, dim cyan, right-of-center.
+        const net_x: f32 = surface_w * 0.42;
+        try drawText(enc, state.network_str, net_x, y, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+
+        // Memory, dim cyan, right-aligned. Dim deliberately: see the
+        // note above about it being the easy metric, not the useful one.
+        var membuf: [64]u8 = undefined;
+        const mem = std.fmt.bufPrint(&membuf, "mem {s}", .{state.physmem_str}) catch state.physmem_str;
+        const mem_x: f32 = surface_w - pad_x - @as(f32, @floatFromInt(mem.len)) * gw;
+        try drawText(enc, mem, mem_x, y, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+    }
+    // Header rule.
+    try enc.fillRect(0, header_h, surface_w, sf, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+
+    // ---- Footer: the legend, unchanged in content ------------------
+    const footer_h: f32 = row + pad_y * 2;
+    const footer_top: f32 = surface_h - footer_h;
+    try enc.fillRect(0, footer_top, surface_w, sf, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+    {
+        const hint = legendFor(state);
+        const x: f32 = pad_x;
+        const y: f32 = footer_top + pad_y;
+        try drawText(enc, hint, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+    }
+
+    // ---- Rail: persistent navigation (decorative in the prototype) --
+    const rail_w: f32 = gw * 16;
+    const body_top: f32 = header_h + sf;
+    const body_bot: f32 = footer_top;
+    try enc.fillRect(rail_w, body_top, sf, body_bot - body_top, DIM_CYAN_R, DIM_CYAN_G, DIM_CYAN_B, DIM_CYAN_A);
+
+    {
+        // The rail marker tracks the current field so it is honest about
+        // where the user is, even though it cannot be navigated yet.
+        const active: RailItem = switch (state.field) {
+            .identify, .password, .submitting => .login,
+            .picker => .session,
+            .power_menu => .power,
+        };
+
+        var y: f32 = body_top + pad_y;
+        inline for (.{ RailItem.login, RailItem.session, RailItem.power }) |item| {
+            const is_active = item == active;
+            const marker: []const u8 = if (is_active) ">" else " ";
+            var buf: [32]u8 = undefined;
+            const line = std.fmt.bufPrint(&buf, "{s} {s}", .{ marker, item.label() }) catch item.label();
+            if (is_active) {
+                try drawText(enc, line, pad_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+            } else {
+                try drawText(enc, line, pad_x, y, DIM_R, DIM_G, DIM_B, DIM_A);
+            }
+            y += row;
+        }
+    }
+
+    // ---- Pane: the current view ------------------------------------
+    const pane_x: f32 = rail_w + sf + pad_x;
+    var y: f32 = body_top + pad_y;
+
+    // Username and password, as labelled rows rather than a centered
+    // card. Grid-aligned labels make the two fields scan as a form.
+    try drawConsoleField(state, enc, blink_phase, .identify, "Username:", state.username.items, false, pane_x, y, gw);
+    y += row;
+    try drawConsoleField(state, enc, blink_phase, .password, "Password:", state.password.items, true, pane_x, y, gw);
+    y += row * 2;
+
+    // The selected session, shown as a value rather than hidden behind
+    // an overlay: this is the point of the rail, that Session is a peer
+    // view whose current value is always legible.
+    {
+        var buf: [64]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Session:  {s}", .{state.selected_session.displayName()}) catch "Session:";
+        try drawText(enc, line, pane_x, y, DIM_R, DIM_G, DIM_B, DIM_A);
+        y += row * 2;
+    }
+
+    // Status message (auth failure, etc).
+    if (state.status_message) |msg| {
+        try drawText(enc, msg, pane_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+    }
+
+    // Overlays still work: the prototype does not re-implement them,
+    // which is the point. If the console layout is adopted, the picker
+    // and power menu become rail views and these overlays go away.
+    if (state.field == .picker) {
+        try drawPicker(state, enc, surface_w, surface_h);
+    }
+    if (state.field == .power_menu) {
+        try drawPowerMenu(state, enc, surface_w, surface_h);
+    }
+}
+
+/// Rail items. Peer views, in the console model.
+const RailItem = enum {
+    login,
+    session,
+    power,
+
+    fn label(self: RailItem) []const u8 {
+        return switch (self) {
+            .login => "Login",
+            .session => "Session",
+            .power => "Power",
+        };
+    }
+};
+
+/// The legend, extracted so both layouts share one source of truth.
+fn legendFor(state: *const State) []const u8 {
+    return switch (state.field) {
+        .power_menu => switch (state.power_menu_phase) {
+            .choosing => "[UP/DN] Select   [ENTER] Choose   [ESC] Cancel",
+            .confirming_shutdown => "[Y] Power off   [N] Back   [ESC] Cancel",
+            .confirming_restart => "[Y] Reboot   [N] Back   [ESC] Cancel",
+            .in_progress => "Please wait...",
+        },
+        .picker => "[UP/DN] Select   [ENTER] Confirm   [ESC] Cancel",
+        .password => "[ENTER] Log in   [CTRL-S] Change session   [ESC] Clear   [CTRL-Q] Power",
+        .identify => "[ENTER] Continue   [ESC] Clear   [CTRL-Q] Power",
+        .submitting => "Authenticating...",
+    };
+}
+
+/// A labelled field row, grid-aligned. The console analogue of drawField.
+fn drawConsoleField(
+    state: *const State,
+    enc: *Encoder,
+    blink_phase: u64,
+    which: FieldState,
+    label: []const u8,
+    contents: []const u8,
+    mask: bool,
+    x: f32,
+    y: f32,
+    gw: f32,
+) !void {
+    const focused = state.field == which or
+        (which == .password and (state.field == .picker or state.field == .submitting));
+
+    if (focused) {
+        try drawText(enc, label, x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+    } else {
+        try drawText(enc, label, x, y, DIM_R, DIM_G, DIM_B, DIM_A);
+    }
+
+    const val_x: f32 = x + @as(f32, @floatFromInt(label.len + 2)) * gw;
+
+    var buf: [256]u8 = undefined;
+    var shown: []const u8 = contents;
+    if (mask) {
+        const n = @min(contents.len, buf.len);
+        for (0..n) |i| buf[i] = '*';
+        shown = buf[0..n];
+    }
+    try drawText(enc, shown, val_x, y, AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+
+    // Cursor: block, on the active field only, blinking unless the user
+    // has not typed yet (steady-on invites the first keystroke).
+    if (state.field == which) {
+        const on = !state.typing_started or (blink_phase % 2 == 0);
+        if (on) {
+            const cx: f32 = val_x + @as(f32, @floatFromInt(shown.len)) * gw;
+            try enc.fillRect(cx, y, gw, @as(f32, @floatFromInt(font.Font.GLYPH_HEIGHT)) * @as(f32, @floatFromInt(SCALE)), AMBER_R, AMBER_G, AMBER_B, AMBER_A);
+        }
+    }
+}
+
 pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32, surface_h: f32) !void {
     const sf: f32 = @floatFromInt(SCALE);
     const scaled_gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
@@ -1169,24 +1409,8 @@ pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32
     //   a legend, since legend chips would imply pressable
     //   keys.
     {
-        const hint = switch (state.field) {
-            .power_menu => switch (state.power_menu_phase) {
-                .choosing => "[UP/DN] Select   [ENTER] Choose   [ESC] Cancel",
-                .confirming_shutdown => "[Y] Power off   [N] Back   [ESC] Cancel",
-                .confirming_restart => "[Y] Reboot   [N] Back   [ESC] Cancel",
-                .in_progress => "Please wait...",
-            },
-            .picker => "[UP/DN] Select   [ENTER] Confirm   [ESC] Cancel",
-            // Advertise CTRL-S, not TAB. Bare Tab is not currently
-            // delivered to this daemon (Ctrl chords are), so a legend
-            // chip saying [TAB] tells the user to press a key that does
-            // nothing. Tab still works to confirm inside the picker,
-            // which the .picker legend does not need to mention because
-            // [ENTER] is the one users reach for.
-            .password => "[ENTER] Log in   [CTRL-S] Change session   [ESC] Clear   [CTRL-Q] Power",
-            .identify => "[ENTER] Continue   [ESC] Clear   [CTRL-Q] Power",
-            .submitting => "Authenticating...",
-        };
+        // Shared with drawConsole: one legend, both layouts.
+        const hint = legendFor(state);
         const w: f32 = @as(f32, @floatFromInt(hint.len)) * scaled_gw;
         const x: f32 = (surface_w - w) / 2;
         const y: f32 = surface_h - line_step * 2;
@@ -2183,4 +2407,29 @@ test "Power menu: opening clears status_message" {
     s.status_message = "previous failure";
     try s.handleAction(.power_menu);
     try testing.expect(s.status_message == null);
+}
+
+// Console layout prototype: the legend is shared, so a change to one
+// layout's hints cannot silently diverge from the other's.
+test "console: legendFor matches the field state" {
+    var s = try makeTestState(testing.allocator);
+    defer s.deinit();
+
+    try testing.expect(std.mem.indexOf(u8, legendFor(&s), "[ENTER] Continue") != null);
+
+    try s.handleAction(.{ .print = 'v' });
+    try s.handleAction(.enter); // -> password
+    const pw = legendFor(&s);
+    try testing.expect(std.mem.indexOf(u8, pw, "[CTRL-S] Change session") != null);
+    // The legend must not advertise TAB, which is not delivered.
+    try testing.expect(std.mem.indexOf(u8, pw, "[TAB]") == null);
+
+    try s.handleAction(.session_picker); // -> picker
+    try testing.expect(std.mem.indexOf(u8, legendFor(&s), "[ENTER] Confirm") != null);
+}
+
+test "console: rail item labels" {
+    try testing.expectEqualStrings("Login", RailItem.login.label());
+    try testing.expectEqualStrings("Session", RailItem.session.label());
+    try testing.expectEqualStrings("Power", RailItem.power.label());
 }

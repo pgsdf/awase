@@ -964,6 +964,16 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
         var needs_redraw = true;
         var last_blink_phase: u64 = 0;
 
+        // Layout prototype selection, read once. PGSD_SESSIOND_LAYOUT=console
+        // renders the two-pane operating-system console instead of the
+        // centered login card. Presentation only: the same State is drawn
+        // and no behavior changes, so the flag is safe to flip on a bench
+        // and the prototype is deletable without touching anything else.
+        const console_layout: bool = blk: {
+            const v = std.posix.getenv("PGSD_SESSIOND_LAYOUT") orelse break :blk false;
+            break :blk std.mem.eql(u8, v, "console");
+        };
+
         // Per-conversation status buffer. Auth attempts format
         // their failure messages here and hand a slice to
         // state.resetForRetry. Single buffer since the user only
@@ -1008,7 +1018,14 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
                 state.deinit();
                 return EXIT_INTERNAL;
             };
-            ui.draw(&state, &encoder, blink_phase, surface_w_f, surface_h_f) catch |err| {
+            // Layout selection. PGSD_SESSIOND_LAYOUT=console selects the
+            // two-pane operating-system console prototype; anything else
+            // (including unset) keeps the centered login card. The
+            // prototype renders the same State and does not change any
+            // behavior, so this is a pure presentation switch and is
+            // safe to flip on a running bench.
+            const draw_fn = if (console_layout) ui.drawConsole else ui.draw;
+            draw_fn(&state, &encoder, blink_phase, surface_w_f, surface_h_f) catch |err| {
                 std.debug.print("ERROR: ui.draw failed: {s}\n", .{@errorName(err)});
                 surface.destroy();
                 conn.disconnect();
