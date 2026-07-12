@@ -2,6 +2,39 @@ const std = @import("std");
 const posix = std.posix;
 const protocol = @import("protocol");
 
+/// Mutable surface state that participates in the ADR 0022 commit
+/// transaction.
+///
+/// SEMANTIC INVARIANT (ADR 0022): the client owns rendering against a
+/// compositor-provided configuration; the compositor owns
+/// configuration authority. A frame is the pair (surface state
+/// snapshot, command stream), and the two are promoted together by
+/// commit so that a presented frame is never rasterized against a
+/// state it was not drawn for.
+///
+/// Two copies of this live on every Surface:
+///
+///   current  the state a frame is composited against. The compositor
+///            and getCompositionOrder read THIS AND ONLY THIS.
+///   pending  the state client-facing setters stage into. Promoted to
+///            current, atomically, by commit.
+///
+/// The split is expressed in the type rather than by convention so
+/// that a composite-time read of pending state is a compile error
+/// rather than a review finding.
+///
+/// Not included here, deliberately:
+///   hotspot_x/y  cursor sprite offset. Cursor state does not inherit
+///                surface transaction semantics (ADR 0022; audit SA-2).
+pub const SurfaceState = struct {
+    logical_width: f32,
+    logical_height: f32,
+    position_x: f32 = 0,
+    position_y: f32 = 0,
+    z_order: i32 = 0,
+    visible: bool = false,
+};
+
 /// Surface state
 pub const Surface = struct {
     id: protocol.SurfaceId,
@@ -22,13 +55,18 @@ pub const Surface = struct {
     // privileged uid bypassing the check). See ADR 0006 §§3-4.
     owner_uid: posix.uid_t,
 
-    // Geometry
-    logical_width: f32,
-    logical_height: f32,
-    position_x: f32 = 0,
-    position_y: f32 = 0,
-    z_order: i32 = 0,
-    visible: bool = false,
+    // ADR 0022 transactional state. Read `current` at composite time;
+    // stage into `pending` from the client-facing setters; promote
+    // pending to current in commit().
+    //
+    // D-12.1 introduces the split with behavior unchanged: every
+    // setter still writes current directly (via the *Current helpers
+    // below), so this increment is a pure refactor. D-12.2 routes the
+    // client-facing setters to pending and D-12.3 makes commit
+    // promote. Splitting first keeps those two increments small and
+    // reviewable.
+    current: SurfaceState,
+    pending: SurfaceState,
 
     // Hotspot offset within the surface's sprite, in surface-local
     // pixels. Per ADR 0005 section 3, used by the cursor surface
@@ -43,6 +81,11 @@ pub const Surface = struct {
     // surface struct uniform, and a future hotspot-using feature
     // (e.g. drag-and-drop visual offsets) can use them without
     // a struct migration.
+    //
+    // NOT transactional (ADR 0022, audit SA-2): hotspot is cursor
+    // state, and cursor state does not inherit surface transaction
+    // semantics. It stays outside SurfaceState and is applied
+    // immediately.
     hotspot_x: i32 = 0,
     hotspot_y: i32 = 0,
 
@@ -54,9 +97,10 @@ pub const Surface = struct {
     frame_number: u64 = 0,
 
     pub fn getPixelCount(self: *const Surface) u64 {
-        return @intFromFloat(@abs(self.logical_width * self.logical_height));
+        return @intFromFloat(@abs(self.current.logical_width * self.current.logical_height));
     }
 };
+
 
 /// Attached buffer - supports both shared memory (local) and inline data (remote)
 pub const AttachedBuffer = struct {
@@ -231,12 +275,18 @@ pub const SurfaceRegistry = struct {
         self.next_id += 1;
 
         const surface = try self.allocator.create(Surface);
+        // Both copies start identical: the creation geometry is the
+        // surface's initial configuration and there is nothing staged.
+        const initial: SurfaceState = .{
+            .logical_width = width,
+            .logical_height = height,
+        };
         surface.* = .{
             .id = id,
             .owner = owner,
             .owner_uid = owner_uid,
-            .logical_width = width,
-            .logical_height = height,
+            .current = initial,
+            .pending = initial,
         };
 
         try self.surfaces.put(id, surface);
@@ -250,9 +300,14 @@ pub const SurfaceRegistry = struct {
         if (self.compositing) {
             // Defer destruction until composition ends
             self.pending_destroy.append(self.allocator, id) catch return;
-            // Mark as invisible immediately to prevent rendering
+            // Mark as invisible immediately to prevent rendering.
+            // This writes CURRENT deliberately: the surface is being
+            // torn down, so it must leave composition now and must not
+            // wait for a commit that will never come. It also writes
+            // pending so nothing can promote it back into view.
             if (self.getSurface(id)) |surface| {
-                surface.visible = false;
+                surface.current.visible = false;
+                surface.pending.visible = false;
             }
             self.order_dirty = true;
         } else {
@@ -349,49 +404,127 @@ pub const SurfaceRegistry = struct {
         }
     }
 
-    /// Set surface visibility
+    // ---- ADR 0022 transactional setters (client-facing) ------------
+    //
+    // These four stage into `pending`. In D-12.1 they ALSO write
+    // `current`, so behavior is unchanged: nothing promotes yet, and a
+    // pure refactor must not alter what is composited. D-12.2 removes
+    // the `current` writes (one line each) and D-12.3 makes commit()
+    // promote. Keeping both copies in lockstep here is what makes this
+    // increment bit-identical to master.
+    //
+    // The cursor surface does NOT go through these (ADR 0022 cursor
+    // boundary; audit SA-2). The daemon's cursor pump uses the
+    // *CursorImmediate paths below, which write `current` only and
+    // never stage. Cursor position and visibility are compositor-owned
+    // pointer state, not client-rendered configuration, and the pump
+    // depends on the write landing immediately: per ADR 0005 section 4
+    // it damages the old and new rects BEFORE moving or hiding the
+    // cursor.
+
+    /// Set surface visibility. Transactional (ADR 0022).
     pub fn setVisible(self: *SurfaceRegistry, id: protocol.SurfaceId, visible: bool) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
-        if (surface.visible != visible) {
-            surface.visible = visible;
+        surface.pending.visible = visible;
+        if (surface.current.visible != visible) {
+            surface.current.visible = visible; // D-12.2 removes this line
             self.order_dirty = true; // Visibility affects composition order
         }
     }
 
-    /// Set surface z-order
+    /// Set surface z-order. Transactional (ADR 0022).
     pub fn setZOrder(self: *SurfaceRegistry, id: protocol.SurfaceId, z_order: i32) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
-        surface.z_order = z_order;
+        surface.pending.z_order = z_order;
+        surface.current.z_order = z_order; // D-12.2 removes this line
         self.order_dirty = true;
     }
 
-    /// Set surface position
+    /// Set surface position. Transactional (ADR 0022).
     pub fn setPosition(self: *SurfaceRegistry, id: protocol.SurfaceId, x: f32, y: f32) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
-        surface.position_x = x;
-        surface.position_y = y;
+        surface.pending.position_x = x;
+        surface.pending.position_y = y;
+        surface.current.position_x = x; // D-12.2 removes this line
+        surface.current.position_y = y; // D-12.2 removes this line
+    }
+
+    /// Set surface logical dimensions. Transactional (ADR 0022).
+    ///
+    /// Historically this existed only for the AD-21 SET_CURSOR
+    /// sprite-replace path, its own comment noting it was there for
+    /// "any future use case where a surface's logical extent changes
+    /// after creation". D-12 is that use case: this is the setter
+    /// surface_configure will drive once the wire changes land
+    /// (D-12.6). The cursor's sprite-replace path uses
+    /// setLogicalSizeCursorImmediate below.
+    pub fn setLogicalSize(self: *SurfaceRegistry, id: protocol.SurfaceId, width: f32, height: f32) !void {
+        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+        surface.pending.logical_width = width;
+        surface.pending.logical_height = height;
+        surface.current.logical_width = width; // D-12.2 removes this line
+        surface.current.logical_height = height; // D-12.2 removes this line
+    }
+
+    // ---- Daemon-internal cursor paths (NOT transactional) ----------
+    //
+    // ADR 0022 cursor boundary. These write `current` directly and
+    // never stage. They exist as separate functions, rather than a
+    // role test inside the setters above, so that the distinction is
+    // visible at the call site: a reader of the cursor pump can see
+    // that it is deliberately outside the transaction model.
+    //
+    // Only the daemon may call these, and only for the cursor surface.
+
+    /// Move the cursor surface. Compositor-owned pointer state.
+    pub fn setPositionCursorImmediate(self: *SurfaceRegistry, id: protocol.SurfaceId, x: f32, y: f32) !void {
+        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+        surface.current.position_x = x;
+        surface.current.position_y = y;
+        // Keep pending coherent so a later promotion cannot resurrect
+        // a stale cursor position.
+        surface.pending.position_x = x;
+        surface.pending.position_y = y;
+    }
+
+    /// Show or hide the cursor surface. Compositor-owned pointer state.
+    pub fn setVisibleCursorImmediate(self: *SurfaceRegistry, id: protocol.SurfaceId, visible: bool) !void {
+        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+        surface.pending.visible = visible;
+        if (surface.current.visible != visible) {
+            surface.current.visible = visible;
+            self.order_dirty = true;
+        }
+    }
+
+    /// Resize the cursor surface on sprite replace (AD-21 SET_CURSOR).
+    pub fn setLogicalSizeCursorImmediate(self: *SurfaceRegistry, id: protocol.SurfaceId, width: f32, height: f32) !void {
+        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+        surface.current.logical_width = width;
+        surface.current.logical_height = height;
+        surface.pending.logical_width = width;
+        surface.pending.logical_height = height;
+    }
+
+    /// Set the cursor's z-order. Compositor-owned; set once at init.
+    pub fn setZOrderCursorImmediate(self: *SurfaceRegistry, id: protocol.SurfaceId, z_order: i32) !void {
+        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+        surface.current.z_order = z_order;
+        surface.pending.z_order = z_order;
+        self.order_dirty = true;
     }
 
     /// Set surface hotspot offset, in surface-local pixels.
     /// Per ADR 0005 section 3; used by the cursor surface so that
     /// the compositor can place it at (pointer - hotspot).
+    ///
+    /// NOT transactional (ADR 0022; audit SA-2): cursor state does not
+    /// inherit surface transaction semantics, so hotspot is not part
+    /// of SurfaceState and is applied immediately.
     pub fn setHotspot(self: *SurfaceRegistry, id: protocol.SurfaceId, hotspot_x: i32, hotspot_y: i32) !void {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
         surface.hotspot_x = hotspot_x;
         surface.hotspot_y = hotspot_y;
-    }
-
-    /// Set surface logical dimensions. Used by AD-21 SET_CURSOR
-    /// (sub-item 7) to update the cursor surface when a new sprite
-    /// of different dimensions replaces the previous one. For
-    /// ordinary surfaces, dimensions are normally set at
-    /// createSurface time and not changed; this API exists for the
-    /// cursor's sprite-replace path and any future use case where
-    /// a surface's logical extent changes after creation.
-    pub fn setLogicalSize(self: *SurfaceRegistry, id: protocol.SurfaceId, width: f32, height: f32) !void {
-        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
-        surface.logical_width = width;
-        surface.logical_height = height;
     }
 
     /// Mark surface as having a pending commit
@@ -407,9 +540,13 @@ pub const SurfaceRegistry = struct {
         if (self.order_dirty) {
             self.composition_order.clearRetainingCapacity();
 
+            // ADR 0022: composition reads CURRENT state only. This
+            // function is itself a composite-time reader (it filters on
+            // visibility and sorts on z-order), so it is part of the
+            // "current only" boundary, not merely its caller.
             var it = self.surfaces.valueIterator();
             while (it.next()) |surface| {
-                if (surface.*.visible) {
+                if (surface.*.current.visible) {
                     try self.composition_order.append(self.allocator, surface.*);
                 }
             }
@@ -417,7 +554,7 @@ pub const SurfaceRegistry = struct {
             // Sort by z_order (ascending = back to front)
             std.mem.sort(*Surface, self.composition_order.items, {}, struct {
                 fn lessThan(_: void, a: *Surface, b: *Surface) bool {
-                    return a.z_order < b.z_order;
+                    return a.current.z_order < b.current.z_order;
                 }
             }.lessThan);
 

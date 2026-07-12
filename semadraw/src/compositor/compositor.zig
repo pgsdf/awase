@@ -636,26 +636,26 @@ pub const Compositor = struct {
         // is set (everything renders anyway).
         if (!self.damage_tracker.needs_full_repaint) {
             for (composition_order, 0..) |lower, i| {
-                if (!lower.visible) continue;
+                if (!lower.current.visible) continue;
                 const lower_dam = self.damage_tracker.getSurfaceDamage(lower.id);
                 const lower_damaged = lower_dam != null and lower_dam.?.hasDamage();
                 if (!lower_damaged) continue;
 
                 const lower_rect: damage.Rect = .{
-                    .x = @intFromFloat(lower.position_x),
-                    .y = @intFromFloat(lower.position_y),
-                    .width = @intFromFloat(@max(0.0, lower.logical_width)),
-                    .height = @intFromFloat(@max(0.0, lower.logical_height)),
+                    .x = @intFromFloat(lower.current.position_x),
+                    .y = @intFromFloat(lower.current.position_y),
+                    .width = @intFromFloat(@max(0.0, lower.current.logical_width)),
+                    .height = @intFromFloat(@max(0.0, lower.current.logical_height)),
                 };
                 if (lower_rect.isEmpty()) continue;
 
                 for (composition_order[i + 1 ..]) |upper| {
-                    if (!upper.visible) continue;
+                    if (!upper.current.visible) continue;
                     const upper_rect: damage.Rect = .{
-                        .x = @intFromFloat(upper.position_x),
-                        .y = @intFromFloat(upper.position_y),
-                        .width = @intFromFloat(@max(0.0, upper.logical_width)),
-                        .height = @intFromFloat(@max(0.0, upper.logical_height)),
+                        .x = @intFromFloat(upper.current.position_x),
+                        .y = @intFromFloat(upper.current.position_y),
+                        .width = @intFromFloat(@max(0.0, upper.current.logical_width)),
+                        .height = @intFromFloat(@max(0.0, upper.current.logical_height)),
                     };
                     if (upper_rect.isEmpty()) continue;
 
@@ -670,7 +670,7 @@ pub const Compositor = struct {
 
         // Render each visible surface
         for (composition_order) |surface| {
-            if (!surface.visible) {
+            if (!surface.current.visible) {
                 log.debug("  surface {}: skipped (not visible)", .{surface.id});
                 continue;
             }
@@ -705,8 +705,8 @@ pub const Compositor = struct {
             // win is the common frame: cursor-move damage of a few
             // hundred pixels no longer re-renders a 4K surface, and
             // the backend's blit damage stays small with it.
-            const off_x: i32 = @intFromFloat(surface.position_x);
-            const off_y: i32 = @intFromFloat(surface.position_y);
+            const off_x: i32 = @intFromFloat(surface.current.position_x);
+            const off_y: i32 = @intFromFloat(surface.current.position_y);
             const clip: ?backend_mod.ClipRect = blk: {
                 if (self.damage_tracker.needs_full_repaint) break :blk null;
                 const sd = self.damage_tracker.getSurfaceDamage(surface.id) orelse break :blk null;

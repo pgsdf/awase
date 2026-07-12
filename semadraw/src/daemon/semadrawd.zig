@@ -603,15 +603,19 @@ pub const Daemon = struct {
         );
 
         try self.surfaces.attachInlineBuffer(surface.id, cursor_sdcs);
-        try self.surfaces.setZOrder(surface.id, protocol.Z_ORDER_CURSOR);
+        // ADR 0022 cursor boundary: the cursor is compositor-owned
+        // pointer state, not client-rendered configuration, so it uses
+        // the immediate paths and never stages. See surface_registry's
+        // "Daemon-internal cursor paths" and audit SA-2.
+        try self.surfaces.setZOrderCursorImmediate(surface.id, protocol.Z_ORDER_CURSOR);
         try self.surfaces.setHotspot(surface.id, 0, 0);
-        try self.surfaces.setVisible(surface.id, true);
+        try self.surfaces.setVisibleCursorImmediate(surface.id, true);
 
         // Initial position (0, 0). The position pump (sub-item 5)
         // updates this each composition cycle once it lands. Until
         // then the cursor sits at the top-left, which is acceptable
         // for verifying that the surface actually renders.
-        try self.surfaces.setPosition(surface.id, 0, 0);
+        try self.surfaces.setPositionCursorImmediate(surface.id, 0, 0);
 
         // Mark the cursor surface for full damage so the first
         // composition cycle renders it. attachInlineBuffer alone
@@ -667,7 +671,7 @@ pub const Daemon = struct {
             return;
         };
         self.surfaces.setHotspot(cursor_id, 0, 0) catch {};
-        self.surfaces.setLogicalSize(cursor_id, 24.0, 24.0) catch {};
+        self.surfaces.setLogicalSizeCursorImmediate(cursor_id, 24.0, 24.0) catch {};
 
         // Mark damage so the next composite picks up the new sprite.
         // Without this, the cursor would only re-render on the next
@@ -900,8 +904,8 @@ pub const Daemon = struct {
 
         // Geometric old/new cursor rects in framebuffer coordinates.
         // Sprite's logical_width/height defines the bounding box.
-        const cw: u32 = @intFromFloat(@max(0.0, surf.logical_width));
-        const ch: u32 = @intFromFloat(@max(0.0, surf.logical_height));
+        const cw: u32 = @intFromFloat(@max(0.0, surf.current.logical_width));
+        const ch: u32 = @intFromFloat(@max(0.0, surf.current.logical_height));
 
         // The "displayed" rects, what was/will-be actually painted to
         // the screen, are the geometric rects when visible, empty
@@ -943,13 +947,13 @@ pub const Daemon = struct {
         const order = self.surfaces.getCompositionOrder() catch &[_]*surface_registry.Surface{};
         for (order) |s| {
             if (s.id == cursor_id) continue;
-            if (s.z_order >= protocol.Z_ORDER_CURSOR) continue;
+            if (s.current.z_order >= protocol.Z_ORDER_CURSOR) continue;
 
-            const sw: u32 = @intFromFloat(@max(0.0, s.logical_width));
-            const sh: u32 = @intFromFloat(@max(0.0, s.logical_height));
+            const sw: u32 = @intFromFloat(@max(0.0, s.current.logical_width));
+            const sh: u32 = @intFromFloat(@max(0.0, s.current.logical_height));
             const surf_rect: damage.Rect = .{
-                .x = @intFromFloat(s.position_x),
-                .y = @intFromFloat(s.position_y),
+                .x = @intFromFloat(s.current.position_x),
+                .y = @intFromFloat(s.current.position_y),
                 .width = sw,
                 .height = sh,
             };
@@ -966,8 +970,8 @@ pub const Daemon = struct {
                 if (isect.isEmpty()) continue;
 
                 const local_rect: damage.Rect = .{
-                    .x = isect.x - @as(i32, @intFromFloat(s.position_x)),
-                    .y = isect.y - @as(i32, @intFromFloat(s.position_y)),
+                    .x = isect.x - @as(i32, @intFromFloat(s.current.position_x)),
+                    .y = isect.y - @as(i32, @intFromFloat(s.current.position_y)),
                     .width = isect.width,
                     .height = isect.height,
                 };
@@ -1005,7 +1009,7 @@ pub const Daemon = struct {
         // underlying surfaces are damaged for both old AND new
         // displayed rects before the cursor moves or hides/shows.
         if (vis_changed) {
-            self.surfaces.setVisible(cursor_id, should_be_visible) catch |err| {
+            self.surfaces.setVisibleCursorImmediate(cursor_id, should_be_visible) catch |err| {
                 log.warn("cursor pump: setVisible failed: {}", .{err});
             };
         }
@@ -1013,7 +1017,10 @@ pub const Daemon = struct {
         // Position is always updated (even when invisible) so the
         // surface is at the right spot whenever it next becomes
         // visible. setPosition is a cheap field write.
-        self.surfaces.setPosition(cursor_id, new_x, new_y) catch |err| {
+        // ADR 0022: immediate, not staged. The pump damages the old and
+        // new rects BEFORE this write (ADR 0005 section 4), so staging it
+        // would break that ordering, not merely delay the cursor.
+        self.surfaces.setPositionCursorImmediate(cursor_id, new_x, new_y) catch |err| {
             log.warn("cursor pump: setPosition failed: {}", .{err});
             return;
         };
@@ -2070,7 +2077,7 @@ pub const Daemon = struct {
         self.cursor_is_default = false;
 
         self.surfaces.setHotspot(cursor_id, msg.hotspot_x, msg.hotspot_y) catch {};
-        self.surfaces.setLogicalSize(
+        self.surfaces.setLogicalSizeCursorImmediate(
             cursor_id,
             @floatFromInt(msg.sprite_width),
             @floatFromInt(msg.sprite_height),
@@ -2500,7 +2507,7 @@ pub const Daemon = struct {
 
         // Get dimensions for usage tracking before destroying
         if (self.surfaces.getSurface(msg.surface_id)) |surface| {
-            session.removeSurface(msg.surface_id, surface.logical_width, surface.logical_height);
+            session.removeSurface(msg.surface_id, surface.current.logical_width, surface.current.logical_height);
         }
 
         // AD-31.4 part B: capture owner_uid before destroySurface
@@ -2819,7 +2826,7 @@ pub const Daemon = struct {
 
         // Update hotspot and logical dimensions to match the new sprite.
         self.surfaces.setHotspot(cursor_id, msg.hotspot_x, msg.hotspot_y) catch {};
-        self.surfaces.setLogicalSize(
+        self.surfaces.setLogicalSizeCursorImmediate(
             cursor_id,
             @floatFromInt(msg.sprite_width),
             @floatFromInt(msg.sprite_height),
