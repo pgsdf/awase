@@ -944,3 +944,66 @@ If the error is gone, the efirt.c reading was right and a real defect in
 the handoff has been corrected: the first of the two ADR 0005 Decision 6
 requires. If it persists, F9's mechanism is wrong, the hypothesis dies
 cheaply, and the correction cost nothing but a rebuild.
+
+#### F9 falsified as stated; the error-6 path was never identified
+
+The probe with F9 in place: SetVirtualAddressMap is called, the
+firmware accepts it, the transfer is unharmed, the kernel boots to the
+mountroot prompt, and:
+
+    module_register_init: MOD_LOAD (efirt, 0xffffffff8060b9b0, 0) error 6
+
+The error persists. F9 as stated is FALSIFIED, which is what emulation
+is for and which cost a rebuild.
+
+The reason it could be falsified so cheaply, and the reason it should
+not have been asserted so confidently, are the same. `efi_init()` in
+sys/dev/efidev/efirt.c has SIXTEEN ENXIO returns. Two of them can
+produce this, and they say entirely different things:
+
+    efirt.c:234  "EFI runtime services table is not present"
+                 efi_systbl->st_rt == 0. The system table we handed the
+                 kernel has a NULL runtime-services pointer.
+
+    efirt.c:254  "EFI runtime services table has an invalid pointer"
+                 The GetTime pointer is not inside the EFI map. This is
+                 the one F9 addressed, by calling
+                 SetVirtualAddressMap.
+
+F9 was built on the assumption that the second was firing. That
+assumption was never checked. It could not have been checked from the
+evidence we had, because BOTH messages are gated behind `bootverbose`,
+and every probe run to date has shown a bare "error 6" with no message
+at all.
+
+So the honest position is not "F9 was wrong". It is: we do not know
+which defect we have, we never did, and F9 addressed one of two
+candidates on a guess.
+
+Next step, and it is one line: the loader now sets `boot_verbose=1` in
+the kernel environment, alongside the console binding and acpi.rsdp it
+already publishes. With bootverbose on, the kernel names the failing
+check. One probe run distinguishes:
+
+  - "not present" => the systbl->st_rt we pass is null, which is a
+    metadata defect in our handoff and has nothing to do with the
+    virtual map. F9 is then irrelevant to error 6 (though its ordering
+    rule and the vmap call itself remain correct, and the reference
+    makes both).
+
+  - "invalid pointer" => the GetTime pointer is outside the EFI map
+    even after a successful SetVirtualAddressMap, which means F9's
+    mechanism is right in principle and wrong in execution: most likely
+    the EFI map we pass the kernel (MODINFOMD_EFI_MAP) is the map we
+    captured BEFORE the vmap, and therefore describes the pre-relocation
+    layout rather than the post-relocation one the kernel checks
+    against.
+
+That second possibility is worth stating plainly, because it is the
+obvious next hypothesis and it is testable: we capture the map, prepare
+the vmap, exit, call SetVirtualAddressMap, and hand the kernel the map
+we captured. The reference does the same, so this may be a false lead,
+but it is the first thing to check if the message says "invalid
+pointer".
+
+Ask the kernel. Stop guessing.

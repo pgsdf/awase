@@ -160,7 +160,41 @@ pub fn main() uefi.Status {
                     // device atpic requires a local APIC".
                     // vfs.root.mountfrom names the root to mount.
                     const env_stage: [*]u8 = @ptrFromInt(lr.staging + envp_rel);
-                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00";
+                    // boot_verbose: F9 diagnostic, and the reason it is
+                    // here rather than guessed at.
+                    //
+                    // The kernel refuses to attach efirt with
+                    // "MOD_LOAD (efirt, ...) error 6". ENXIO is 6, and
+                    // sys/dev/efidev/efirt.c efi_init() has TWO ENXIO
+                    // paths that could produce it, saying very
+                    // different things:
+                    //
+                    //   efirt.c:234  "EFI runtime services table is not
+                    //                present"  -> efi_systbl->st_rt == 0,
+                    //                i.e. the system table we handed the
+                    //                kernel has a null runtime pointer.
+                    //
+                    //   efirt.c:254  "EFI runtime services table has an
+                    //                invalid pointer"  -> the GetTime
+                    //                pointer is not inside the EFI map.
+                    //                THIS is the one F9 was meant to
+                    //                fix, by calling
+                    //                SetVirtualAddressMap.
+                    //
+                    // Both messages are gated behind bootverbose, which
+                    // is why every probe so far has shown a bare
+                    // "error 6" and nothing else. F9 was implemented on
+                    // the ASSUMPTION that the second path was firing.
+                    // With the vmap now called and accepted by the
+                    // firmware, the error persists, so either the
+                    // assumption was wrong (it is the first path) or
+                    // F9's mechanism does not do what it should.
+                    //
+                    // Rather than guess a third time: ask the kernel.
+                    // With boot_verbose the message names the path, and
+                    // one probe run settles which defect we actually
+                    // have.
+                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00boot_verbose=1\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00";
                     var env_len: usize = 0;
                     @memcpy(env_stage[0..env_fixed.len], env_fixed);
                     env_len = env_fixed.len;
