@@ -596,3 +596,104 @@ during AD-10.2-.4 implementation:
   - `sys/dev/vt/hw/efifb/efifb.c` (FreeBSD tree). The
     counterpart driver this ADR displaces in the normal boot
     path.
+
+---
+
+## Amendment (2026-07-13): drawfs is compiled into the kernel
+
+**Proposed. Not ratified.**
+
+Path B is superseded. drawfs becomes a compiled-in device
+(`device drawfs` in the kernel config), not a preloaded module.
+
+### Why the original decision no longer holds
+
+Path B rested on three things, and all three are now false:
+
+1. **"PGSD systems set `hw.syscons.disable=1` to stop `vt_efifb`
+   attaching."** AD-39 removed `vt`, `vt_efifb`, `sc` and `vga` from the
+   kernel entirely, because vt(4) and drawfs were both writing the same
+   physical framebuffer address (0xc0180000) and vt's repaints were
+   overwriting drawfs's cursor sprites. There is nothing left to
+   disable.
+
+2. **"`vt(4)` remains compiled into the kernel for recovery."** AD-39
+   removed it. That recovery path does not exist.
+
+3. **"PGSD systems load `drawfs.ko` early via `drawfs_load="YES"` in
+   `/boot/loader.conf`."** This is the one that broke, and it broke on
+   metal (campaign finding F14). `pgsd-loader` does not read
+   `/boot/loader.conf`. It builds a module chain containing exactly one
+   entry, the kernel. On an armed boot drawfs is simply never loaded,
+   nothing owns the framebuffer, and nothing draws: a blank screen on a
+   kernel that is otherwise running correctly.
+
+### The decision, and the principle behind it
+
+**Match what you replace.** drawfs replaces `vt` and `vt_efifb`. Those
+are not modules and cannot be: there is no `sys/modules/vt` and no
+`sys/modules/vt_efifb`. They are declared `device vt` / `device
+vt_efifb` and compiled in conditionally (`sys/conf/files`:
+`dev/vt/vt_core.c optional vt`). drawfs should be the same.
+
+The reason FreeBSD does it that way is the reason we should: **the
+framebuffer owner is a bootstrap dependency.** It must exist before
+anything can claim the framebuffer. A module loaded later is a module
+that races, and that race is precisely what AD-39 was written to
+prevent. Compiling drawfs in eliminates the race by construction rather
+than by ordering.
+
+It also removes drawfs's dependency on the loader entirely, which is
+what makes the armed boot path work.
+
+### What does NOT change, and why the principle is not a rule of thumb
+
+The same principle gives a different answer for inputfs and audiofs, and
+that is the sign it is a real principle:
+
+  - **inputfs stays a module.** It replaces `hkbd`, `ukbd`, `hms` and
+    the rest of the AD-8 HID set, which ARE modules
+    (`sys/modules/hid/hkbd`, `sys/modules/usb/ukbd`). More decisively,
+    inputfs MUST NOT be preloaded: install.sh records that "the state
+    kthread panics when loaded before /var/run is mounted", so it is
+    kldloaded by an rc.d service after root mounts. Compiling it in
+    would break it.
+
+  - **audiofs stays a module.** It replaces `sound` and `snd_hda`, which
+    are modules (`sys/modules/sound/driver/hda`). It is likewise not
+    preloaded: its rc.d service carries `REQUIRE: FILESYSTEMS`.
+
+Neither is a bootstrap dependency. Both can arrive after root, and both
+must. Only the framebuffer owner has to exist before anything else can
+touch what it owns.
+
+Consequence for the armed boot path: with drawfs compiled in, inputfs
+and audiofs load normally from rc.d once root is mounted, and they never
+needed the loader at all. drawfs was the single point of failure and it
+is the one the principle says to compile in anyway.
+
+### Consequences
+
+  - `drawfs_load="YES"` is removed from `/boot/loader.conf`. install.sh
+    stops writing it.
+  - The PGSD kernel config gains `device drawfs`, and `sys/conf/files`
+    gains `dev/drawfs/drawfs.c optional drawfs` and its siblings.
+    drawfs's sources already live at `drawfs/sys/dev/drawfs/`, the
+    in-tree layout, so this is a build-plumbing change rather than a
+    port.
+  - drawfs can no longer be `kldunload`ed. This is accepted: there is no
+    case for unloading the framebuffer owner on a running system, and
+    the modularity was only ever a deployment mechanism, not a runtime
+    capability.
+  - The kernel image grows by drawfs. It is a display driver on a
+    machine whose purpose is display; this is not a cost worth avoiding.
+  - `pgsd-loader` still cannot load modules. That remains true and
+    remains a real gap (a loader that cannot load modules is a
+    kernel-jumper), but it is no longer on the critical path, because
+    nothing on the boot path needs preloading any more.
+
+### Bench requirement
+
+The PGSD kernel, booted by pgsd-loader with no module preloading of any
+kind, comes up with drawfs owning the framebuffer, inputfs and audiofs
+loaded from rc.d, and pgsd-sessiond drawing the login.
