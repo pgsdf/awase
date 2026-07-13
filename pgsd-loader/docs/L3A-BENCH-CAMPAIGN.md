@@ -1737,3 +1737,86 @@ A is the right near-term move and B is the right end state. A loader
 that cannot load modules will hit this again with inputfs and audiofs,
 and "compile everything into the kernel" is not a strategy, it is a
 workaround that scales badly.
+
+### F15: the kernel cannot mount a ZFS root, because pgsd-loader cannot preload zfs.ko
+
+Fifth metal attempt, with drawfs compiled into the kernel. Still blank.
+`MARK_VMAP_ATTEMPT` unchanged: the loader still completes and jumps.
+
+Compiling drawfs in was correct and necessary and did not help, because
+the kernel never gets far enough for drawfs to matter.
+
+#### The evidence
+
+`/boot/loader.conf` on the bench:
+
+    kern.geom.label.disk_ident.enable="0"
+    kern.geom.label.gptid.enable="0"
+    zfs_load="YES"
+    mac_do_load="YES"
+    drawfs_load="YES"
+    hw.inputfs.dev_gid=1002
+    hw.inputfs.dev_mode=0640
+
+**`zfs_load="YES"`.** ZFS is a MODULE. It is not compiled into the PGSD
+kernel, and it is not compiled into GENERIC either: FreeBSD ships it as
+a module and the loader preloads it.
+
+pgsd-loader builds a module chain with exactly one entry, the kernel. So
+on an armed boot:
+
+  1. The loader jumps (MARK_VMAP_ATTEMPT).
+  2. The kernel boots, initialises, probes devices.
+  3. It tries to mount zfs:zroot/ROOT/default (correct, since F13).
+  4. **The kernel has no ZFS support.** zfs.ko was never loaded.
+  5. It cannot mount root, and drops to mountroot>.
+  6. No console (AD-39). Blank screen.
+
+Same presentation as F13, different cause. The root path is now right and
+the kernel still cannot mount it, because it does not know what ZFS is.
+
+#### This forces the architecture
+
+**pgsd-loader must be able to preload modules. This is no longer
+optional.**
+
+It is not a convenience for inputfs and audiofs, which load from rc.d
+after root and never needed the loader. It is required TO BOOT AT ALL,
+because the root filesystem depends on a module that must be in memory
+before the kernel looks for root. There is no kldload path out of it:
+the module has to be there first.
+
+F14 observed that "a loader that cannot load modules is a kernel-jumper,
+not a loader". F15 is the bill for that.
+
+#### The alternatives, honestly
+
+**A. Teach pgsd-loader to preload modules.** The real fix. Read zfs.ko
+from the ESP, place it in memory, add a second entry to the module chain
+with the correct MODINFOMD_* metadata (name, type, addr, size), and
+extend kernend past it. This is what a loader is. Substantial work, and
+it is now on the critical path rather than beside it.
+
+**B. Compile ZFS into the kernel.** It would work and it sidesteps A.
+But it means building OpenZFS into every PGSD kernel, and the same trap
+waits for the next thing the loader needs to preload. It converts a
+missing capability into a growing list of exceptions.
+
+**C. UFS root.** Sidesteps ZFS. Fights the rest of the stack (boot
+environments, snapshots, the reinstall runsheet) and solves nothing
+general.
+
+A. The others are ways of not writing a loader.
+
+#### The observation that would have found this in one reboot
+
+We have inferred the entire post-jump world from a blank screen and one
+NVRAM marker, for five attempts. The bench has a network. A single ping
+during an armed boot would have said, immediately, whether the kernel
+was reaching userspace at all. It is not: it dies at mountroot, before
+init, before rc, before drawfs could matter, which makes every userspace
+theory we entertained (chronofs timing, audiofs clock, semadrawd
+blocking) beside the point.
+
+Ping the bench on the next armed boot. It costs nothing and it bounds
+the fault immediately.
