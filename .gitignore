@@ -26,3 +26,40 @@ semadraw/tests/out/
 
 # Vendored Zig toolchain (fetched by tools/bootstrap.sh; never committed)
 /sdk/zig/
+
+# Kernel-build generated interface headers.
+#
+# The out-of-tree module builds (drawfs, inputfs, audiofs) run in place
+# inside the repo, with SYSDIR pointing at the pinned kernel source, so
+# that /usr/src stays a faithful checkout. A side effect is that the
+# kernel build's generated interface headers land in the module source
+# directory rather than under /usr/obj.
+#
+# These are derived files: the kernel build produces them from FreeBSD's
+# own bus_if.m, device_if.m, pci_if.m and vnode_if.src via
+# sys/tools/makeobjops.awk and vnode_if.awk, on every build. Committing
+# them would be committing build output that rots against the pinned
+# source, and the module source directories in the repo contain only a
+# Makefile precisely because the rest is generated.
+*/sys/modules/*/bus_if.h
+*/sys/modules/*/device_if.h
+*/sys/modules/*/pci_if.h
+*/sys/modules/*/vnode_if.h
+*/sys/modules/*/vnode_if_newproto.h
+*/sys/modules/*/vnode_if_typedef.h
+*/sys/modules/*/opt_*.h
+
+# Patch files dropped into the repo root while applying them.
+/0001-*.patch
+
+# pgsd-loader ELF parser test data.
+#
+# The *.o rule above is correct for build artifacts. This is not one: it
+# is a fixed, known ELF64 relocatable object that module_elf.zig parses in
+# its tests, and it must be the SAME bytes everywhere. Regenerating it per
+# machine would mean a toolchain difference could silently change what the
+# parser is tested against, and the bug it caught (a pointer cast into an
+# unaligned buffer) is exactly the kind that depends on byte layout. It is
+# 3KB and it is a regression baseline.
+!pgsd-loader/src/testdata/*.o
+
