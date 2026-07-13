@@ -88,7 +88,7 @@ const slop: u64 = 8 * 1024 * 1024;
 /// 16 MiB against a 5.6 MB zfs.ko leaves real headroom. If a module list
 /// exceeds it, loadKernel returns ModuleStagingTooSmall rather than
 /// scribbling past the allocation.
-const module_slop: u64 = 16 * 1024 * 1024;
+pub const module_slop: u64 = 16 * 1024 * 1024;
 
 const two_mib: u64 = 2 * 1024 * 1024;
 const max_phdrs = 32;

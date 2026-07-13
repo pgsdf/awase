@@ -264,6 +264,9 @@ pub fn main() uefi.Status {
                     // bytes and die somewhere unrelated.
                     const mod_rel = std.mem.alignForward(u64, envp_rel + env_bytes_len, 4096);
                     var mods_buf: [1]metadata.ModuleEntry = undefined;
+                    // The modified section table. zfs.ko has 33 sections;
+                    // 128 is generous and bounded.
+                    var mod_shdr_buf: [128 * 64]u8 = undefined;
                     var mods: []const metadata.ModuleEntry = &.{};
                     var mod_end_rel: u64 = mod_rel;
 
@@ -271,42 +274,77 @@ pub fn main() uefi.Status {
                     // allocation. Bounds-check rather than trust: writing
                     // past staging is silent memory corruption on a
                     // machine with no console.
-                    const mod_room: u64 = lr.staging_limit_rel -| mod_rel;
-                    const mod_dest: [*]u8 = @ptrFromInt(lr.staging + mod_rel);
+
+                    // F16: the module must be LAID OUT, not just copied.
+                    //
+                    // The kernel does not assign section addresses; it
+                    // REBASES addresses the loader assigned
+                    // (link_elf_obj.c: "relocate the sh_addr fields saved
+                    // by the loader"). A .ko off disk is ET_REL with every
+                    // sh_addr == 0, so copying the raw file and passing the
+                    // file's own section table means the kernel's rebase
+                    // loop never fires, every section keeps address zero,
+                    // and it rejects them. That cost a metal attempt.
+                    //
+                    // So: read the file into a scratch area, lay its
+                    // sections out at the load address, and pass the
+                    // MODIFIED section table.
+                    //
+                    // The scratch read area sits ABOVE the laid-out image
+                    // inside the module budget: the layout only ever moves
+                    // bytes downward (sections are laid out from the load
+                    // address up, and the file is read in above them), and
+                    // the two never overlap because the laid-out image is
+                    // strictly smaller than the file (it drops the debug
+                    // and non-alloc sections).
+                    // The scratch read area sits in the upper half of the module
+                    // budget; the laid-out image goes in the lower half. They
+                    // cannot collide: the laid-out image is strictly smaller
+                    // than the file (it drops debug and non-alloc sections),
+                    // and both fit because the budget is 16 MiB against a
+                    // 5.6 MB module.
+                    const scratch_rel = std.mem.alignForward(u64, mod_rel + (elf_load.module_slop / 2), 4096);
+                    const scratch_room: u64 = lr.staging_limit_rel -| scratch_rel;
+                    const scratch: [*]u8 = @ptrFromInt(lr.staging + scratch_rel);
 
                     if (bas_boot.readSlotFileInto(
                         device_handle,
                         res.slot,
                         "zfs.ko",
-                        mod_dest[0..@intCast(mod_room)],
-                    )) |mod_size| {
-                        const mod_image = mod_dest[0..mod_size];
-                        if (module_elf.parseModule(mod_image)) |me| {
+                        scratch[0..@intCast(scratch_room)],
+                    )) |file_size| {
+                        const file_image = scratch[0..file_size];
+                        const lay_room: u64 = scratch_rel -| mod_rel;
+                        const lay_dest: [*]u8 = @ptrFromInt(lr.staging + mod_rel);
+                        const load_addr = mod_rel + lr.base_paddr;
+
+                        if (module_elf.layoutModule(
+                            file_image,
+                            lay_dest[0..@intCast(lay_room)],
+                            load_addr,
+                            &mod_shdr_buf,
+                        )) |lo| {
                             mods_buf[0] = .{
                                 .name = "zfs.ko",
-                                .addr = mod_rel + lr.base_paddr,
-                                .size = mod_size,
-                                .elfhdr = std.mem.asBytes(&me.ehdr),
-                                .shdr = me.shdr_bytes,
+                                .addr = load_addr,
+                                .size = lo.size,
+                                .elfhdr = std.mem.asBytes(&lo.ehdr),
+                                // The MODIFIED table, with sh_addr filled
+                                // in. Passing the file's own table is the
+                                // F16 bug.
+                                .shdr = lo.shdr_bytes,
                             };
                             mods = mods_buf[0..1];
-                            mod_end_rel = mod_rel + mod_size;
-                            var zb: [96]u8 = undefined;
-                            if (std.fmt.bufPrint(&zb, "MOD: zfs.ko {d} bytes at 0x{x} shnum={d}\r\n", .{ mod_size, mod_rel + lr.base_paddr, me.shnum })) |m| printAscii(m) else |_| {}
-                            // And to NVRAM, which survives the reboot.
-                            // The console this prints to goes dark; the
-                            // variable does not.
-                            var zn: [96]u8 = undefined;
-                            if (std.fmt.bufPrint(&zn, "zfs.ko OK size={d} addr=0x{x} shnum={d}", .{ mod_size, mod_rel + lr.base_paddr, me.shnum })) |m| recordModule(m) else |_| recordModule("zfs.ko OK");
+                            mod_end_rel = mod_rel + lo.size;
+                            var zb: [112]u8 = undefined;
+                            if (std.fmt.bufPrint(&zb, "MOD: zfs.ko laid out {d}->{d} bytes at 0x{x} shnum={d}\r\n", .{ file_size, lo.size, load_addr, lo.shnum })) |m| printAscii(m) else |_| {}
+                            var zn: [112]u8 = undefined;
+                            if (std.fmt.bufPrint(&zn, "zfs.ko LAID_OUT file={d} img={d} addr=0x{x} shnum={d}", .{ file_size, lo.size, load_addr, lo.shnum })) |m| recordModule(m) else |_| recordModule("zfs.ko LAID_OUT");
                         } else |e| {
-                            // A module the kernel would reject. Say so
-                            // now, in the loader, where there is still a
-                            // console; the same failure at boot is a blank
-                            // screen.
                             var zb: [96]u8 = undefined;
-                            if (std.fmt.bufPrint(&zb, "MOD: zfs.ko PARSE FAILED: {s}\r\n", .{@errorName(e)})) |m| printAscii(m) else |_| {}
+                            if (std.fmt.bufPrint(&zb, "MOD: zfs.ko LAYOUT FAILED: {s}\r\n", .{@errorName(e)})) |m| printAscii(m) else |_| {}
                             var zn: [96]u8 = undefined;
-                            if (std.fmt.bufPrint(&zn, "zfs.ko PARSE_FAILED {s}", .{@errorName(e)})) |m| recordModule(m) else |_| recordModule("zfs.ko PARSE_FAILED");
+                            if (std.fmt.bufPrint(&zn, "zfs.ko LAYOUT_FAILED {s}", .{@errorName(e)})) |m| recordModule(m) else |_| recordModule("zfs.ko LAYOUT_FAILED");
                         }
                     } else |e| {
                         var zb: [96]u8 = undefined;

@@ -44,12 +44,18 @@ a loader and a kernel-jumper, and it is on the critical path.
 This is smaller than it looks, and the size is the reason this ADR
 recommends doing it rather than working around it.
 
-**The kernel links preloaded modules itself.** `kern_linker.c`
+**AMENDED 2026-07-13 (finding F16). The paragraph below was WRONG and
+cost a metal attempt.** The kernel does the symbol resolution and the
+relocation, but it does NOT place the sections. It REBASES sections the
+loader already placed. See "The layout the loader must perform", added
+below.
+
+~~The kernel links preloaded modules itself. `kern_linker.c`
 `linker_preload()` walks the preloaded files and calls
 `LINKER_LINK_PRELOAD`, and `link_elf_obj.c` `link_elf_link_preload()`
 does the ELF work: section placement, symbol resolution, relocation. The
 loader does NOT relocate anything. It places the raw `.ko` bytes in
-memory and describes them.
+memory and describes them.~~
 
 `link_elf_link_preload()` states the contract exactly:
 
@@ -164,3 +170,77 @@ general.
    means available.
 4. `stage` refuses, loudly, if a required module is missing from the
    build.
+
+---
+
+## Amendment (2026-07-13): the layout the loader must perform
+
+Finding F16. The first implementation did exactly what this ADR said,
+and the bench recorded:
+
+    zfs.ko OK size=5889984 addr=0x1c01000 shnum=33
+
+The module was read, parsed, and described. The kernel still did not
+boot. The ADR was wrong.
+
+### What the kernel actually does
+
+`link_elf_obj.c` `link_elf_link_preload()`, after reading the six
+records:
+
+    /* XXX, relocate the sh_addr fields saved by the loader. */
+    off = 0;
+    for (i = 0; i < hdr->e_shnum; i++)
+            if (shdr[i].sh_addr != 0 && (off == 0 || shdr[i].sh_addr < off))
+                    off = shdr[i].sh_addr;
+    for (i = 0; i < hdr->e_shnum; i++)
+            if (shdr[i].sh_addr != 0)
+                    shdr[i].sh_addr = shdr[i].sh_addr - off +
+                        (Elf_Addr)ef->address;
+
+"The sh_addr fields SAVED BY THE LOADER." The kernel takes the lowest
+non-zero `sh_addr` as a base and rebases every section onto
+`MODINFO_ADDR`. It does not assign addresses. It relocates addresses the
+loader already assigned.
+
+A `.ko` off disk is `ET_REL`, and every `sh_addr` in it is **zero**,
+because relocatable objects have no assigned addresses. So with the raw
+table: `off` stays 0, the rebase loop never fires, every section keeps
+`sh_addr == 0`, and the kernel's own checks reject them.
+
+**`MODINFO_ADDR` is not "where the file is". It is the base of a
+laid-out section image the loader must CONSTRUCT.** The file image and
+the loaded image are different things.
+
+### The layout, mirroring stand/common/load_elf_obj.c
+
+Five passes, in this order, because the order determines the addresses
+and the kernel rebases relative to the lowest:
+
+1. Zero every `sh_addr`. Then lay out the **SHF_ALLOC** sections of type
+   PROGBITS, NOBITS, X86_64_UNWIND, INIT_ARRAY, FINI_ARRAY: round up to
+   the section's own `sh_addralign`, assign `sh_addr`, advance.
+2. The **symbol table**. Exactly one SHT_SYMTAB is required; the
+   reference refuses the module otherwise ("file has no valid symbol
+   table") and so do we.
+3. The **symbol strings**, which are symtab's `sh_link` and must be a
+   SHT_STRTAB.
+4. The **section names**, `e_shstrndx`, likewise a SHT_STRTAB.
+5. The **relocation tables** (SHT_REL/SHT_RELA), but only those whose
+   target section (`sh_info`) is SHF_ALLOC. The kernel needs them to
+   relocate; a reloc table for a non-allocated section relocates nothing.
+
+Then: **zero the whole laid-out region** (which is why NOBITS needs no
+further work, it is bss and is already zero), and copy every section that
+has an address and file content from its `sh_offset` to its `sh_addr`.
+
+`MODINFOMD_SHDR` carries the **MODIFIED** table, with `sh_addr` filled
+in. Passing the file's own table is the bug.
+
+### Consequence for the loader
+
+The module image occupies two regions in staging: the file is read into a
+scratch area, and the laid-out sections are built below it. They cannot
+collide, because the laid-out image is strictly smaller than the file (it
+drops the debug and non-allocatable sections) and the module budget is 16
+MiB against a 5.6 MB module.

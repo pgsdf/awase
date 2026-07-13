@@ -265,3 +265,312 @@ test "parseModule: rejects what is not a module" {
     @memcpy(&buf, std.mem.asBytes(&e));
     try testing.expectError(error.ShdrOutOfBounds, parseModule(&buf));
 }
+
+// ---------------------------------------------------------------------
+// F16: laying out a module's sections.
+//
+// The first cut of ADR 0006 believed the loader could copy a .ko's raw
+// file bytes into memory, hand the kernel the file's own section table,
+// and let the kernel do the rest. That is wrong, and it cost a metal
+// attempt to find out.
+//
+// link_elf_obj.c link_elf_link_preload() says so in its own comment:
+//
+//     /* XXX, relocate the sh_addr fields saved by the loader. */
+//     off = 0;
+//     for (i = 0; i < hdr->e_shnum; i++)
+//             if (shdr[i].sh_addr != 0 && (off == 0 || shdr[i].sh_addr < off))
+//                     off = shdr[i].sh_addr;
+//     for (i = 0; i < hdr->e_shnum; i++)
+//             if (shdr[i].sh_addr != 0)
+//                     shdr[i].sh_addr = shdr[i].sh_addr - off + (Elf_Addr)ef->address;
+//
+// "SAVED BY THE LOADER". The kernel takes the lowest non-zero sh_addr as
+// a base and REBASES the sections onto MODINFO_ADDR. It does not assign
+// addresses. It relocates addresses the loader already assigned.
+//
+// A .ko off disk is ET_REL, and every sh_addr in it is ZERO, because
+// relocatable objects have no assigned addresses. So passing the raw
+// table means: off stays 0, the rebase loop never fires, every section
+// keeps sh_addr == 0, and the kernel's own checks (link_elf_obj.c:
+// `if (shdr[i].sh_addr == 0)`) reject them.
+//
+// So MODINFO_ADDR is not "where the file is". It is the base of a
+// LAID-OUT SECTION IMAGE that the loader must construct. The file image
+// and the loaded image are different things.
+//
+// This mirrors stand/common/load_elf_obj.c, which lays out in five
+// passes and then copies. The order matters: it determines the addresses,
+// and the kernel rebases relative to the LOWEST of them.
+
+pub const SHT_PROGBITS: u32 = 1;
+pub const SHT_SYMTAB: u32 = 2;
+pub const SHT_STRTAB: u32 = 3;
+pub const SHT_RELA: u32 = 4;
+pub const SHT_NOBITS: u32 = 8;
+pub const SHT_REL: u32 = 9;
+pub const SHT_INIT_ARRAY: u32 = 14;
+pub const SHT_FINI_ARRAY: u32 = 15;
+/// SHT_X86_64_UNWIND. The reference lays this out with the other
+/// allocatable sections on amd64, so we must too.
+pub const SHT_X86_64_UNWIND: u32 = 0x7000_0001;
+
+pub const SHF_ALLOC: u64 = 0x2;
+
+pub const LayoutError = ParseError || error{
+    /// The reference refuses a module without exactly one SHT_SYMTAB:
+    /// "file has no valid symbol table". So do we.
+    NoSymbolTable,
+    /// symtab's sh_link must point at a SHT_STRTAB.
+    BadSymbolStrings,
+    /// e_shstrndx must point at a SHT_STRTAB.
+    NoSectionNames,
+    /// A section's bytes lie outside the file.
+    SectionOutOfBounds,
+    /// The laid-out image does not fit the destination.
+    LayoutTooLarge,
+};
+
+pub const LaidOut = struct {
+    /// The ELF header, to pass as MODINFOMD_ELFHDR.
+    ehdr: Elf64_Ehdr,
+    /// The MODIFIED section table, with sh_addr filled in. This is what
+    /// goes to the kernel as MODINFOMD_SHDR, and it is the whole point:
+    /// the file's own table has sh_addr == 0 everywhere.
+    shdr_bytes: []u8,
+    /// Total bytes of the laid-out image, from the load address.
+    size: usize,
+    shnum: u16,
+};
+
+/// Lay out a module's sections into `dest`, at load address `load_addr`,
+/// and produce the modified section table.
+///
+/// `dest` is where the bytes go NOW (in staging). `load_addr` is the
+/// address the kernel will see them at (the destination address space).
+/// They differ, and conflating them is how the sections end up pointing
+/// at the wrong memory.
+///
+/// `shdr_out` receives the modified section table. It must outlive the
+/// chain, since the chain records point at it.
+pub fn layoutModule(
+    image: []const u8,
+    dest: []u8,
+    load_addr: u64,
+    shdr_out: []u8,
+) LayoutError!LaidOut {
+    const parsed = try parseModule(image);
+    const shnum: usize = parsed.shnum;
+    const shsize = @sizeOf(Elf64_Shdr);
+
+    if (shdr_out.len < shnum * shsize) return error.LayoutTooLarge;
+
+    // Work on a COPY of the section table. The file's table is const and
+    // its sh_addr fields are all zero; we are producing a new one.
+    @memcpy(shdr_out[0 .. shnum * shsize], parsed.shdr_bytes);
+
+    const sh = struct {
+        fn get(buf: []u8, i: usize) Elf64_Shdr {
+            var out: Elf64_Shdr = undefined;
+            @memcpy(std.mem.asBytes(&out), buf[i * @sizeOf(Elf64_Shdr) ..][0..@sizeOf(Elf64_Shdr)]);
+            return out;
+        }
+        fn set(buf: []u8, i: usize, v: Elf64_Shdr) void {
+            @memcpy(buf[i * @sizeOf(Elf64_Shdr) ..][0..@sizeOf(Elf64_Shdr)], std.mem.asBytes(&v));
+        }
+    };
+
+    // Pass 0: zero every sh_addr. The reference does this explicitly, and
+    // it matters: a nonzero sh_addr on a section we do NOT lay out would
+    // be rebased by the kernel into nonsense.
+    var i: usize = 0;
+    while (i < shnum) : (i += 1) {
+        var s = sh.get(shdr_out, i);
+        s.sh_addr = 0;
+        sh.set(shdr_out, i, s);
+    }
+
+    // The layout starts AT the load address. sh_addr values are absolute
+    // addresses, not offsets: "We store the load address as a non-zero
+    // sh_addr value" (load_elf_obj.c).
+    var lastaddr: u64 = load_addr;
+
+    // Pass 1: code, data, bss. The allocatable sections, in section
+    // order, each rounded up to its own alignment.
+    i = 0;
+    while (i < shnum) : (i += 1) {
+        var s = sh.get(shdr_out, i);
+        if (s.sh_size == 0) continue;
+        switch (s.sh_type) {
+            SHT_PROGBITS, SHT_NOBITS, SHT_X86_64_UNWIND, SHT_INIT_ARRAY, SHT_FINI_ARRAY => {
+                if ((s.sh_flags & SHF_ALLOC) == 0) continue;
+                lastaddr = std.mem.alignForward(u64, lastaddr, @max(1, s.sh_addralign));
+                s.sh_addr = lastaddr;
+                lastaddr += s.sh_size;
+                sh.set(shdr_out, i, s);
+            },
+            else => {},
+        }
+    }
+
+    // Pass 2: the symbol table. The reference requires EXACTLY one and
+    // refuses the module otherwise ("file has no valid symbol table"),
+    // because link_elf_obj needs it to resolve symbols.
+    var symtabindex: ?usize = null;
+    i = 0;
+    while (i < shnum) : (i += 1) {
+        if (sh.get(shdr_out, i).sh_type == SHT_SYMTAB) {
+            if (symtabindex != null) return error.NoSymbolTable; // more than one
+            symtabindex = i;
+        }
+    }
+    const symtab = symtabindex orelse return error.NoSymbolTable;
+    {
+        var s = sh.get(shdr_out, symtab);
+        lastaddr = std.mem.alignForward(u64, lastaddr, @max(1, s.sh_addralign));
+        s.sh_addr = lastaddr;
+        lastaddr += s.sh_size;
+        sh.set(shdr_out, symtab, s);
+    }
+
+    // Pass 3: the symbol strings, which are symtab's sh_link.
+    const symstr: usize = sh.get(shdr_out, symtab).sh_link;
+    if (symstr == 0 or symstr >= shnum or
+        sh.get(shdr_out, symstr).sh_type != SHT_STRTAB) return error.BadSymbolStrings;
+    {
+        var s = sh.get(shdr_out, symstr);
+        lastaddr = std.mem.alignForward(u64, lastaddr, @max(1, s.sh_addralign));
+        s.sh_addr = lastaddr;
+        lastaddr += s.sh_size;
+        sh.set(shdr_out, symstr, s);
+    }
+
+    // Pass 4: the section names.
+    const shstr: usize = parsed.ehdr.e_shstrndx;
+    if (shstr == 0 or shstr >= shnum or
+        sh.get(shdr_out, shstr).sh_type != SHT_STRTAB) return error.NoSectionNames;
+    {
+        var s = sh.get(shdr_out, shstr);
+        lastaddr = std.mem.alignForward(u64, lastaddr, @max(1, s.sh_addralign));
+        s.sh_addr = lastaddr;
+        lastaddr += s.sh_size;
+        sh.set(shdr_out, shstr, s);
+    }
+
+    // Pass 5: the relocation tables, but ONLY those whose target section
+    // is allocatable. The kernel needs them to relocate the module, and
+    // a reloc table for a non-allocated section relocates nothing.
+    i = 0;
+    while (i < shnum) : (i += 1) {
+        var s = sh.get(shdr_out, i);
+        switch (s.sh_type) {
+            SHT_REL, SHT_RELA => {
+                if (s.sh_info >= shnum) continue;
+                if ((sh.get(shdr_out, s.sh_info).sh_flags & SHF_ALLOC) == 0) continue;
+                lastaddr = std.mem.alignForward(u64, lastaddr, @max(1, s.sh_addralign));
+                s.sh_addr = lastaddr;
+                lastaddr += s.sh_size;
+                sh.set(shdr_out, i, s);
+            },
+            else => {},
+        }
+    }
+
+    const total: usize = @intCast(lastaddr - load_addr);
+    if (total > dest.len) return error.LayoutTooLarge;
+
+    // Clear the whole area, INCLUDING the bss regions. The reference does
+    // this in one bzero before copying, which is why NOBITS sections need
+    // no further work: they are laid out, and they are already zero.
+    @memset(dest[0..total], 0);
+
+    // Copy every section that has an address and actually has bytes in the
+    // file. NOBITS has no file content; it is bss and stays zeroed.
+    i = 0;
+    while (i < shnum) : (i += 1) {
+        const s = sh.get(shdr_out, i);
+        if (s.sh_addr == 0) continue;
+        if (s.sh_type == SHT_NOBITS) continue;
+        if (s.sh_size == 0) continue;
+
+        const off: usize = @intCast(s.sh_offset);
+        const sz: usize = @intCast(s.sh_size);
+        if (off > image.len or sz > image.len - off) return error.SectionOutOfBounds;
+
+        const dst_off: usize = @intCast(s.sh_addr - load_addr);
+        @memcpy(dest[dst_off .. dst_off + sz], image[off .. off + sz]);
+    }
+
+    return .{
+        .ehdr = parsed.ehdr,
+        .shdr_bytes = shdr_out[0 .. shnum * shsize],
+        .size = total,
+        .shnum = parsed.shnum,
+    };
+}
+
+test "layoutModule: assigns sh_addr, copies PROGBITS, zeroes NOBITS" {
+    const image = @embedFile("testdata/mod.o");
+
+    var dest: [64 * 1024]u8 = undefined;
+    var shdr_out: [64 * 64]u8 = undefined;
+    const load_addr: u64 = 0x1c01000;
+
+    const lo = try layoutModule(image, &dest, load_addr, &shdr_out);
+
+    try testing.expect(lo.size > 0);
+    try testing.expectEqual(@as(u16, 21), lo.shnum); // known for this object
+
+    // THE ASSERTION THAT MATTERS. At least one section must have a
+    // nonzero sh_addr, or the kernel's rebase loop never fires and every
+    // section stays at address zero, which is exactly the bug F16 found.
+    var nonzero: usize = 0;
+    var lowest: u64 = std.math.maxInt(u64);
+    var i: usize = 0;
+    while (i < lo.shnum) : (i += 1) {
+        var s: Elf64_Shdr = undefined;
+        @memcpy(std.mem.asBytes(&s), lo.shdr_bytes[i * @sizeOf(Elf64_Shdr) ..][0..@sizeOf(Elf64_Shdr)]);
+        if (s.sh_addr != 0) {
+            nonzero += 1;
+            if (s.sh_addr < lowest) lowest = s.sh_addr;
+            // Every assigned address is within the laid-out image.
+            try testing.expect(s.sh_addr >= load_addr);
+            try testing.expect(s.sh_addr + s.sh_size <= load_addr + lo.size);
+            // And honours the section's own alignment.
+            if (s.sh_addralign > 1) {
+                try testing.expectEqual(@as(u64, 0), s.sh_addr % s.sh_addralign);
+            }
+        }
+    }
+    try testing.expect(nonzero > 0);
+
+    // The kernel rebases relative to the LOWEST nonzero sh_addr, so that
+    // must be the load address itself, or every section shifts.
+    try testing.expectEqual(load_addr, lowest);
+}
+
+test "layoutModule: a module with no symbol table is refused" {
+    // The reference refuses this outright ("file has no valid symbol
+    // table"), because link_elf_obj cannot resolve symbols without one.
+    // Better to refuse in the loader, where there is still a console.
+    var buf: [@sizeOf(Elf64_Ehdr) + 2 * @sizeOf(Elf64_Shdr)]u8 = undefined;
+    var e: Elf64_Ehdr = std.mem.zeroes(Elf64_Ehdr);
+    @memcpy(e.e_ident[0..4], "\x7fELF");
+    e.e_ident[4] = 2;
+    e.e_ident[5] = 1;
+    e.e_type = ET_REL;
+    e.e_machine = EM_X86_64;
+    e.e_shoff = @sizeOf(Elf64_Ehdr);
+    e.e_shnum = 2;
+    e.e_shentsize = @sizeOf(Elf64_Shdr);
+    e.e_shstrndx = 1;
+    @memcpy(buf[0..@sizeOf(Elf64_Ehdr)], std.mem.asBytes(&e));
+    @memset(buf[@sizeOf(Elf64_Ehdr)..], 0);
+
+    var dest: [4096]u8 = undefined;
+    var shdr_out: [2 * 64]u8 = undefined;
+    try testing.expectError(
+        error.NoSymbolTable,
+        layoutModule(&buf, &dest, 0x1000, &shdr_out),
+    );
+}
