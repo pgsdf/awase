@@ -92,6 +92,26 @@ ESP_MNT="${ESP_MNT:-/boot/efi}"                # bench ESP mount point
 PGSD_REAL_KERNEL="${PGSD_REAL_KERNEL:-/boot/kernel/kernel}"
 ENTRY_LABEL="${ENTRY_LABEL:-PGSD-loader armed (one-shot)}"
 SAVED_ORDER_FILE="${SAVED_ORDER_FILE:-/var/db/pgsd-loader-saved-bootorder}"
+
+# Backup of the ESP's firmware-fallback loader.
+#
+# stage overwrites \EFI\BOOT\BOOTX64.EFI with the armed boot-launcher.
+# That path is the UEFI removable-media fallback: it is what firmware
+# boots when it has no valid NVRAM entry to use. Overwriting it and not
+# restoring it means an NVRAM reset does not recover the machine, it
+# re-arms it: the firmware finds no boot entries, falls back to
+# BOOTX64.EFI, and runs the transfer that just failed.
+#
+# That is almost certainly what happened on the second brick. The
+# NVRAM reset (Option-Cmd-P-R) was tried and "did not help", and the
+# machine was declared unrecoverable. It was not: the reset was booting
+# the armed loader from the fallback path.
+#
+# The backup lives on the ESP, not on the root filesystem, deliberately.
+# If the machine will not boot, the ESP is reachable from a USB
+# installer or another machine with nothing more than a FAT mount; a
+# ZFS root may not be. Recovery data belongs where recovery happens.
+BOOTX64_BACKUP="EFI/BOOT/BOOTX64.EFI.pgsd-orig"
 PGSD_GUID="50475344-6261-4c33-8a01-706773646261"
 
 need_root() {
@@ -108,6 +128,31 @@ cmd_stage() {
     [ -f "$PGSD_REAL_KERNEL" ] || { echo "deploy.sh: kernel not found: $PGSD_REAL_KERNEL" >&2; exit 1; }
     mkdir -p "$(esp EFI/BOOT)" "$(esp EFI/pgsd/bas/slots/1)" "$(esp EFI/freebsd)"
     # boot-launcher is the BOOTX64 that starts the armed -boot.efi name.
+    #
+    # Back up the firmware-fallback loader FIRST. \EFI\BOOT\BOOTX64.EFI
+    # is what UEFI boots when it has no valid NVRAM entry, so if we
+    # overwrite it without keeping the original, an NVRAM reset cannot
+    # recover the machine: the firmware falls back to the armed loader
+    # and re-runs the failing transfer. recover restores this.
+    #
+    # Never overwrite an existing backup. A second stage would otherwise
+    # save the ARMED launcher as the "original" and destroy the real one.
+    if [ -f "$(esp EFI/BOOT/BOOTX64.EFI)" ] && [ ! -f "$(esp $BOOTX64_BACKUP)" ]; then
+        cp "$(esp EFI/BOOT/BOOTX64.EFI)" "$(esp $BOOTX64_BACKUP)" || {
+            echo "deploy.sh: FAILED to back up BOOTX64.EFI; refusing to stage" >&2
+            echo "deploy.sh: without a restorable firmware-fallback path." >&2
+            exit 1
+        }
+        echo "deploy.sh: backed up the firmware-fallback loader -> $BOOTX64_BACKUP"
+    elif [ -f "$(esp $BOOTX64_BACKUP)" ]; then
+        echo "deploy.sh: firmware-fallback backup already present (kept)"
+    else
+        # No BOOTX64.EFI to begin with. Record that, so recover knows to
+        # REMOVE the one we are about to write rather than restore
+        # something that never existed.
+        : > "$(esp EFI/BOOT/BOOTX64.EFI.pgsd-none)"
+        echo "deploy.sh: no pre-existing BOOTX64.EFI; recover will remove ours"
+    fi
     cp "$B/boot-launcher.efi"     "$(esp EFI/BOOT/BOOTX64.EFI)"
     cp "$B/pgsd-loader.efi"       "$(esp EFI/pgsd/pgsd-loader-boot.efi)"
     # stock loader stays the fallback; never overwrite if present.
@@ -274,6 +319,37 @@ cmd_recover() {
                 echo "deploy.sh: reaped Boot$b" ;;
         esac
     done
+
+    # Restore the firmware-fallback loader.
+    #
+    # This is the half that actually saves the machine, and it was
+    # missing. recover restored NVRAM and left \EFI\BOOT\BOOTX64.EFI
+    # overwritten with the armed launcher, so the ESP stayed armed even
+    # after a "successful" recover, and an NVRAM reset would boot the
+    # failing transfer instead of recovering from it.
+    #
+    # Restoring this is what makes the Option-Cmd-P-R escape hatch real.
+    if [ -f "$(esp $BOOTX64_BACKUP)" ]; then
+        if cp "$(esp $BOOTX64_BACKUP)" "$(esp EFI/BOOT/BOOTX64.EFI)"; then
+            rm -f "$(esp $BOOTX64_BACKUP)"
+            echo "deploy.sh: restored the firmware-fallback loader (BOOTX64.EFI)"
+        else
+            echo "deploy.sh: WARNING: could not restore BOOTX64.EFI." >&2
+            echo "deploy.sh: The ESP is STILL ARMED: an NVRAM reset would boot" >&2
+            echo "deploy.sh: the transfer. Restore it by hand from:" >&2
+            echo "deploy.sh:   $(esp $BOOTX64_BACKUP)" >&2
+        fi
+    elif [ -f "$(esp EFI/BOOT/BOOTX64.EFI.pgsd-none)" ]; then
+        # There was no BOOTX64.EFI before we staged. Remove ours rather
+        # than leave an armed fallback path behind.
+        rm -f "$(esp EFI/BOOT/BOOTX64.EFI)"
+        rm -f "$(esp EFI/BOOT/BOOTX64.EFI.pgsd-none)"
+        echo "deploy.sh: removed our BOOTX64.EFI (there was none before staging)"
+    else
+        echo "deploy.sh: no firmware-fallback backup found (never staged, or"
+        echo "deploy.sh: already restored). Check with: status"
+    fi
+
     echo "deploy.sh: recover complete; bench is on its normal boot path."
 }
 
@@ -296,6 +372,22 @@ cmd_status() {
         echo "YES: saved order $(cat "$SAVED_ORDER_FILE") -> run recover"
     else
         echo "no"
+    fi
+
+    # The ESP's firmware-fallback path, reported separately from NVRAM
+    # because they are armed and disarmed independently and because this
+    # is the one that decides whether an NVRAM reset recovers the machine
+    # or re-arms it. Reporting only NVRAM is how the ESP stayed armed
+    # through two bricks without anyone noticing.
+    echo "== ESP firmware-fallback (\\EFI\\BOOT\\BOOTX64.EFI) =="
+    if [ -f "$(esp $BOOTX64_BACKUP)" ] || [ -f "$(esp EFI/BOOT/BOOTX64.EFI.pgsd-none)" ]; then
+        echo "ARMED: BOOTX64.EFI is the pgsd boot-launcher."
+        echo "       An NVRAM reset would boot the TRANSFER, not recover."
+        echo "       Run recover to restore it."
+    elif [ -f "$(esp EFI/BOOT/BOOTX64.EFI)" ]; then
+        echo "not armed: BOOTX64.EFI present and not staged by us."
+    else
+        echo "not armed: no BOOTX64.EFI present."
     fi
 }
 

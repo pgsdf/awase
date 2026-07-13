@@ -1320,3 +1320,61 @@ deploy.sh is therefore exercised, not merely reviewed. The other two
 Decision 7 preconditions (a tested recovery path, and the operator
 accepting the reinstall risk before arming) are the operator's, not the
 tooling's.
+
+#### F10: stage armed the ESP's firmware-fallback path and recover never restored it
+
+Found while checking the bench's recovery margin before arming under
+Decision 7. It is the most consequential safety defect the campaign has
+produced, and it probably explains why the second brick was
+unrecoverable.
+
+`stage` overwrites `\EFI\BOOT\BOOTX64.EFI` with the armed
+boot-launcher. That path is the UEFI removable-media fallback: it is
+what firmware boots when it has no valid NVRAM entry to use.
+
+`recover` only ever touched NVRAM. It restored the BootOrder and reaped
+the armed entry, and left BOOTX64.EFI overwritten. So after a
+"successful" recover the ESP was STILL ARMED, and more importantly:
+
+  An NVRAM reset did not recover the machine. It re-armed it.
+
+Clear the boot variables, and the firmware falls back to
+\EFI\BOOT\BOOTX64.EFI, which was the armed launcher, and runs the
+transfer that just failed. That is almost certainly what happened on the
+second brick: Option-Cmd-P-R was tried, "did not help", and the machine
+was declared unrecoverable. It was not unrecoverable. The reset was
+booting the armed loader.
+
+`status` reported only NVRAM, which is how this survived two bricks
+without anyone noticing.
+
+Fixed:
+
+  - stage backs up the original BOOTX64.EFI to
+    EFI/BOOT/BOOTX64.EFI.pgsd-orig BEFORE overwriting it, and refuses to
+    stage if the backup fails. It never overwrites an existing backup,
+    because a second stage would otherwise save the ARMED launcher as
+    the "original" and destroy the real one. If there was no BOOTX64.EFI
+    at all, it records that so recover removes ours rather than
+    restoring something that never existed.
+  - recover restores it, and says so. If the restore fails it says
+    loudly that the ESP is still armed and an NVRAM reset would boot the
+    transfer.
+  - the crash-safe EXIT trap in arm-once calls recover, so a mid-arm
+    failure now disarms BOTH NVRAM and the ESP.
+  - status reports the ESP fallback path separately from NVRAM, because
+    they arm and disarm independently and this is the one that decides
+    whether an NVRAM reset saves the machine.
+
+The backup lives on the ESP, not the root filesystem, deliberately: if
+the machine will not boot, the ESP is reachable from a USB installer
+with a FAT mount, and a ZFS root may not be. Recovery data belongs where
+recovery happens.
+
+Verified against the mock harness: stage backs up and status reports
+ARMED; recover restores the stock loader and clears the backup; and an
+injected mid-arm failure disarms both NVRAM and the ESP.
+
+**This materially changes the risk of arming.** Before it, an NVRAM
+reset was not an escape hatch, it was a trap. After it, Option-Cmd-P-R
+boots the stock FreeBSD loader.
