@@ -1910,3 +1910,72 @@ MODINFOMD_SHDR.
 
 The operator's question, "ZFS has an offset, could that be the issue",
 was the right one and pointed straight at this.
+
+## F7 CLOSED: the armed transfer boots to the login (2026-07-13)
+
+Seventh metal attempt. pgsd-loader booted the PGSD kernel on the bench,
+the kernel mounted its ZFS root, drawfs took the framebuffer, the
+supervision tree started, and pgsd-sessiond drew the login screen.
+
+**The operator owns the boot path.** No FreeBSD loader is involved. There
+is no Forth, no Lua, no beastie and no boot menu, because none of it was
+ever written into pgsd-loader.
+
+### What it took
+
+Nine findings, in the order they were needed:
+
+    F7   the boot environment was incomplete: no serial console binding,
+         no ACPI RSDP. The kernel ran cninit with no UART and panicked
+         with "A valid RSDP was not found".
+    F8   the exit window contained two SetVariable calls. The reference
+         keeps that window empty by construction, because firmware has
+         been observed changing the memory map during ExitBootServices.
+    F9   the EFI runtime map was never given to the kernel: virtual_start
+         was zero in the map we passed, so the kernel could not locate the
+         runtime services. efirtc0 now attaches.
+    F10  recover restored NVRAM and left \EFI\BOOT\BOOTX64.EFI armed, so
+         an NVRAM reset did not recover the machine, it RE-ARMED it.
+    F11  this bench's Option-key picker boots the ESP fallback, not the
+         NVRAM entry. Both previous "bricks" were machines whose every
+         recovery route ran through the armed artifact. The machine was
+         never broken.
+    F12  with recovery working, the third attempt produced EVIDENCE
+         instead of a reinstall: MARK_VMAP_ATTEMPT proved the loader
+         completes and jumps on Apple firmware.
+    F13  the loader mounted zfs:zroot/ROOT/awase-verified-pgsd-clean, a
+         boot environment from three reinstalls ago.
+    F14  pgsd-loader could not preload modules at all, so drawfs never
+         loaded. Fixed by compiling drawfs into the kernel, which is
+         correct anyway: the framebuffer owner is a bootstrap dependency.
+    F15  the kernel could not mount a ZFS root, because zfs.ko is a
+         MODULE and pgsd-loader could not preload it. This forced module
+         preloading (ADR 0006) onto the critical path.
+    F16  the loader must LAY OUT a module's sections, not just copy its
+         bytes. The kernel rebases the sh_addr fields "saved by the
+         loader"; a .ko off disk has them all zero.
+
+### The lesson, stated plainly
+
+Every hour lost in this campaign came from reasoning ahead of the
+evidence. Every real finding came from reading the FreeBSD source until
+the mechanism was understood, rather than skimming it until something
+plausible appeared.
+
+The specific instances are worth keeping, because the pattern repeated:
+
+  - A probe with every landmark absent was read as a transfer regression.
+    gdb was not installed.
+  - MOD_LOAD error 6 was attributed to one of sixteen ENXIO returns on a
+    guess, and could not have been checked, because bootverbose was off.
+  - bootverbose was then set through a kernel environment variable. It is
+    a boothowto BIT.
+  - The vmap was built into a separate buffer, on the assumption that the
+    firmware call was the point. The point was the metadata.
+  - ADR 0006 was written on the belief that the kernel places module
+    sections. It rebases sections the loader places, and says so in a
+    comment that had been read twice and skimmed past.
+
+The counter-discipline that worked: make the machine tell you. gdb.
+bootverbose. PgsdModules in NVRAM. Every one of those turned a week of
+guessing into one observation.
