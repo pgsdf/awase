@@ -1378,3 +1378,81 @@ injected mid-arm failure disarms both NVRAM and the ESP.
 **This materially changes the risk of arming.** Before it, an NVRAM
 reset was not an escape hatch, it was a trap. After it, Option-Cmd-P-R
 boots the stock FreeBSD loader.
+
+### F11: the Option-key picker boots the ESP fallback, not the NVRAM entry
+
+**Status: established. This bench has never had a working recovery path
+while the ESP was staged.**
+
+Discovered 2026-07-12 by a free test proposed before arming under
+Decision 7: with the ESP STAGED but NVRAM NOT ARMED, reboot, hold
+Option, select the disk, and confirm it boots. It did not. Blank screen.
+The operator recovered by power-cycling.
+
+#### What that proves
+
+NVRAM at the time of the test:
+
+    BootCurrent: 0000
+    BootOrder  : 0000
+    +Boot0000* FreeBSD ... \efi\freebsd\loader.efi
+    (no PGSD entry, no pending recovery)
+
+The only thing staged was the ESP: `\EFI\BOOT\BOOTX64.EFI` was the pgsd
+boot-launcher (F10 backup in place).
+
+The picker booted to a blank screen. With no armed NVRAM entry, the only
+thing that can produce the transfer's signature is
+`\EFI\BOOT\BOOTX64.EFI`. So:
+
+  This firmware's Option-key picker boots the ESP's removable-media
+  fallback path, NOT the NVRAM boot entry.
+
+#### Why this matters more than anything else in the campaign
+
+**It explains the second brick.** We armed, the transfer failed, we held
+Option, selected the single entry, got a blank screen, tried an NVRAM
+reset, got nothing, and declared the machine unrecoverable. Every one of
+those recovery routes went through `\EFI\BOOT\BOOTX64.EFI`, which was
+armed. The machine was never broken. The recovery paths were.
+
+**The arming protocol has never had a working escape hatch.** ADR 0005
+Decision 4's one-cycle discipline rests on "recovery path always
+reachable". It was not reachable. Both metal attempts were made with a
+recovery story that could not have worked, and we did not know because
+`status` reported only NVRAM (F10) and because the picker was never
+tested against a staged-but-unarmed ESP.
+
+**It also weakens the F7 evidence.** Both metal failures were read as
+"the transfer does not boot on Apple firmware". That may still be true.
+But the blank screens we used as evidence could equally have been the
+Option picker and the NVRAM reset booting the armed fallback path, which
+is a different fault with a different cause. F7's metal reproduction is
+now less certain than it was, not more.
+
+#### Consequence for Decision 7
+
+Metal arming must not proceed on this protocol. Not because the handoff
+is unfixed (F7, F8, F9 are corrected and verified), but because
+**arming a machine whose only recovery route runs through the armed
+artifact is not a one-cycle experiment, it is a coin flip.**
+
+Before any metal attempt, the protocol needs a recovery path that does
+not pass through the ESP:
+
+  - A FreeBSD USB installer, TESTED to boot on this bench, from which
+    the ESP can be restored by hand (mount FAT, copy
+    BOOTX64.EFI.pgsd-orig back over BOOTX64.EFI). This is now the ONLY
+    known-good route, and it must be verified BEFORE arming, not after
+    a failure.
+  - Or: do not stage BOOTX64.EFI at all. If the armed entry can be
+    launched from a distinct ESP path that the fallback does not use,
+    the fallback stays stock and the picker recovers the machine. This
+    is the better fix and it should be investigated: it removes the
+    hazard rather than adding a rescue for it.
+
+The second option is the right one. deploy.sh overwrites BOOTX64.EFI
+because boot-launcher is what starts the armed `-boot.efi` name; if the
+NVRAM entry can point directly at a pgsd path under `\EFI\pgsd\`,
+BOOTX64.EFI never needs touching and the machine keeps a stock recovery
+path throughout.
