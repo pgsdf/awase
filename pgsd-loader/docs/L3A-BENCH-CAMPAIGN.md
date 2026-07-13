@@ -1456,3 +1456,149 @@ because boot-launcher is what starts the armed `-boot.efi` name; if the
 NVRAM entry can point directly at a pgsd path under `\EFI\pgsd\`,
 BOOTX64.EFI never needs touching and the machine keeps a stock recovery
 path throughout.
+
+#### F11 fixed: stop staging BOOTX64.EFI; arm the pgsd path directly
+
+The hazard is removed rather than rescued.
+
+**BOOTX64.EFI was never necessary.** pgsd-loader triggers its armed path
+from its own FILENAME: `bas_boot.bootArmed()` matches
+"pgsd-loader-boot.efi". It does not read load options. boot-launcher
+exists only to pass an option string that FreeBSD's efibootmgr cannot
+attach to a boot entry, and its own header says what it is:
+
+    "emulation-only harness ... Never deployed to hardware."
+
+It was being deployed to hardware, as the firmware fallback, on every
+stage.
+
+**Fixed.** stage no longer touches \EFI\BOOT\BOOTX64.EFI. The armed
+loader already lived at \EFI\pgsd\pgsd-loader-boot.efi, so arm-once now
+points the NVRAM entry straight at it. No launcher, no options, no
+fallback hijack.
+
+The consequence is the one that matters:
+
+    The Option-key picker now boots the stock FreeBSD loader.
+    An NVRAM reset now boots the stock FreeBSD loader.
+
+Both were armed before. Both are recovery routes again.
+
+recover keeps its BOOTX64 restore, reframed as legacy cleanup: it fires
+only on a machine staged by an older tree, which is exactly when it is
+most needed, because such a machine has no working recovery path until
+the fallback is put back. status reports the fallback as "stock" now,
+and says loudly if it ever finds it armed.
+
+Verified against the mock: stage leaves BOOTX64.EFI byte-identical and
+creates no backup (nothing to back up); arm-once points the boot entry
+at the pgsd path.
+
+**This, not the handoff fixes, is what makes a metal attempt
+defensible.** F7, F8 and F9 made the transfer more likely to work. F10
+and F11 made a failure survivable. The second was missing for both
+previous attempts.
+
+#### F11 fix VERIFIED on hardware (2026-07-12)
+
+The same test that exposed F11, repeated with the fix in place: ESP
+STAGED, NVRAM NOT ARMED, reboot, hold Option, select the disk.
+
+Before the fix: blank screen. The picker was booting the armed
+BOOTX64.EFI.
+
+After the fix: **the FreeBSD boot menu appeared.** The picker reaches
+the stock loader.
+
+status at the time:
+
+    BootOrder  : 0000
+    armed entry: (none)
+    ESP firmware-fallback: not armed
+
+So with the ESP staged, the firmware fallback is stock and the Option
+picker is a working recovery route. That state has not existed before
+in this campaign.
+
+**All Decision 7 preconditions are now satisfied, and one of them was
+not satisfiable before today:**
+
+  - deploy.sh exercised end-to-end against the mock harness, including
+    the injected mid-arm failure that bricked the bench (verified).
+  - A recovery path that does not pass through the armed artifact
+    (verified ON HARDWARE, above). This is the one that was missing for
+    both previous metal attempts, and nobody knew.
+  - The operator accepts the reinstall risk.
+
+The metal attempt may proceed.
+
+### F12: the loader completes on metal; the fault is after the jump
+
+**Third metal attempt, 2026-07-12. Bench recovered. No reinstall.**
+
+Armed under Decision 7 with F7, F8, F9 corrected and F10/F11 giving a
+recovery path for the first time. Result: blank screen. Power-cycled,
+held Option, got the stock FreeBSD loader, booted, ran recover. Clean.
+
+The bench surviving is itself the result that four hours of work bought,
+and it is why this attempt produced evidence instead of a reinstall.
+
+#### The evidence
+
+    PgsdBasVerdict = "MARK_VMAP_ATTEMPT"
+
+recordVerdict() uses SetVariable, which OVERWRITES, so the variable
+holds the LAST marker written. MARK_VMAP_ATTEMPT is the final marker
+before transferToKernel. Its presence means, in order:
+
+    BOOT_ATTEMPT              written, then overwritten
+    ExitBootServices          RETURNED SUCCESSFULLY on Apple firmware
+    MARK_EXITED_BOOTSERVICES  written, then overwritten
+    chain copied to staging
+    MARK_VMAP_ATTEMPT         written  <- survives
+    SetVirtualAddressMap
+    transferToKernel          the jump was taken
+
+**The loader executed its entire sequence on real Apple hardware and
+jumped to the kernel.**
+
+#### What this relocates
+
+F7 has been characterised for weeks as "the transfer does not boot on
+Apple firmware", with the loader's handoff under suspicion. That is now
+false in its most important part:
+
+  - ExitBootServices returns. It does not reset the machine.
+  - The exit window (F8) survives on metal.
+  - The loader reaches and takes the jump.
+
+The fault is AFTER the jump: the kernel does not come up, or comes up
+with no console. That is a different problem in a different place, and
+for the first time it is bounded.
+
+Two immediate candidates, both testable:
+
+1. **No console.** The kernel may be running and simply not talking.
+   Emulation proved the serial binding works, but this bench's serial
+   path may differ (the console=comconsole / hw.uart.console=io:0x3f8
+   binding assumes a legacy UART at a fixed port; an Apple machine may
+   not have one). A kernel booting silently would present exactly as
+   this does.
+
+2. **Early kernel fault before console init.** The kernel may be
+   faulting between entry and cninit, which in emulation is where
+   amd64_loadaddr, hammer_time and native_parse_preload_data run. Those
+   read the page tables and metadata the loader built, and the loader's
+   page tables are the one thing emulation cannot fully validate against
+   Apple's memory layout.
+
+The first is much cheaper to test and should go first: give the kernel a
+console it can definitely use on this hardware, or an early marker path
+that does not depend on one.
+
+#### Standing
+
+The campaign now has, for the first time, a metal attempt that produced
+evidence rather than a reinstall, and a fault localized to a specific
+region. Decision 7's protocol worked exactly as designed: one cycle,
+recovery reachable, evidence recovered.
