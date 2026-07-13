@@ -53,6 +53,7 @@
 #include <sys/efi.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#include <machine/cpu.h>	/* get_cyclecount */
 
 /*
  * The kernel's own vendor GUID, distinct from the loader's
@@ -94,10 +95,31 @@ static efi_guid_t bootcrumb_guid = {
 
 /*
  * A boot identifier, so a stale marker is distinguishable from a current
- * one. Derived from the boot time, which is set well before
- * SI_SUB_DRIVERS and is unique per boot in practice.
+ * one.
+ *
+ * NOT derived from time_second, which was the first attempt and was
+ * wrong. sys/kern/kern_tc.c declares `volatile time_t time_second = 1`,
+ * and it only becomes wall-clock time when inittodr() runs, which is
+ * AFTER SI_SUB_DRIVERS. At marker time it is a tick counter, not a
+ * timestamp: the first boot recorded "boot=466227", which is plainly not
+ * a Unix epoch.
+ *
+ * Worse, it made the id USELESS for its actual purpose. Userspace
+ * computed its own id from a real clock, so the kernel's id and the rc.d
+ * id could never match, and matching them is the entire point: an id you
+ * cannot correlate across markers cannot tell you whether two markers
+ * came from the same boot.
+ *
+ * So the kernel generates the id ONCE, from the cycle counter (which is
+ * running long before SI_SUB_DRIVERS and differs every boot), and
+ * publishes it as a sysctl. Userspace READS it rather than inventing its
+ * own. One id, one source, correlatable across every marker.
  */
 static uint64_t bootcrumb_bootid;
+
+SYSCTL_U64(_debug, OID_AUTO, bootcrumb_bootid, CTLFLAG_RD,
+    &bootcrumb_bootid, 0,
+    "Boot identifier stamped into the bootcrumb EFI variables");
 
 static int bootcrumb_enabled = 1;
 SYSCTL_INT(_debug, OID_AUTO, bootcrumb_enabled, CTLFLAG_RWTUN,
@@ -177,7 +199,13 @@ static void
 bootcrumb_early(void *arg __unused)
 {
 
-	bootcrumb_bootid = (uint64_t)time_second;
+	/*
+	 * get_cyclecount() is running long before SI_SUB_DRIVERS and its
+	 * low bits differ on every boot, which is all a boot id needs: it
+	 * must distinguish THIS boot's markers from a previous boot's, not
+	 * be a timestamp.
+	 */
+	bootcrumb_bootid = (uint64_t)get_cyclecount();
 	bootcrumb_mark("EarlyInit", NULL);
 }
 SYSINIT(bootcrumb_early, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, bootcrumb_early,

@@ -52,12 +52,24 @@ bootcrumb_start()
 	# come up.
 	command -v efivar >/dev/null 2>&1 || return 0
 
-	# Match the kernel's payload format: a boot id, so a stale marker
-	# from a previous boot is distinguishable from this one's.
-	_boot=$(sysctl -n kern.boottime 2>/dev/null | sed 's/.*sec = \([0-9]*\).*/\1/')
-	[ -n "$_boot" ] || _boot=0
+	# READ the kernel's boot id rather than computing one.
+	#
+	# The first version computed its own from a clock, which made the id
+	# useless for its only purpose: an id you cannot correlate across
+	# markers cannot tell you whether two markers came from the same
+	# boot. The kernel generates the id once and publishes it here.
+	_boot=$(sysctl -n debug.bootcrumb_bootid 2>/dev/null)
+	[ -n "$_boot" ] || _boot=unknown
 
-	printf 'boot=%s root=%s' "$_boot" "$(sysctl -n vfs.root.mountfrom 2>/dev/null || echo unknown)" |
+	# The root path comes from the KERNEL ENVIRONMENT, not a sysctl.
+	# vfs.root.mountfrom is a kenv variable: `sysctl vfs.root.mountfrom`
+	# returns "unknown oid", which is exactly what the first version
+	# recorded ("root=unknown"). kenv is the right tool and the evidence
+	# for that was already on the bench.
+	_root=$(kenv -q vfs.root.mountfrom 2>/dev/null)
+	[ -n "$_root" ] || _root=unknown
+
+	printf 'boot=%s root=%s' "$_boot" "$_root" |
 	    efivar --write --name "${BOOTCRUMB_GUID}-PgsdKernelRootMounted" \
 	        >/dev/null 2>&1 || true
 }
