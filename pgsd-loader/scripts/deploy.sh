@@ -154,14 +154,50 @@ cmd_stage() {
     cp "$PGSD_REAL_KERNEL" "$(esp EFI/pgsd/bas/slots/1/kernel)"
     ksum=$(hashf "$(esp EFI/pgsd/bas/slots/1/kernel)")
     ksize=$(wc -c < "$(esp EFI/pgsd/bas/slots/1/kernel)" | tr -d ' ')
+
+    # ADR 0006: zfs.ko goes in the ATTESTED SLOT, not beside it.
+    #
+    # The root filesystem is ZFS and ZFS is a module: it is not in the
+    # PGSD kernel and not in GENERIC either. The stock loader preloads it
+    # from loader.conf; pgsd-loader cannot read loader.conf and could not
+    # preload anything at all, so the kernel booted, could not mount root,
+    # dropped to an invisible mountroot> prompt, and showed a blank screen
+    # (campaign finding F15).
+    #
+    # It is in the slot rather than a side file because once the loader is
+    # responsible for preloading a module, there is no meaningful
+    # distinction between the kernel image and the module: both execute
+    # with kernel privilege before the system is up. Attesting one but not
+    # the other would weaken the trust model for almost no gain. deploy.sh
+    # constructs a complete boot slot; the loader consumes a complete boot
+    # slot; there are no external dependencies and no special cases.
+    #
+    # Fail CLOSED. A missing module is a blank screen on a machine with no
+    # console, discovered after a reboot. Refuse to stage instead.
+    PGSD_ZFS_KO="${PGSD_ZFS_KO:-/boot/kernel/zfs.ko}"
+    if [ ! -f "$PGSD_ZFS_KO" ]; then
+        echo "deploy.sh: FATAL: $PGSD_ZFS_KO not found." >&2
+        echo "deploy.sh: The root filesystem is ZFS, ZFS is a module, and" >&2
+        echo "deploy.sh: pgsd-loader must preload it (ADR 0006). Without it" >&2
+        echo "deploy.sh: the kernel cannot mount root and the screen stays" >&2
+        echo "deploy.sh: dark. Refusing to stage a slot that cannot boot." >&2
+        exit 1
+    fi
+    cp "$PGSD_ZFS_KO" "$(esp EFI/pgsd/bas/slots/1/zfs.ko)"
+    zsum=$(hashf "$(esp EFI/pgsd/bas/slots/1/zfs.ko)")
+    zsize=$(wc -c < "$(esp EFI/pgsd/bas/slots/1/zfs.ko)" | tr -d ' ')
+
     {
         echo "PGSD-BAS-MANIFEST 1"
         echo "$ksum $ksize kernel"
+        echo "$zsum $zsize zfs.ko"
     } > "$(esp EFI/pgsd/bas/slots/1/manifest)"
     "$B/bas-selector" init "$(esp EFI/pgsd/bas/selector)" >/dev/null 2>&1 || true
     "$B/bas-selector" commit "$(esp EFI/pgsd/bas/selector)" 1 \
         "$(hashf "$(esp EFI/pgsd/bas/slots/1/manifest)")" >/dev/null
     echo "deploy.sh: staged armed transfer loader and BAS slot 1 into $ESP_MNT"
+    echo "deploy.sh:   kernel  $ksize bytes"
+    echo "deploy.sh:   zfs.ko  $zsize bytes  (preloaded; ADR 0006)"
     echo "deploy.sh: next: sudo sh deploy.sh arm-once"
 }
 
