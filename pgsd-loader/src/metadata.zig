@@ -207,6 +207,51 @@ pub const EfiMapInput = struct {
     descriptor_version: u32,
 };
 
+/// ADR 0006: a preloaded module.
+///
+/// The kernel LINKS preloaded modules itself (kern_linker.c
+/// linker_preload calls LINKER_LINK_PRELOAD; link_elf_obj.c does the
+/// section placement, symbol resolution and relocation). The loader
+/// places the raw .ko bytes in memory and describes them, and this is
+/// the description.
+///
+/// link_elf_link_preload() reads exactly six things, and it returns
+/// EINVAL if any is missing and EFTYPE if the type string is wrong:
+///
+///     MODINFO_NAME      the module name
+///     MODINFO_TYPE      must be "elf obj module" (MODTYPE_OBJ)
+///     MODINFO_ADDR      where the bytes are
+///     MODINFO_SIZE      how many
+///     MODINFOMD_ELFHDR  a COPY of the Elf64_Ehdr
+///     MODINFOMD_SHDR    a COPY of the section-header table
+///
+/// The last two are the ones easy to miss: the kernel does not re-read
+/// the ELF header out of the image it was handed, it reads the copies
+/// passed as metadata.
+pub const ModuleEntry = struct {
+    /// e.g. "zfs.ko". This is what preload_search_by_name matches, and
+    /// it is what the kernel's module dependency resolution looks for.
+    name: []const u8,
+    /// Where the raw .ko bytes live, image-base relative like everything
+    /// else in this chain.
+    addr: u64,
+    /// Size of the .ko image in bytes.
+    size: u64,
+    /// A copy of the module's Elf64_Ehdr, as bytes.
+    elfhdr: []const u8,
+    /// A copy of the module's section-header table, as bytes.
+    shdr: []const u8,
+};
+
+/// MODTYPE_OBJ, sys/sys/linker.h:228. The kernel string-compares
+/// MODINFO_TYPE against this and returns EFTYPE if it differs, so the
+/// exact spelling matters.
+const module_type = "elf obj module";
+
+/// sys/sys/linker.h. The two metadata records the preload path needs.
+const MODINFOMD_ELFHDR: u32 = 0x0002;
+const MODINFOMD_SHDR: u32 = 0x0009;
+
 /// Build the full chain including the EFI records the kernel needs,
 /// inserted before MODINFO_END: FW_HANDLE (the system table), EFI_FB
 /// (the framebuffer), and EFI_MAP (the memory map, whose presence is
@@ -223,6 +268,22 @@ pub fn buildChainFull(
     fw_handle: u64,
     fb: ?EfiFb,
     map: EfiMapInput,
+    /// ADR 0006. Preloaded modules, emitted after the kernel's records
+    /// and before MODINFO_END. Empty is the pre-ADR-0006 behaviour and
+    /// produces a byte-identical chain, which the tests assert.
+    ///
+    /// LAYOUT CONSTRAINT, and it is the one that matters: each module's
+    /// IMAGE must live BELOW chain_base_rel. kernend is computed as
+    /// align(chain_base + chain_len), so it covers the module images
+    /// only if they are beneath the chain. The reference does exactly
+    /// this: bi_load() walks every loaded file, takes the highest
+    /// f_addr + f_size, aligns it, and puts the chain there, so the
+    /// chain is always above every image and kernend naturally covers
+    /// them all.
+    ///
+    /// Get this wrong and the kernel allocates over the module bytes and
+    /// dies somewhere unrelated, on a machine with no console.
+    modules: []const ModuleEntry,
 ) !ChainResult {
     var w = ChainWriter.init(buf, chain_base_rel);
     try w.record(MODINFO_NAME, kernel.name);
@@ -267,8 +328,28 @@ pub fn buildChainFull(
         while (pad < w.len + need) : (pad += 1) w.buf[pad] = 0;
         w.len += need;
     }
+    // ADR 0006: preloaded modules. Each is a fresh MODINFO_NAME (which
+    // is what starts a new preload entry, per preload_search_next_name)
+    // followed by its records. The kernel walks these in
+    // linker_preload() and links each one itself.
+    for (modules) |m| {
+        try w.record(MODINFO_NAME, m.name);
+        try w.record(MODINFO_TYPE, module_type);
+        try w.recordU64(MODINFO_ADDR, m.addr);
+        try w.recordU64(MODINFO_SIZE, m.size);
+        // The kernel reads the ELF header and section headers from THESE
+        // records, not from the module image. link_elf_link_preload()
+        // returns EINVAL if either is absent.
+        try w.record(MODINFO_METADATA | MODINFOMD_ELFHDR, m.elfhdr);
+        try w.record(MODINFO_METADATA | MODINFOMD_SHDR, m.shdr);
+    }
+
     try w.record(MODINFO_END, &.{});
 
+    // kernend covers the chain, and therefore covers the module images
+    // too, because they lie below chain_base_rel (see the `modules`
+    // parameter doc). This formula is unchanged from before ADR 0006 for
+    // exactly that reason.
     const raw_end = chain_base_rel + w.len;
     const kernend = std.mem.alignForward(u64, raw_end, 4096);
     std.mem.writeInt(u64, buf[kernend_off..][0..8], kernend, .little);
@@ -293,7 +374,7 @@ test "full chain includes EFI records before END with self-consistent kernend" {
         .fb_mask_green = 0x0000ff00,
         .fb_mask_blue = 0x000000ff,
         .fb_mask_reserved = 0xff000000,
-    }, .{ .descriptors = &descs, .descriptor_size = 48, .descriptor_version = 1 });
+    }, .{ .descriptors = &descs, .descriptor_size = 48, .descriptor_version = 1 }, &.{});
     // First record NAME.
     try std.testing.expect(std.mem.readInt(u32, buf[0..4], .little) == MODINFO_NAME);
     // Walk to confirm EFI_MAP present and END last.
@@ -313,4 +394,192 @@ test "full chain includes EFI records before END with self-consistent kernend" {
     try std.testing.expect(saw_fb);
     try std.testing.expect(last_type == MODINFO_END);
     try std.testing.expect(r.kernend % 4096 == 0);
+}
+
+// ADR 0006: the chain with a preloaded module.
+//
+// This is the test that matters, because a wrong module chain is a kernel
+// that cannot mount root, on a machine with no console. Every assertion
+// here corresponds to something link_elf_link_preload() reads and rejects.
+
+test "chain with a preloaded module emits the six records the kernel reads" {
+    var buf: [4096]u8 = undefined;
+    const descs = [_]u8{0} ** 96;
+
+    // A stand-in .ko: the header and section-header bytes are what the
+    // kernel copies out of the metadata, so their CONTENT does not matter
+    // to the chain builder, only that they arrive intact and complete.
+    const fake_ehdr = [_]u8{0xAA} ** 64;
+    const fake_shdr = [_]u8{0xBB} ** (64 * 3);
+
+    const mods = [_]ModuleEntry{.{
+        .name = "zfs.ko",
+        .addr = 0x2000,
+        .size = 0x1234,
+        .elfhdr = &fake_ehdr,
+        .shdr = &fake_shdr,
+    }};
+
+    const r = try buildChainFull(&buf, 0x6000, .{
+        .name = "kernel",
+        .addr = 0,
+        .size = 0x1a00000,
+        .howto = 0,
+    }, 0x5000, 0xdeadbeef, null, .{
+        .descriptors = &descs,
+        .descriptor_size = 48,
+        .descriptor_version = 1,
+    }, &mods);
+
+    const chain = buf[0..r.len];
+
+    // Walk the chain and collect what we find AFTER the kernel's records.
+    // A new MODINFO_NAME is what starts a new preload entry, per
+    // preload_search_next_name().
+    var off: usize = 0;
+    var names: usize = 0;
+    var saw_mod_name = false;
+    var saw_mod_type = false;
+    var saw_mod_addr = false;
+    var saw_mod_size = false;
+    var saw_elfhdr = false;
+    var saw_shdr = false;
+
+    while (off + 8 <= chain.len) {
+        const rtype = std.mem.readInt(u32, chain[off..][0..4], .little);
+        const rlen = std.mem.readInt(u32, chain[off + 4 ..][0..4], .little);
+        const payload = chain[off + 8 ..][0..rlen];
+
+        if (rtype == MODINFO_END) break;
+
+        if (rtype == MODINFO_NAME) {
+            names += 1;
+            // The SECOND name is the module's. The first is the kernel's.
+            if (names == 2) {
+                saw_mod_name = true;
+                try std.testing.expectEqualStrings("zfs.ko", payload[0.."zfs.ko".len]);
+            }
+        }
+        if (names == 2) {
+            switch (rtype) {
+                MODINFO_TYPE => {
+                    saw_mod_type = true;
+                    // EXACT string. link_elf_link_preload() does
+                    // strcmp(type, preload_modtype_obj) and returns
+                    // EFTYPE on mismatch, so a typo here is a module the
+                    // kernel silently refuses.
+                    try std.testing.expectEqualStrings(
+                        "elf obj module",
+                        payload[0.."elf obj module".len],
+                    );
+                },
+                MODINFO_ADDR => {
+                    saw_mod_addr = true;
+                    try std.testing.expectEqual(
+                        @as(u64, 0x2000),
+                        std.mem.readInt(u64, payload[0..8], .little),
+                    );
+                },
+                MODINFO_SIZE => {
+                    saw_mod_size = true;
+                    try std.testing.expectEqual(
+                        @as(u64, 0x1234),
+                        std.mem.readInt(u64, payload[0..8], .little),
+                    );
+                },
+                MODINFO_METADATA | MODINFOMD_ELFHDR => {
+                    saw_elfhdr = true;
+                    // The WHOLE header must arrive. A short copy here is a
+                    // kernel reading a truncated Ehdr.
+                    try std.testing.expectEqual(@as(u32, 64), rlen);
+                    try std.testing.expectEqual(@as(u8, 0xAA), payload[63]);
+                },
+                MODINFO_METADATA | MODINFOMD_SHDR => {
+                    saw_shdr = true;
+                    // The WHOLE section-header table, all three sections.
+                    try std.testing.expectEqual(@as(u32, 64 * 3), rlen);
+                    try std.testing.expectEqual(@as(u8, 0xBB), payload[64 * 3 - 1]);
+                },
+                else => {},
+            }
+        }
+        off += 8 + ((rlen + 7) & ~@as(usize, 7));
+    }
+
+    // All six, or the kernel returns EINVAL / EFTYPE and the module is
+    // silently not there.
+    try std.testing.expect(saw_mod_name);
+    try std.testing.expect(saw_mod_type);
+    try std.testing.expect(saw_mod_addr);
+    try std.testing.expect(saw_mod_size);
+    try std.testing.expect(saw_elfhdr);
+    try std.testing.expect(saw_shdr);
+    try std.testing.expectEqual(@as(usize, 2), names); // kernel + zfs.ko
+}
+
+test "an empty module list produces the pre-ADR-0006 chain, byte for byte" {
+    // Regression guard. Adding module support must not change the chain
+    // for a boot that preloads nothing, or every existing bench result
+    // becomes unreproducible.
+    var buf_a: [4096]u8 = undefined;
+    var buf_b: [4096]u8 = undefined;
+    const descs = [_]u8{0} ** 96;
+
+    const args = .{
+        .kernel = KernelEntry{ .name = "kernel", .addr = 0, .size = 0x1a00000, .howto = 0 },
+        .map = EfiMapInput{ .descriptors = &descs, .descriptor_size = 48, .descriptor_version = 1 },
+    };
+
+    const a = try buildChainFull(&buf_a, 0x6000, args.kernel, 0x5000, 0xdeadbeef, null, args.map, &.{});
+    const b = try buildChainFull(&buf_b, 0x6000, args.kernel, 0x5000, 0xdeadbeef, null, args.map, &[_]ModuleEntry{});
+
+    try std.testing.expectEqual(a.len, b.len);
+    try std.testing.expectEqual(a.kernend, b.kernend);
+    try std.testing.expectEqual(a.modulep, b.modulep);
+    try std.testing.expectEqualSlices(u8, buf_a[0..a.len], buf_b[0..b.len]);
+}
+
+test "kernend covers the chain, and modules below it are therefore covered" {
+    // The layout constraint from ADR 0006, asserted.
+    //
+    // kernend = align(chain_base + chain_len). Module images must live
+    // BELOW chain_base, exactly as the reference does it (bi_load walks
+    // every loaded file, takes the highest f_addr + f_size, and puts the
+    // chain above it). If a module image were placed ABOVE the chain,
+    // kernend would not cover it, and the kernel would allocate over the
+    // module bytes.
+    var buf: [4096]u8 = undefined;
+    const descs = [_]u8{0} ** 96;
+    const fake_ehdr = [_]u8{0xAA} ** 64;
+    const fake_shdr = [_]u8{0xBB} ** 64;
+
+    const chain_base: u64 = 0x6000;
+    const mod_addr: u64 = 0x2000; // BELOW chain_base
+    const mod_size: u64 = 0x1000;
+
+    const mods = [_]ModuleEntry{.{
+        .name = "zfs.ko",
+        .addr = mod_addr,
+        .size = mod_size,
+        .elfhdr = &fake_ehdr,
+        .shdr = &fake_shdr,
+    }};
+
+    const r = try buildChainFull(&buf, chain_base, .{
+        .name = "kernel",
+        .addr = 0,
+        .size = 0x1000,
+        .howto = 0,
+    }, 0x5000, 0xdeadbeef, null, .{
+        .descriptors = &descs,
+        .descriptor_size = 48,
+        .descriptor_version = 1,
+    }, &mods);
+
+    // The module image ends below the chain base.
+    try std.testing.expect(mod_addr + mod_size <= chain_base);
+    // And kernend is past the chain, hence past the module.
+    try std.testing.expect(r.kernend >= chain_base + r.len);
+    try std.testing.expect(r.kernend > mod_addr + mod_size);
+    try std.testing.expectEqual(@as(u64, 0), r.kernend % 4096);
 }

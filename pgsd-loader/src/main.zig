@@ -249,7 +249,7 @@ pub fn main() uefi.Status {
                         .addr = lr.base_paddr,
                         .size = image_span,
                         .howto = RB_SERIAL | RB_VERBOSE,
-                    }, envp_kvo, fw_handle, efb, map_in)) |ch| {
+                    }, envp_kvo, fw_handle, efb, map_in, &.{})) |ch| {
                         const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);  // physical = staging + rel
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
                         var mb: [128]u8 = undefined;
@@ -461,7 +461,7 @@ pub fn main() uefi.Status {
                                             .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
                                             .descriptor_size = fmap.descriptor_size,
                                             .descriptor_version = fmap.descriptor_version,
-                                        }) catch {
+                                        }, &.{}) catch {
                                             // Fail closed (ADR 0005 Decision 3):
                                             // a stale map must never reach the
                                             // kernel. Boot services are still
