@@ -1675,3 +1675,65 @@ Two follow-ups, neither done:
 
 The second is cheap and should be done regardless. A console-less kernel
 must never be allowed to wait for input it cannot ask for.
+
+### F14: pgsd-loader does not load modules, so drawfs never comes up
+
+Fourth metal attempt, with F13 (the stale root) fixed. Still a blank
+screen. Bench recovered via the Option key and the stock loader, as
+before. `PgsdBasVerdict = MARK_VMAP_ATTEMPT`, unchanged: the loader
+still completes and jumps.
+
+F13 was real and was not sufficient.
+
+#### The gap
+
+`pgsd-loader` builds a module chain with exactly ONE entry:
+
+    metadata.buildChainFull(..., .{ .name = "kernel", ... })
+
+It never reads `/boot/loader.conf`. It has no concept of a `.ko` file.
+It loads the kernel and nothing else.
+
+But drawfs is a PRELOADED module. install.sh writes `drawfs_load="YES"`
+to `/boot/loader.conf`, and the STOCK loader reads that file and places
+drawfs.ko in memory before the kernel starts. install.sh says so
+directly: "drawfs.ko is auto-loaded from /boot/loader.conf".
+
+So on an armed boot:
+
+  - The kernel boots and (since F13) mounts zroot/ROOT/default.
+  - drawfs.ko is never loaded, because the loader never preloaded it and
+    never read loader.conf.
+  - Nothing owns the framebuffer, because AD-39 removed vt/vt_efifb/sc/
+    vga precisely so that drawfs could own it.
+  - Nothing draws.
+
+The kernel is very likely running correctly, with no console and no
+drawfs, painting nothing. A blank screen.
+
+#### The cheap experiment that settles it
+
+Arm, boot, and see whether the bench answers on the network. If it does,
+the kernel is booting fine and this is purely a "nothing is drawing"
+problem, which localizes the fault to module loading and nothing else.
+One reboot, no code.
+
+#### Two ways forward, and they are not equivalent
+
+**A. Compile drawfs into the kernel.** It comes up with the kernel, no
+loader involvement. Simple, and it guarantees drawfs is present before
+anything can touch the framebuffer. But it welds a cleanly separable
+subsystem into the kernel image, costs the ability to kldunload during
+development, and does nothing for inputfs and audiofs, which have the
+same dependency on being loaded.
+
+**B. Teach pgsd-loader to preload modules.** This is what a loader is
+FOR, and it is what the stock loader does: read the .ko, place it in
+memory, and add an entry to the module chain with its metadata. Real
+work, and it makes pgsd-loader an actual loader rather than a
+kernel-jumper.
+
+A is the right near-term move and B is the right end state. A loader
+that cannot load modules will hit this again with inputfs and audiofs,
+and "compile everything into the kernel" is not a strategy, it is a
+workaround that scales badly.
