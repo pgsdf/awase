@@ -16,6 +16,7 @@ const bas_boot = @import("bas_boot.zig");
 const elf_load = @import("elf_load.zig");
 const metadata = @import("metadata.zig");
 const handoff = @import("handoff.zig");
+const module_elf = @import("module_elf.zig");
 
 // FreeBSD sys/reboot.h: RB_SERIAL selects the serial console at
 // kernel init, before the kenv console= is fully in effect. The PGSD
@@ -218,7 +219,71 @@ pub fn main() uefi.Status {
                     env_stage[env_len] = 0; // final terminating NUL (double NUL)
                     env_len += 1;
                     const env_bytes_len = env_len;
-                    const chain_rel = std.mem.alignForward(u64, envp_rel + env_bytes_len, 4096);
+
+                    // ADR 0006: preload zfs.ko.
+                    //
+                    // The root filesystem is ZFS and ZFS is a MODULE: it
+                    // is not in the PGSD kernel and not in GENERIC. The
+                    // stock loader preloads it from loader.conf. This
+                    // loader cannot read loader.conf and, until now, could
+                    // not preload anything at all, so the kernel booted,
+                    // could not mount root, dropped to an invisible
+                    // mountroot> prompt, and showed a blank screen
+                    // (campaign finding F15).
+                    //
+                    // PLACEMENT. The image goes BETWEEN the env and the
+                    // chain, so it lies BELOW chain_rel. kernend is
+                    // align(chain_base + chain_len), so it covers the
+                    // module only if the module is beneath the chain. The
+                    // reference does exactly this: bi_load() puts the
+                    // chain above the highest loaded file. Above the
+                    // chain, the kernel would allocate over the module
+                    // bytes and die somewhere unrelated.
+                    const mod_rel = std.mem.alignForward(u64, envp_rel + env_bytes_len, 4096);
+                    var mods_buf: [1]metadata.ModuleEntry = undefined;
+                    var mods: []const metadata.ModuleEntry = &.{};
+                    var mod_end_rel: u64 = mod_rel;
+
+                    // The whole module image must fit inside the staging
+                    // allocation. Bounds-check rather than trust: writing
+                    // past staging is silent memory corruption on a
+                    // machine with no console.
+                    const mod_room: u64 = lr.staging_limit_rel -| mod_rel;
+                    const mod_dest: [*]u8 = @ptrFromInt(lr.staging + mod_rel);
+
+                    if (bas_boot.readSlotFileInto(
+                        device_handle,
+                        res.slot,
+                        "zfs.ko",
+                        mod_dest[0..@intCast(mod_room)],
+                    )) |mod_size| {
+                        const mod_image = mod_dest[0..mod_size];
+                        if (module_elf.parseModule(mod_image)) |me| {
+                            mods_buf[0] = .{
+                                .name = "zfs.ko",
+                                .addr = mod_rel + lr.base_paddr,
+                                .size = mod_size,
+                                .elfhdr = std.mem.asBytes(&me.ehdr),
+                                .shdr = me.shdr_bytes,
+                            };
+                            mods = mods_buf[0..1];
+                            mod_end_rel = mod_rel + mod_size;
+                            var zb: [96]u8 = undefined;
+                            if (std.fmt.bufPrint(&zb, "MOD: zfs.ko {d} bytes at 0x{x} shnum={d}\r\n", .{ mod_size, mod_rel + lr.base_paddr, me.shnum })) |m| printAscii(m) else |_| {}
+                        } else |e| {
+                            // A module the kernel would reject. Say so
+                            // now, in the loader, where there is still a
+                            // console; the same failure at boot is a blank
+                            // screen.
+                            var zb: [96]u8 = undefined;
+                            if (std.fmt.bufPrint(&zb, "MOD: zfs.ko PARSE FAILED: {s}\r\n", .{@errorName(e)})) |m| printAscii(m) else |_| {}
+                        }
+                    } else |e| {
+                        var zb: [96]u8 = undefined;
+                        if (std.fmt.bufPrint(&zb, "MOD: zfs.ko READ FAILED: {s}\r\n", .{@errorName(e)})) |m| printAscii(m) else |_| {}
+                    }
+
+                    const chain_rel = std.mem.alignForward(u64, mod_end_rel, 4096);
                     var chain_buf: [16384]u8 = undefined;
                     // Capture the memory map for EFI_MAP. In this
                     // attestable increment the map is captured during
@@ -249,7 +314,7 @@ pub fn main() uefi.Status {
                         .addr = lr.base_paddr,
                         .size = image_span,
                         .howto = RB_SERIAL | RB_VERBOSE,
-                    }, envp_kvo, fw_handle, efb, map_in, &.{})) |ch| {
+                    }, envp_kvo, fw_handle, efb, map_in, mods)) |ch| {
                         const chain_stage: [*]u8 = @ptrFromInt(lr.staging + chain_rel);  // physical = staging + rel
                         @memcpy(chain_stage[0..ch.len], chain_buf[0..ch.len]);
                         var mb: [128]u8 = undefined;
@@ -461,7 +526,7 @@ pub fn main() uefi.Status {
                                             .descriptors = fmap.buffer[0 .. fmap.count * fmap.descriptor_size],
                                             .descriptor_size = fmap.descriptor_size,
                                             .descriptor_version = fmap.descriptor_version,
-                                        }, &.{}) catch {
+                                        }, mods) catch {
                                             // Fail closed (ADR 0005 Decision 3):
                                             // a stale map must never reach the
                                             // kernel. Boot services are still

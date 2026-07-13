@@ -21,6 +21,17 @@ pub const LoadResult = struct {
     staging: u64,
     pages: usize,
     loads: usize,
+
+    /// ADR 0006: the end of the staging allocation, as a
+    /// staging-relative offset.
+    ///
+    /// Everything the loader writes after the kernel image (the env
+    /// strings, a preloaded module image, the metadata chain) goes into
+    /// this region, and NOTHING may go past this bound. Writing past it
+    /// is silent memory corruption on a machine with no console, which is
+    /// the failure mode this campaign can least afford, so the bound is
+    /// returned rather than left implicit.
+    staging_limit_rel: u64,
 };
 
 const Ehdr = extern struct {
@@ -56,7 +67,29 @@ const Phdr = extern struct {
 };
 
 const PT_LOAD: u32 = 1;
+
+/// Headroom above the kernel image for what the loader places after it:
+/// the boot environment strings and the metadata chain. It is NOT for
+/// module images; see module_slop.
 const slop: u64 = 8 * 1024 * 1024;
+
+/// ADR 0006: space for preloaded module images.
+///
+/// This is a separate budget on purpose. The module image lives in the
+/// same staging region as the kernel, below the metadata chain (so that
+/// kernend, which is align(chain_base + chain_len), covers it). It would
+/// have fitted inside `slop` today: zfs.ko is 5.6 MB and slop is 8 MB.
+/// Doing that would be an implicit coupling that breaks the first time a
+/// second module is preloaded or ZFS grows, and it would break by
+/// overrunning the staging allocation, which on a machine with no console
+/// is silent memory corruption. So the module budget is named and
+/// checked.
+///
+/// 16 MiB against a 5.6 MB zfs.ko leaves real headroom. If a module list
+/// exceeds it, loadKernel returns ModuleStagingTooSmall rather than
+/// scribbling past the allocation.
+const module_slop: u64 = 16 * 1024 * 1024;
+
 const two_mib: u64 = 2 * 1024 * 1024;
 const max_phdrs = 32;
 
@@ -107,7 +140,11 @@ pub fn loadKernel(
     // 1.3a and 1.3b: 2 MiB aligned staging below 4 GiB with slop,
     // over-allocated by one alignment unit so the aligned base is
     // always inside the allocation (the stock pattern).
-    const need = image_size + slop + two_mib;
+    // ADR 0006: the allocation must hold the kernel image, the loader's
+    // own headroom (env + chain), AND any preloaded module images. The
+    // module budget is explicit rather than borrowed from slop: see
+    // module_slop.
+    const need = image_size + slop + module_slop + two_mib;
     const pages: usize = @intCast((need + 4095) / 4096);
     const limit: [*]align(4096) uefi.Page = @ptrFromInt(0xFFFF_F000);
     const mem = bs.allocatePages(.{ .max_address = limit }, .loader_data, pages) catch
@@ -133,5 +170,9 @@ pub fn loadKernel(
         .staging = staging,
         .pages = pages,
         .loads = loads,
+        // The allocation runs from `staging` for `pages` pages. Express
+        // its end relative to base_paddr, which is the frame every other
+        // offset in main.zig uses (image_span, envp_rel, chain_rel).
+        .staging_limit_rel = (staging + pages * 4096) -| base,
     };
 }

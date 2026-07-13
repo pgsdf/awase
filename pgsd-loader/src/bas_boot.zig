@@ -181,6 +181,52 @@ pub fn openSlotFile(
     return .{ .root = root, .file = f };
 }
 
+/// ADR 0006: read a slot file directly into caller-provided memory.
+///
+/// Distinct from readWholeFile, which allocates from the UEFI pool. A
+/// preloaded module's bytes must land at a KNOWN address (below the
+/// metadata chain, so that kernend covers them), so the caller supplies
+/// the destination and this reads into it.
+///
+/// Returns the number of bytes read. Fails rather than truncating: a
+/// short module is one the kernel will reject, or worse, misparse.
+pub fn readSlotFileInto(
+    device_handle: uefi.Handle,
+    slot: u32,
+    name: []const u8,
+    dest: []u8,
+) !usize {
+    const sf = try openSlotFile(device_handle, slot, name);
+    defer sf.close();
+
+    // Size first, so a module larger than the destination is a clear
+    // error here rather than a silent overrun. Mirrors readWholeFile
+    // above, which is the working reference for this API.
+    const info_len = try sf.file.getInfoSize(.file);
+    const info_buf = try uefi.pool_allocator.alignedAlloc(
+        u8,
+        .of(uefi.protocol.File.Info.File),
+        info_len,
+    );
+    defer uefi.pool_allocator.free(info_buf);
+    const info = try sf.file.getInfo(.file, info_buf);
+    const size: usize = @intCast(info.file_size);
+
+    if (size == 0) return error.EmptyModule;
+    if (size > dest.len) return error.ModuleTooLargeForStaging;
+
+    // LOOP. A single read may return short, and a short module is one the
+    // kernel will misparse or reject. readWholeFile loops for the same
+    // reason.
+    var got: usize = 0;
+    while (got < size) {
+        const n = try sf.file.read(dest[got..size]);
+        if (n == 0) return error.ShortRead;
+        got += n;
+    }
+    return got;
+}
+
 pub fn armed(file_path: ?*const uefi.protocol.DevicePath) bool {
     return armedAs(file_path, "pgsd-loader-bas.efi");
 }
