@@ -1820,3 +1820,93 @@ blocking) beside the point.
 
 Ping the bench on the next armed boot. It costs nothing and it bounds
 the fault immediately.
+
+### F16: the loader must LAY OUT a module's sections, not just copy its bytes
+
+Sixth metal attempt, with zfs.ko preloaded. No screen, no ping. But this
+time there was evidence, because PgsdModules records the module outcome
+to NVRAM and survives the reboot:
+
+    zfs.ko OK size=5889984 addr=0x1c01000 shnum=33
+
+So the loader read the module from the attested slot, parsed it, found 33
+section headers, placed it at 0x1c01000, and described it to the kernel.
+READ_FAILED and PARSE_FAILED are both eliminated. The loader did exactly
+what ADR 0006 told it to do.
+
+**ADR 0006 was wrong.** Its central claim is that "the loader places the
+raw .ko bytes in memory and describes them" and that the kernel does the
+rest. The second half is true and the first is not.
+
+#### What the kernel actually expects
+
+sys/kern/link_elf_obj.c link_elf_link_preload(), after reading the six
+records:
+
+    /* XXX, relocate the sh_addr fields saved by the loader. */
+    off = 0;
+    for (i = 0; i < hdr->e_shnum; i++) {
+            if (shdr[i].sh_addr != 0 && (off == 0 || shdr[i].sh_addr < off))
+                    off = shdr[i].sh_addr;
+    }
+    for (i = 0; i < hdr->e_shnum; i++) {
+            if (shdr[i].sh_addr != 0)
+                    shdr[i].sh_addr = shdr[i].sh_addr - off +
+                        (Elf_Addr)ef->address;
+    }
+
+The comment says it: "the sh_addr fields SAVED BY THE LOADER". The kernel
+takes the lowest non-zero sh_addr as a base and rebases every section
+onto MODINFO_ADDR. It does not assign addresses; it RELOCATES addresses
+the loader already assigned.
+
+A .ko off disk is ET_REL. Every sh_addr in it is ZERO, because
+relocatable objects have no assigned addresses. So with the raw table we
+passed: off stays 0, the rebase loop never fires, every section keeps
+sh_addr == 0, and the kernel's own checks (link_elf_obj.c lines 66, 79,
+84: `if (shdr[i].sh_addr == 0)`) reject them.
+
+#### What the reference does, which we do not
+
+stand/common/load_elf_obj.c:
+
+    for (i = 0; i < hdr->e_shnum; i++)
+            shdr[i].sh_addr = 0;
+    for (i = 0; i < hdr->e_shnum; i++) {
+            if (shdr[i].sh_size == 0)
+                    continue;
+            switch (shdr[i].sh_type) {
+            case SHT_PROGBITS:
+            case SHT_NOBITS:
+            case SHT_X86_64_UNWIND:
+            case SHT_INIT_ARRAY:
+            case SHT_FINI_ARRAY:
+                    if ((shdr[i].sh_flags & SHF_ALLOC) == 0)
+                            break;
+                    lastaddr = roundup(lastaddr, shdr[i].sh_addralign);
+                    shdr[i].sh_addr = (Elf_Addr)lastaddr;
+                    lastaddr += shdr[i].sh_size;
+                    break;
+            }
+    }
+
+The loader LAYS OUT the allocatable sections in memory, honouring each
+one's alignment, assigns each an address, and writes that address into
+sh_addr. It then copies each PROGBITS section's bytes to its assigned
+address and zeroes the NOBITS (BSS) sections.
+
+So MODINFO_ADDR is not "where the file is". It is the base of a
+laid-out section image that the loader must CONSTRUCT. The file image on
+disk and the loaded image are different things, and we were passing the
+former while telling the kernel it was the latter.
+
+#### Consequence
+
+ADR 0006 needs an amendment and the implementation needs the layout pass.
+The work is larger than the ADR estimated, though still bounded: walk the
+sections, lay out the SHF_ALLOC ones with alignment, copy PROGBITS,
+zero NOBITS, write sh_addr, and pass the MODIFIED section table as
+MODINFOMD_SHDR.
+
+The operator's question, "ZFS has an offset, could that be the issue",
+was the right one and pointed straight at this.
