@@ -1600,6 +1600,34 @@ RCEOF
     chmod 555 "$RCDDIR/inputfs"
     echo "  installed  $RCDDIR/inputfs"
 
+    # bootcrumb: the userspace half of the early-boot progress facility.
+    #
+    # The kernel-side breadcrumbs (PgsdKernelEarlyInit,
+    # PgsdKernelPreMountRoot) stop at the point where init is created,
+    # because vfs_mountroot() is not a SYSINIT: it is called directly
+    # from start_init(), so no module can run immediately after the
+    # mount. The ONLY thing that proves root was mounted is that
+    # something living on root ran, and that is this service.
+    #
+    # PreMountRoot present with RootMounted absent is the signature of a
+    # root that could not be mounted (campaign findings F13, a boot
+    # environment from three reinstalls ago; and F15, a ZFS root with no
+    # zfs.ko preloaded). On a console-less kernel that is a blank screen,
+    # indistinguishable by eye from a kernel that never started. It took
+    # seven armed boots to diagnose without this.
+    #
+    # Copied from the repo rather than generated here: unlike the module
+    # services, it has no per-install substitutions, and a single source
+    # of truth beats a heredoc that drifts.
+    if [ -f "$SCRIPT_DIR/pgsd-kernel/rc.d/bootcrumb" ]; then
+        priv cp "$SCRIPT_DIR/pgsd-kernel/rc.d/bootcrumb" "$RCDDIR/bootcrumb"
+        priv chmod 555 "$RCDDIR/bootcrumb"
+        priv sysrc bootcrumb_enable=YES >/dev/null 2>&1 || true
+        echo "  installed  $RCDDIR/bootcrumb (early-boot progress marker)"
+    else
+        echo "  skip       bootcrumb rc.d (not found in repo)"
+    fi
+
     cat > "$RCDDIR/audiofs" << RCEOF
 #!/bin/sh
 # PROVIDE: audiofs audiofs_loaded awase_clock

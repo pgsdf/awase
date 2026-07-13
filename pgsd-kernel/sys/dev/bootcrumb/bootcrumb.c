@@ -62,15 +62,35 @@
  * 50475344-6b72-6e6c-8a02-706773646b72  ("PGSD" + "krnl")
  */
 static efi_guid_t bootcrumb_guid = {
-	0x50475344,
-	0x6b72,
-	0x6e6c,
-	{ 0x8a, 0x02, 0x70, 0x67, 0x73, 0x64, 0x6b, 0x72 }
+	.Data1 = 0x50475344,
+	.Data2 = 0x6b72,
+	.Data3 = 0x6e6c,
+	.Data4 = { 0x8a, 0x02, 0x70, 0x67, 0x73, 0x64, 0x6b, 0x72 }
 };
 
-#define	BOOTCRUMB_ATTR	(EFI_VARIABLE_NON_VOLATILE |			\
-			 EFI_VARIABLE_BOOTSERVICE_ACCESS |		\
-			 EFI_VARIABLE_RUNTIME_ACCESS)
+/*
+ * UEFI variable attributes.
+ *
+ * Defined here rather than included: the kernel does not export these.
+ * sys/sys/efi.h has none of them, and the only definitions in the tree
+ * are in sys/contrib/edk2/Include/Uefi/UefiMultiPhase.h, which is an
+ * EDK2 contrib header a driver has no business including. The existing
+ * kernel EFI code (sys/dev/efidev/efidev.c) does not define them either:
+ * it passes the attribute word straight through from userspace.
+ *
+ * These are the values from the UEFI specification and they are stable.
+ *
+ * NON_VOLATILE is the one that matters: without it the variable does not
+ * survive the reboot, and a breadcrumb that does not survive the reboot
+ * answers nothing, because the reboot is exactly when we come to read it.
+ */
+#define	BC_VAR_NON_VOLATILE		0x00000001
+#define	BC_VAR_BOOTSERVICE_ACCESS	0x00000002
+#define	BC_VAR_RUNTIME_ACCESS		0x00000004
+
+#define	BOOTCRUMB_ATTR	(BC_VAR_NON_VOLATILE |				\
+			 BC_VAR_BOOTSERVICE_ACCESS |			\
+			 BC_VAR_RUNTIME_ACCESS)
 
 /*
  * A boot identifier, so a stale marker is distinguishable from a current
@@ -106,7 +126,7 @@ bootcrumb_widen(const char *src, uint16_t *dst, size_t dstlen)
  * be the reason a boot fails. A machine that panics because its
  * breadcrumb could not be written has been made worse, not better.
  */
-void
+static void
 bootcrumb_mark(const char *stage, const char *detail)
 {
 	uint16_t name16[32];
