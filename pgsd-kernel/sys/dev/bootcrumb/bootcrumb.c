@@ -185,6 +185,31 @@ bootcrumb_mark(const char *stage, const char *detail)
 }
 
 /*
+ * Invalidate a marker from a previous boot.
+ *
+ * Deletion is SetVariable with a zero-length payload (UEFI spec). Like
+ * everything else here it fails silently: a variable that was already
+ * absent is not an error, and instrumentation must never be why a boot
+ * fails.
+ */
+static void
+bootcrumb_clear(const char *stage)
+{
+	uint16_t name16[32];
+	char varname[32];
+
+	if (!bootcrumb_enabled)
+		return;
+	if (efi_rt_ok() != 0)
+		return;
+
+	snprintf(varname, sizeof(varname), "PgsdKernel%s", stage);
+	bootcrumb_widen(varname, name16, nitems(name16));
+
+	(void)efi_var_set(name16, &bootcrumb_guid, BOOTCRUMB_ATTR, 0, NULL);
+}
+
+/*
  * Stage: EFI runtime services are usable.
  *
  * This is the EARLIEST stage this mechanism can record, and it is a fact
@@ -206,6 +231,36 @@ bootcrumb_early(void *arg __unused)
 	 * be a timestamp.
 	 */
 	bootcrumb_bootid = (uint64_t)get_cyclecount();
+
+	/*
+	 * Invalidate the LATER markers from the previous boot, before
+	 * emitting this boot's first one.
+	 *
+	 * This is what makes the facility safe to read without
+	 * interpretation. The invariant it buys:
+	 *
+	 *     If a marker exists, THIS boot reached the code path that
+	 *     writes it. If it does not exist, this boot did not reach it.
+	 *
+	 * Without it, a boot that dies before the root mount leaves the
+	 * PREVIOUS boot's PgsdKernelRootMounted sitting in NVRAM, looking
+	 * current: you would conclude root mounted when the kernel never
+	 * got there. That is precisely the false positive this facility
+	 * exists to prevent.
+	 *
+	 * The boot id then stops carrying the burden of proving freshness
+	 * and becomes what it should be: metadata answering "which boot did
+	 * this evidence belong to", and a marker whose id does not match
+	 * its siblings is evidence of a bug in this facility rather than
+	 * something to reason around.
+	 *
+	 * This is the earliest point that owns the transition: it is the
+	 * first bootcrumb code to run, and it runs before anything that can
+	 * fail in the phases whose evidence it is invalidating.
+	 */
+	bootcrumb_clear("PreMountRoot");
+	bootcrumb_clear("RootMounted");
+
 	bootcrumb_mark("EarlyInit", NULL);
 }
 SYSINIT(bootcrumb_early, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, bootcrumb_early,

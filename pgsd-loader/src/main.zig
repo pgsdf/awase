@@ -77,6 +77,50 @@ fn recordVerdict(verdict: []const u8) void {
 /// written once, and survives the marker sequence, so `deploy.sh
 /// readback` can say whether zfs.ko was read, parsed, and described to
 /// the kernel.
+/// Invalidate this loader's progress evidence from any previous boot.
+///
+/// Called ON ENTRY, before any work that could fail. The invariant it
+/// buys is the one that makes the whole facility safe to read:
+///
+///     If a marker exists, THIS boot reached the code path that writes
+///     it. If it does not exist, this boot did not reach it.
+///
+/// Without this, PgsdModules is written once on a successful boot and
+/// never cleared, so a LATER boot that dies before the module read leaves
+/// the previous boot's "zfs.ko LAID_OUT ..." sitting in NVRAM, looking
+/// current. That is exactly the false positive this facility exists to
+/// prevent: you would conclude the module loaded when the loader never
+/// got that far.
+///
+/// The ordering rule matters and is easy to get subtly wrong:
+///
+///     enter phase
+///       -> invalidate previous phase evidence   <- HERE, before any
+///       -> perform phase work                      failable work
+///       -> publish completion marker
+///
+/// Clearing PgsdModules after the slot is opened, say, would leave a
+/// failure before that point ambiguous. So it is cleared first, ahead of
+/// everything.
+///
+/// PgsdBasVerdict is not cleared: it is overwritten at every step by
+/// design, so it is already self-invalidating. Clearing it would only
+/// erase the BOOT_ATTEMPT record that is written before the jump and is
+/// the last thing a hung transfer leaves behind.
+///
+/// Deletion is SetVariable with a zero-length payload (UEFI spec). It
+/// fails silently: instrumentation must never be why a boot fails, and a
+/// variable that was already absent is not an error.
+fn clearLoaderCrumbs() void {
+    const rs = uefi.system_table.runtime_services;
+    rs.setVariable(
+        std.unicode.utf8ToUtf16LeStringLiteral("PgsdModules"),
+        &pgsd_guid,
+        .{ .non_volatile = true, .bootservice_access = true, .runtime_access = true },
+        &.{},
+    ) catch {};
+}
+
 fn recordModule(note: []const u8) void {
     const rs = uefi.system_table.runtime_services;
     rs.setVariable(
@@ -132,6 +176,19 @@ fn fail(comptime what: []const u8, status_name: []const u8) uefi.Status {
 
 pub fn main() uefi.Status {
     print(banner);
+
+    // Invalidate this loader's progress evidence from the previous boot,
+    // BEFORE any work that could fail.
+    //
+    // The ordering is the point. If PgsdModules were cleared later (after
+    // the BAS slot is opened, say), a failure before that point would
+    // leave the previous boot's marker in place, looking current. Clearing
+    // it first means a missing marker always means "this boot did not get
+    // there", with no interpretation required.
+    //
+    // Runtime services are available immediately and do not depend on boot
+    // services, so this genuinely can be the first thing done.
+    clearLoaderCrumbs();
 
     const bs = uefi.system_table.boot_services orelse
         return fail("boot services unavailable", "");
