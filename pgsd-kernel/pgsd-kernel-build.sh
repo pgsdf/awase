@@ -678,52 +678,67 @@ phase_check() {
 DRAWFS_SRC_DIR="${REPO_ROOT}/drawfs/sys/dev/drawfs"
 DRAWFS_DEST_DIR="${SRC_DIR}/sys/dev/drawfs"
 
-stage_drawfs_overlay() {
-    emit ""
-    emit "=== staging the drawfs overlay into ${DRAWFS_DEST_DIR}"
+# bootcrumb: early-boot progress instrumentation. Same overlay mechanism
+# as drawfs, and for the same reason: it is a compiled-in device whose
+# sources live in the Awase repo, and config(8) needs them under $S/.
+BOOTCRUMB_SRC_DIR="${REPO_ROOT}/pgsd-kernel/sys/dev/bootcrumb"
+BOOTCRUMB_DEST_DIR="${SRC_DIR}/sys/dev/bootcrumb"
 
-    if [ ! -d "$DRAWFS_SRC_DIR" ]; then
-        fail "drawfs sources not found: $DRAWFS_SRC_DIR"
+# Stage one overlay directory. Factored out because there are now two
+# (drawfs, bootcrumb) and there will be more; duplicating the rsync and
+# the git-exclude registration for each is how they drift apart.
+stage_overlay() {
+    _name="$1"
+    _src="$2"
+    _dest="$3"
+    _rel="$4"     # path relative to SRC_DIR, for .git/info/exclude
+
+    emit ""
+    emit "=== staging the ${_name} overlay into ${_dest}"
+
+    if [ ! -d "$_src" ]; then
+        fail "${_name} sources not found: $_src"
         return 1
     fi
 
     if ! command -v rsync >/dev/null 2>&1; then
-        fail "rsync not found; it is required to stage the drawfs overlay"
+        fail "rsync not found; it is required to stage the ${_name} overlay"
         note "pkg install -y rsync"
         return 1
     fi
 
-    mkdir -p "$DRAWFS_DEST_DIR" || {
-        fail "could not create $DRAWFS_DEST_DIR"
-        return 1
-    }
+    mkdir -p "$_dest" || { fail "could not create $_dest"; return 1; }
 
     # --delete: the repo is the source of truth. A file removed from the
     # repo must disappear from the overlay, and a file added by hand must
     # not survive a rebuild.
-    if ! rsync -a --delete "$DRAWFS_SRC_DIR/" "$DRAWFS_DEST_DIR/"; then
-        fail "rsync of the drawfs overlay failed"
+    if ! rsync -a --delete "$_src/" "$_dest/"; then
+        fail "rsync of the ${_name} overlay failed"
         return 1
     fi
-    ok "staged $(ls -1 "$DRAWFS_DEST_DIR"/*.c 2>/dev/null | wc -l | tr -d ' ') C sources + headers"
+    ok "staged $(ls -1 "$_dest"/*.c 2>/dev/null | wc -l | tr -d ' ') C sources for ${_name}"
 
     # Keep the pinned fork's git status clean. .git/info/exclude is local
-    # to this checkout and is never committed, so this does not modify the
-    # fork and does not follow the tree to another machine. It is exactly
-    # the mechanism git provides for a locally-generated path.
-    exclude_file="${SRC_DIR}/.git/info/exclude"
+    # to this checkout and never committed, so this does not modify the
+    # fork and does not follow the tree to another machine.
+    _excl="${SRC_DIR}/.git/info/exclude"
     if [ -d "${SRC_DIR}/.git" ]; then
-        mkdir -p "$(dirname "$exclude_file")"
-        if ! grep -qx 'sys/dev/drawfs/' "$exclude_file" 2>/dev/null; then
-            printf '\n# Awase: drawfs is compiled into the PGSD kernel and staged\n# here from the repo on every build (ADR 0001 amendment). Local\n# only; never committed to the fork.\nsys/dev/drawfs/\n' >> "$exclude_file"
-            ok "registered sys/dev/drawfs/ in .git/info/exclude (local, uncommitted)"
-        else
-            ok "sys/dev/drawfs/ already excluded from the fork's git status"
+        mkdir -p "$(dirname "$_excl")"
+        if ! grep -qx "$_rel" "$_excl" 2>/dev/null; then
+            printf '\n# Awase: %s is compiled into the PGSD kernel and staged\n# here from the repo on every build. Local only; never committed.\n%s\n' \
+                "$_name" "$_rel" >> "$_excl"
+            ok "registered $_rel in .git/info/exclude (local, uncommitted)"
         fi
     fi
-
     return 0
 }
+
+stage_drawfs_overlay() {
+    stage_overlay drawfs "$DRAWFS_SRC_DIR" "$DRAWFS_DEST_DIR" "sys/dev/drawfs/" || return 1
+    stage_overlay bootcrumb "$BOOTCRUMB_SRC_DIR" "$BOOTCRUMB_DEST_DIR" "sys/dev/bootcrumb/" || return 1
+    return 0
+}
+
 
 phase_build() {
     hdr "PGSD kernel build ($KERNCONF)"

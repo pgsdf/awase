@@ -296,6 +296,27 @@ device		kbdmux			# keyboard multiplexer
 files		"files.drawfs"
 device		drawfs			# PGSD framebuffer substrate (AD-39, ADR 0001)
 
+# bootcrumb: early-boot progress instrumentation.
+#
+# This kernel has NO CONSOLE. AD-39 removed vt, vt_efifb, sc and vga so
+# drawfs could own the framebuffer, and the only console left is a UART at
+# a legacy I/O port that this hardware does not have. So a kernel that
+# panics, hangs, or blocks at an invisible mountroot> prompt looks exactly
+# like one that never started: a blank screen.
+#
+# The L3a campaign spent seven armed boots and two reinstalls
+# distinguishing those cases by inference. bootcrumb writes EFI variables
+# from SYSINITs so the kernel can say where it got to, and rc.d writes one
+# more once root is actually mounted. PreMountRoot present with no
+# RootMounted is the signature of a root that could not be mounted, which
+# was invisible for the whole campaign.
+#
+# It cannot observe anything before SI_SUB_DRIVERS: efirt attaches there,
+# and without it there are no runtime services to call. That gap is
+# covered from the other side by the loader's own NVRAM marker.
+files		"files.bootcrumb"
+device		bootcrumb		# early-boot progress via EFI variables
+
 device		agp			# support several AGP chipsets
 
 # CardBus bridge support

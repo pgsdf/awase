@@ -1,0 +1,67 @@
+#!/bin/sh
+#
+# PROVIDE: bootcrumb
+# REQUIRE: root
+# BEFORE: FILESYSTEMS
+# KEYWORD: nojail
+#
+# bootcrumb: the userspace half of the early-boot progress facility.
+#
+# The kernel-side breadcrumbs (PgsdKernelEarlyInit, PgsdKernelPreMountRoot)
+# are written from SYSINITs and stop at the point where init is created,
+# because vfs_mountroot() is not a SYSINIT: it is called directly from
+# start_init(), so no module can run immediately after it.
+#
+# The only thing that PROVES root was mounted is that something living on
+# root ran. That is this script, and it runs as early as rc.d allows
+# (REQUIRE: root, BEFORE: FILESYSTEMS).
+#
+# The discriminator this completes is the one the L3a campaign needed for
+# seven armed boots and could not have:
+#
+#   PreMountRoot present, RootMounted absent
+#       -> the kernel reached the root mount and did not come out. This is
+#          the entire F13/F15 class: a stale boot environment, or a ZFS
+#          root with no zfs.ko preloaded. On a console-less machine it is
+#          a blank screen, and it is indistinguishable by eye from a
+#          kernel that never started.
+#
+#   Both present
+#       -> the kernel did its job. Look in userspace.
+#
+#   Neither
+#       -> the kernel did not reach SI_SUB_DRIVERS, or efirt did not
+#          attach. Read the loader's own markers (PgsdBasVerdict).
+
+. /etc/rc.subr
+
+name="bootcrumb"
+rcvar="bootcrumb_enable"
+start_cmd="bootcrumb_start"
+stop_cmd=":"
+
+# The kernel's GUID, not the loader's. Separate namespaces mean who wrote
+# what is never ambiguous.
+BOOTCRUMB_GUID="50475344-6b72-6e6c-8a02-706773646b72"
+
+bootcrumb_start()
+{
+	# efivar may be absent, efirt may not have attached, or the machine
+	# may not be UEFI at all. None of those is a reason to fail a boot:
+	# this is instrumentation and must never be why a system does not
+	# come up.
+	command -v efivar >/dev/null 2>&1 || return 0
+
+	# Match the kernel's payload format: a boot id, so a stale marker
+	# from a previous boot is distinguishable from this one's.
+	_boot=$(sysctl -n kern.boottime 2>/dev/null | sed 's/.*sec = \([0-9]*\).*/\1/')
+	[ -n "$_boot" ] || _boot=0
+
+	printf 'boot=%s root=%s' "$_boot" "$(sysctl -n vfs.root.mountfrom 2>/dev/null || echo unknown)" |
+	    efivar --write --name "${BOOTCRUMB_GUID}-PgsdKernelRootMounted" \
+	        >/dev/null 2>&1 || true
+}
+
+load_rc_config $name
+: ${bootcrumb_enable:="YES"}
+run_rc_command "$1"

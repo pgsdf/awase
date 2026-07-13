@@ -1,0 +1,14 @@
+# files.bootcrumb: the early-boot progress instrumentation facility.
+#
+# bootcrumb writes EFI variables from SYSINITs so that a console-less
+# kernel can say where it got to. See sys/dev/bootcrumb/bootcrumb.c for
+# what it can and cannot observe (nothing before SI_SUB_DRIVERS, because
+# efirt has not attached and there are no runtime services to call).
+#
+# Staged into /usr/src/sys/dev/bootcrumb/ by pgsd-kernel-build.sh on every
+# build, exactly as drawfs is, so that config(8) resolves these paths
+# under $S/ like any other driver and /usr/src stays a faithful checkout
+# of the pin (AD-57). See files.drawfs for why staging is the right answer
+# and why config's `local` keyword is not.
+
+dev/bootcrumb/bootcrumb.c	optional bootcrumb
