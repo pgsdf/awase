@@ -397,8 +397,27 @@ cmd_arm_persistent() {
     cur=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
     [ -n "$cur" ] || { echo "deploy.sh: could not read current BootOrder" >&2; exit 1; }
 
-    # The existing order is kept ENTIRELY and placed behind ours. That is
-    # the fallback: whatever booted this machine before still can.
+    # PGSD_PERSIST_PURE=1 removes the FreeBSD entries from the order,
+    # leaving pgsd-loader as the ONLY boot entry.
+    #
+    # The default keeps them behind ours as an automatic fallback. Pure
+    # mode is a deliberate operator decision, and the reasoning is
+    # recorded rather than assumed: the FreeBSD loader in the boot order
+    # is a temporary crutch standing in for infrastructure that ADR 0001
+    # already specifies (the OE/RE/ME environment-selection model, L1),
+    # and which pgsd-loader will provide. Declining to depend on a
+    # component you are replacing is not the same as dropping recovery.
+    #
+    # What pure mode costs, stated plainly: a loader regression (a bad
+    # kernel, a stale ESP artifact, a zfs.ko that will not lay out) no
+    # longer falls through to a machine that boots. Recovery becomes
+    # MANUAL: hold Option, select the disk, and the firmware boots
+    # \EFI\BOOT\BOOTX64.EFI, which stage deliberately leaves stock (F11).
+    # That path is real and has been exercised, but it requires a human at
+    # the machine.
+    #
+    # Until OE/RE/ME lands, pure mode means the operator IS the recovery
+    # path.
     create_out=$(efibootmgr -c -a -p -l "$loader_path" -L "$PERSIST_LABEL" 2>&1)
     bn=$(printf '%s\n' "$create_out" | while IFS= read -r line; do
         for tok in $line; do
@@ -414,20 +433,38 @@ cmd_arm_persistent() {
         exit 1
     fi
 
-    if ! efibootmgr -o "$bn,$cur" >/dev/null 2>&1; then
-        echo "deploy.sh: could not place Boot$bn at the order head; removing it" >&2
+    if [ "${PGSD_PERSIST_PURE:-0}" = "1" ]; then
+        neworder="$bn"
+    else
+        neworder="$bn,$cur"
+    fi
+
+    if ! efibootmgr -o "$neworder" >/dev/null 2>&1; then
+        echo "deploy.sh: could not set the boot order; removing the entry" >&2
         efibootmgr -B -b "$bn" >/dev/null 2>&1 || true
         exit 1
     fi
 
     echo "deploy.sh: pgsd-loader is now the PERMANENT boot path."
-    echo "deploy.sh:   BootOrder: $bn,$cur"
+    echo "deploy.sh:   BootOrder: $neworder"
     echo "deploy.sh:   Boot$bn  = pgsd-loader"
-    echo "deploy.sh:   $cur = the previous order, kept as FALLBACK"
-    echo ""
-    echo "  Every boot now goes through your loader. If it fails, the"
-    echo "  firmware falls through to the entries behind it and the machine"
-    echo "  still comes up on FreeBSD."
+    if [ "${PGSD_PERSIST_PURE:-0}" = "1" ]; then
+        echo "deploy.sh:   PURE: no FreeBSD entry in the order."
+        echo ""
+        echo "  pgsd-loader is the only boot entry. If it fails, the firmware"
+        echo "  has nothing to fall through to: recovery is MANUAL. Hold"
+        echo "  Option at power-on, select the disk, and the firmware boots"
+        echo "  the stock loader from the ESP, which stage leaves untouched."
+        echo ""
+        echo "  Until the OE/RE/ME environment model lands (ADR 0001, L1),"
+        echo "  you are the recovery path."
+    else
+        echo "deploy.sh:   $cur = the previous order, kept as FALLBACK"
+        echo ""
+        echo "  Every boot goes through your loader. If it fails, the firmware"
+        echo "  falls through to the entries behind it and the machine still"
+        echo "  comes up."
+    fi
     echo ""
     echo "  Revert with: sudo sh deploy.sh disarm-persistent"
 }
@@ -452,9 +489,32 @@ cmd_disarm_persistent() {
         exit 1
     fi
 
+    # In PURE mode the persistent entry was the ONLY one in the order, so
+    # removing it leaves an EMPTY BootOrder and a machine the firmware has
+    # no instruction to boot. Put a FreeBSD entry back.
+    #
+    # This is not a repudiation of pure mode. It is disarm doing its job:
+    # its whole purpose is to return the bench to a bootable stock path,
+    # and it cannot do that by leaving the order empty.
+    remaining=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
+    if [ -z "$remaining" ]; then
+        # Find a FreeBSD entry that still EXISTS (pure mode removed them
+        # from the order, not from NVRAM).
+        fb=$(efibootmgr | awk '/^Boot[0-9A-Fa-f]{4}/ && /FreeBSD/ {
+                 e=$1; sub(/^Boot/,"",e); sub(/\*$/,"",e); print e; exit }')
+        if [ -n "$fb" ]; then
+            efibootmgr -o "$fb" >/dev/null 2>&1 && \
+                echo "deploy.sh: BootOrder was empty; restored Boot$fb (FreeBSD)"
+        else
+            echo "deploy.sh: WARNING: BootOrder is EMPTY and no FreeBSD entry" >&2
+            echo "deploy.sh: was found. The firmware has nothing to boot." >&2
+            echo "deploy.sh: Recover with the Option key, then recreate an entry:" >&2
+            echo "deploy.sh:   efibootmgr -c -a -l /boot/efi/efi/freebsd/loader.efi -L FreeBSD" >&2
+            exit 1
+        fi
+    fi
+
     echo "deploy.sh: disarmed; the bench is back on its stock boot path."
-    echo "deploy.sh: (the entries behind ours were never removed, so the"
-    echo "deploy.sh:  order is simply what it was before)"
 }
 
 cmd_recover() {
