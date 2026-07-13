@@ -2,7 +2,18 @@
 
 ## Status
 
-Proposed 2026-07-13. Not ratified. Awaiting operator review.
+**Accepted. Ratified 2026-07-13 (operator).** Implementation in
+progress.
+
+Ratified with one addition from the operator: **zfs.ko is part of the
+attested BAS slot, not a side file.** The reasoning is that once the
+loader is responsible for preloading a module, there is no meaningful
+distinction between the kernel image and the module: both execute with
+kernel privilege before the system is up, and attesting one but not the
+other weakens the trust model for almost no gain. deploy.sh therefore
+constructs a complete boot slot (kernel, zfs.ko, manifest, hashes
+covering both) and the loader consumes a complete boot slot. There are
+no external dependencies and no special cases.
 
 ## 1. Context
 
