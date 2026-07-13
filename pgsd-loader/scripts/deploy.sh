@@ -245,6 +245,16 @@ cmd_arm_once() {
     loader_path="$(esp EFI/pgsd/pgsd-loader-boot.efi)"
     [ -f "$loader_path" ] || { echo "deploy.sh: armed loader not found ($loader_path); run stage first" >&2; exit 1; }
 
+    # Refuse a stale artifact. An armed cycle exists to test what you just
+    # built; arming last week's ESP binary tests nothing and reads as a
+    # result. stage failing and arm proceeding anyway is how that happens.
+    built="$B/pgsd-loader.efi"
+    if [ -f "$built" ] && ! cmp -s "$built" "$loader_path"; then
+        echo "deploy.sh: the staged loader does NOT match the built one." >&2
+        echo "deploy.sh: Run stage first, or you will be testing a stale binary." >&2
+        exit 1
+    fi
+
     # Save the current BootOrder so recover can restore it exactly.
     cur=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
     [ -n "$cur" ] || { echo "deploy.sh: could not read current BootOrder" >&2; exit 1; }
@@ -386,6 +396,31 @@ cmd_arm_persistent() {
         exit 1
     }
 
+    # Refuse a STALE artifact.
+    #
+    # The staged loader existing is not the same as the staged loader
+    # being the one you just built. This bit immediately: `stage` failed
+    # (the loader had not been built), and arm-persistent happily armed
+    # the previous cycle's ESP binary, making a stale artifact the
+    # machine's PERMANENT boot path. For a one-shot that is survivable.
+    # For the permanent path it is not: you would boot, every day, a
+    # loader nobody chose.
+    built="$B/pgsd-loader.efi"
+    if [ ! -f "$built" ]; then
+        echo "deploy.sh: no built loader ($built)." >&2
+        echo "deploy.sh: Build it, then stage, then arm. Refusing to make an" >&2
+        echo "deploy.sh: unverifiable ESP artifact the permanent boot path." >&2
+        exit 1
+    fi
+    if ! cmp -s "$built" "$loader_path"; then
+        echo "deploy.sh: the staged loader does NOT match the built one." >&2
+        echo "deploy.sh:   built:  $built" >&2
+        echo "deploy.sh:   staged: $loader_path" >&2
+        echo "deploy.sh: Run stage first. Refusing to make a stale artifact the" >&2
+        echo "deploy.sh: permanent boot path." >&2
+        exit 1
+    fi
+
     # Refuse to stack duplicates. Re-running this must be idempotent, not
     # a way to accumulate boot entries.
     if efibootmgr | grep -qF "$PERSIST_LABEL"; then
@@ -500,8 +535,19 @@ cmd_disarm_persistent() {
     if [ -z "$remaining" ]; then
         # Find a FreeBSD entry that still EXISTS (pure mode removed them
         # from the order, not from NVRAM).
-        fb=$(efibootmgr | awk '/^Boot[0-9A-Fa-f]{4}/ && /FreeBSD/ {
-                 e=$1; sub(/^Boot/,"",e); sub(/\*$/,"",e); print e; exit }')
+        # NOTE the pattern. Real efibootmgr prints entries with a LEADING
+        # SPACE (" Boot0008* FreeBSD"), so an anchored /^Boot/ never
+        # matches. The first version used one, found no FreeBSD entry, and
+        # left the operator with an EMPTY BootOrder on a machine that then
+        # had nothing to boot. Match anywhere on the line.
+        fb=$(efibootmgr | awk '/Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*? / && /FreeBSD/ {
+                 for (i = 1; i <= NF; i++) {
+                     if ($i ~ /^Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*?$/) {
+                         e = $i; sub(/^Boot/, "", e); sub(/\*$/, "", e);
+                         print e; exit
+                     }
+                 }
+             }')
         if [ -n "$fb" ]; then
             efibootmgr -o "$fb" >/dev/null 2>&1 && \
                 echo "deploy.sh: BootOrder was empty; restored Boot$fb (FreeBSD)"
@@ -617,7 +663,24 @@ cmd_status() {
     echo "== permanent boot path =="
     if efibootmgr | grep -F "$PERSIST_LABEL"; then
         echo "  pgsd-loader is the PERMANENT boot path."
-        echo "  The stock entries remain behind it as fallback."
+
+        # Report the fallback HONESTLY, by reading the order rather than
+        # assuming. The first version hardcoded "the stock entries remain
+        # behind it as fallback", which is FALSE in pure mode. A status
+        # that reports a safety net you do not have is worse than no
+        # status at all: it is the F10 failure (the ESP stayed armed
+        # through two bricks because status only reported NVRAM), repeated
+        # in the tool built to avoid it.
+        _order=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
+        _behind=$(printf '%s' "$_order" | cut -s -d, -f2-)
+        if [ -n "$_behind" ]; then
+            echo "  Fallback: $_behind (the firmware falls through if we fail)"
+        else
+            echo "  NO FALLBACK: pgsd-loader is the only entry in the order."
+            echo "  If it fails to boot, recovery is MANUAL: hold Option at"
+            echo "  power-on and select the disk. Until OE/RE/ME lands"
+            echo "  (ADR 0001, L1), you are the recovery path."
+        fi
         echo "  Revert with: disarm-persistent"
     else
         echo "(not persistent: the stock loader boots this machine)"
