@@ -1602,3 +1602,76 @@ The campaign now has, for the first time, a metal attempt that produced
 evidence rather than a reinstall, and a fault localized to a specific
 region. Decision 7's protocol worked exactly as designed: one cycle,
 recovery reachable, evidence recovered.
+
+### F13: the loader was mounting a root that has not existed for three reinstalls
+
+**This is F7's actual cause. Everything else was real, and none of it
+was this.**
+
+The loader hardcoded:
+
+    vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean
+
+The bench has one boot environment:
+
+    zroot/ROOT/default
+
+`awase-verified-pgsd-clean` was created during an install THREE
+reinstalls ago. It has not existed for weeks.
+
+#### The presentation, end to end
+
+1. The loader hands off correctly. Proven on metal: the third attempt
+   left MARK_VMAP_ATTEMPT in NVRAM, so ExitBootServices returned, the
+   chain was staged, the vmap was attempted, and the jump was taken
+   (F12).
+2. The kernel boots, initialises, probes devices.
+3. It tries to mount a root that does not exist.
+4. It drops to the `mountroot>` prompt and waits for input.
+5. That prompt is INVISIBLE. AD-39 removes vt, vt_efifb, sc and vga so
+   that drawfs can own the framebuffer, leaving `device uart` as the
+   only console. We bind it with hw.uart.console=io:0x3f8, a legacy ISA
+   port that an Apple machine does not have.
+6. A kernel waiting forever at an invisible prompt is a blank screen.
+
+Every step of that is correct behaviour. The kernel did exactly what it
+was told. It was told to mount a filesystem that was not there.
+
+#### f7probe was showing us this the whole time
+
+Every emulation run ended at `mountroot>`. It was explained away, in
+this ledger and repeatedly in conversation, as "QEMU has no zroot pool,
+which is expected and not a loader fault".
+
+The bench HAS a zroot pool. It failed anyway. The name was wrong in both
+places, so the same failure was appearing in both and being read as two
+different things: an expected artifact in emulation, and a mysterious
+brick on metal.
+
+The tool was correct. The interpretation was not.
+
+#### Fixed
+
+    vfs.root.mountfrom=zfs:zroot/ROOT/default
+
+#### The design flaw that caused it, which the fix does not address
+
+The loader HARDCODES the root. The stock loader DERIVES it: stand/common
+/boot.c builds `<fstype>:<device>` from the pool it actually booted from
+and sets vfs.root.mountfrom (line 382-384), reading the pool's bootfs
+property. A hardcoded root is a landmine that goes off on the next
+reinstall, and it went off on this one.
+
+Two follow-ups, neither done:
+
+  - Derive the root rather than hardcode it, as the reference does. This
+    is the real fix and it is a substantial piece of work (the loader
+    would need enough ZFS to read the pool's bootfs property).
+  - Make the failure LOUD. A wrong root currently produces an invisible
+    prompt and an infinite hang. The kernel can be told to time out
+    rather than prompt (vfs.mountroot.timeout), which would at least
+    turn a silent hang into a reboot, leaving the NVRAM breadcrumb
+    intact and the failure legible.
+
+The second is cheap and should be done regardless. A console-less kernel
+must never be allowed to wait for input it cannot ask for.

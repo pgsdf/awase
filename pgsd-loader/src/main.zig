@@ -181,7 +181,30 @@ pub fn main() uefi.Status {
                     // it is a boothowto BIT (RB_VERBOSE), set where the
                     // chain is built, not an environment variable. See
                     // the RB_VERBOSE comment at the top of this file.
-                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/awase-verified-pgsd-clean\x00";
+                    // vfs.root.mountfrom: the root filesystem the kernel mounts.
+                    //
+                    // This was "zfs:zroot/ROOT/awase-verified-pgsd-clean",
+                    // a boot environment created during an install THREE
+                    // reinstalls ago. It does not exist. The bench has one
+                    // BE: zroot/ROOT/default.
+                    //
+                    // The consequence was the whole of F7's presentation.
+                    // The kernel booted, initialised, probed devices, and
+                    // then could not mount a root that was not there, so it
+                    // dropped to the mountroot> prompt and waited for input.
+                    // On a PGSD kernel that prompt is invisible: AD-39
+                    // removes vt, vt_efifb, sc and vga so drawfs can own the
+                    // framebuffer, and the only console left is a UART at
+                    // io:0x3f8 that an Apple machine does not have. A kernel
+                    // waiting at an invisible prompt presents as a blank
+                    // screen, forever.
+                    //
+                    // f7probe showed this all along. The emulation runs
+                    // reached mountroot> and it was explained away as "QEMU
+                    // has no zroot pool". The bench HAS one, and still
+                    // failed, because the name was wrong in both places. The
+                    // same failure was being read as two different things.
+                    const env_fixed = "console=comconsole\x00comconsole_speed=115200\x00hw.uart.console=io:0x3f8\x00vfs.root.mountfrom=zfs:zroot/ROOT/default\x00";
                     var env_len: usize = 0;
                     @memcpy(env_stage[0..env_fixed.len], env_fixed);
                     env_len = env_fixed.len;
