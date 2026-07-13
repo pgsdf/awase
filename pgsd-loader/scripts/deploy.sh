@@ -91,6 +91,13 @@ B="$PROJ_DIR/zig-out/bin"
 ESP_MNT="${ESP_MNT:-/boot/efi}"                # bench ESP mount point
 PGSD_REAL_KERNEL="${PGSD_REAL_KERNEL:-/boot/kernel/kernel}"
 ENTRY_LABEL="${ENTRY_LABEL:-PGSD-loader armed (one-shot)}"
+
+# The PERSISTENT entry's label is deliberately DIFFERENT from the
+# one-shot's. recover reaps entries by label, and it must never reap the
+# persistent boot path: recover is run after every armed cycle, and a
+# recover that removed the permanent entry would silently return the bench
+# to the stock FreeBSD loader without anyone noticing.
+PERSIST_LABEL="${PERSIST_LABEL:-PGSD-loader (persistent)}"
 SAVED_ORDER_FILE="${SAVED_ORDER_FILE:-/var/db/pgsd-loader-saved-bootorder}"
 
 # Backup of the ESP's firmware-fallback loader.
@@ -322,6 +329,134 @@ cmd_arm_once() {
     echo "  If anything looks wrong BEFORE rebooting, run recover now to disarm."
 }
 
+# Make pgsd-loader the PERMANENT boot path.
+#
+# Distinct from arm-once in three ways, and each difference is the point:
+#
+#   1. No saved BootOrder. There is nothing to restore, because this is
+#      not a one-shot experiment; it is the boot path.
+#   2. A different entry label, so recover (which reaps by label) never
+#      removes it. recover runs after every armed cycle, and a recover
+#      that quietly reverted the machine to the stock loader would be a
+#      trap.
+#   3. The stock FreeBSD entry is LEFT IN THE ORDER, behind ours.
+#
+# That third point is what makes this safe rather than reckless. The
+# resulting order is:
+#
+#     BootOrder: <pgsd>, 0000, ...
+#                  ^       ^
+#           pgsd-loader   stock FreeBSD, as fallback
+#
+# If pgsd-loader fails to boot, the firmware falls through to the stock
+# loader and the machine comes up. A loader regression is then
+# self-healing rather than a brick, which is STRICTLY SAFER than an armed
+# one-shot cycle, where recover is mandatory and must be run from a
+# machine that booted.
+#
+# The Option-key escape hatch also survives, because \EFI\BOOT\BOOTX64.EFI
+# stays stock (F11): stage does not touch it.
+cmd_arm_persistent() {
+    if [ "${PGSD_PERSIST_ACK:-}" != "i-want-pgsd-loader-as-the-permanent-boot-path" ]; then
+        echo "deploy.sh: arm-persistent makes pgsd-loader the PERMANENT boot path." >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: Every boot will go through your loader, not just the" >&2
+        echo "deploy.sh: ones you arm. The stock FreeBSD entry is left in the" >&2
+        echo "deploy.sh: order BEHIND it, so a loader that fails to boot falls" >&2
+        echo "deploy.sh: through to FreeBSD and the machine still comes up." >&2
+        echo "deploy.sh: The Option-key picker also still reaches the stock" >&2
+        echo "deploy.sh: loader, because BOOTX64.EFI is untouched (F11)." >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: What this costs: a loader regression (a bad kernel, a" >&2
+        echo "deploy.sh: stale ESP artifact, a zfs.ko that will not lay out)" >&2
+        echo "deploy.sh: now affects EVERY boot rather than one you chose. The" >&2
+        echo "deploy.sh: fallback makes that recoverable, not invisible." >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: Undo with: sudo sh deploy.sh disarm-persistent" >&2
+        echo "deploy.sh:" >&2
+        echo "deploy.sh: If you accept that, set:" >&2
+        echo "deploy.sh:   PGSD_PERSIST_ACK=i-want-pgsd-loader-as-the-permanent-boot-path" >&2
+        exit 1
+    fi
+    need_root arm-persistent
+
+    loader_path="$(esp EFI/pgsd/pgsd-loader-boot.efi)"
+    [ -f "$loader_path" ] || {
+        echo "deploy.sh: armed loader not found ($loader_path); run stage first" >&2
+        exit 1
+    }
+
+    # Refuse to stack duplicates. Re-running this must be idempotent, not
+    # a way to accumulate boot entries.
+    if efibootmgr | grep -qF "$PERSIST_LABEL"; then
+        echo "deploy.sh: already persistent; nothing to do."
+        echo "deploy.sh: (disarm-persistent to revert to the stock loader)"
+        return 0
+    fi
+
+    cur=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
+    [ -n "$cur" ] || { echo "deploy.sh: could not read current BootOrder" >&2; exit 1; }
+
+    # The existing order is kept ENTIRELY and placed behind ours. That is
+    # the fallback: whatever booted this machine before still can.
+    create_out=$(efibootmgr -c -a -p -l "$loader_path" -L "$PERSIST_LABEL" 2>&1)
+    bn=$(printf '%s\n' "$create_out" | while IFS= read -r line; do
+        for tok in $line; do
+            case "$tok" in
+                Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]|Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*)
+                    t=${tok#Boot}; t=${t%\*}; printf '%s\n' "$t"; break ;;
+            esac
+        done
+    done | head -1)
+
+    if [ -z "$bn" ]; then
+        echo "deploy.sh: could not determine the new boot entry number" >&2
+        exit 1
+    fi
+
+    if ! efibootmgr -o "$bn,$cur" >/dev/null 2>&1; then
+        echo "deploy.sh: could not place Boot$bn at the order head; removing it" >&2
+        efibootmgr -B -b "$bn" >/dev/null 2>&1 || true
+        exit 1
+    fi
+
+    echo "deploy.sh: pgsd-loader is now the PERMANENT boot path."
+    echo "deploy.sh:   BootOrder: $bn,$cur"
+    echo "deploy.sh:   Boot$bn  = pgsd-loader"
+    echo "deploy.sh:   $cur = the previous order, kept as FALLBACK"
+    echo ""
+    echo "  Every boot now goes through your loader. If it fails, the"
+    echo "  firmware falls through to the entries behind it and the machine"
+    echo "  still comes up on FreeBSD."
+    echo ""
+    echo "  Revert with: sudo sh deploy.sh disarm-persistent"
+}
+
+# Revert to the stock boot path.
+cmd_disarm_persistent() {
+    need_root disarm-persistent
+
+    efibootmgr | while IFS= read -r line; do
+        case "$line" in
+            *"$PERSIST_LABEL"*)
+                set -- $line
+                b=$1; b=${b#Boot}; b=${b%\*}
+                efibootmgr -B -b "$b" >/dev/null 2>&1 || true
+                echo "deploy.sh: removed Boot$b (persistent pgsd-loader)" ;;
+        esac
+    done
+
+    if efibootmgr | grep -qF "$PERSIST_LABEL"; then
+        echo "deploy.sh: WARNING: the persistent entry is still present." >&2
+        echo "deploy.sh: Remove it by hand: efibootmgr -B -b <num>" >&2
+        exit 1
+    fi
+
+    echo "deploy.sh: disarmed; the bench is back on its stock boot path."
+    echo "deploy.sh: (the entries behind ours were never removed, so the"
+    echo "deploy.sh:  order is simply what it was before)"
+}
+
 cmd_recover() {
     need_root recover
     # Restore the saved BootOrder if we have one.
@@ -414,7 +549,21 @@ cmd_readback() {
 cmd_status() {
     echo "== BootOrder =="
     efibootmgr | grep -E 'BootOrder|BootCurrent' || true
-    echo "== armed entry =="
+    # The PERSISTENT entry, reported separately and first, because it is
+    # the more consequential state: it means every boot goes through
+    # pgsd-loader, not just an armed one. status not reporting a state is
+    # how the ESP stayed armed through two bricks (F10); the same mistake
+    # is not repeated here.
+    echo "== permanent boot path =="
+    if efibootmgr | grep -F "$PERSIST_LABEL"; then
+        echo "  pgsd-loader is the PERMANENT boot path."
+        echo "  The stock entries remain behind it as fallback."
+        echo "  Revert with: disarm-persistent"
+    else
+        echo "(not persistent: the stock loader boots this machine)"
+    fi
+
+    echo "== armed entry (one-shot) =="
     efibootmgr | grep -F "$ENTRY_LABEL" || echo "(none)"
     echo "== pending recovery =="
     if [ -f "$SAVED_ORDER_FILE" ]; then
@@ -441,11 +590,13 @@ cmd_status() {
 }
 
 case "${1:-}" in
-    stage)     cmd_stage ;;
-    arm-once)  cmd_arm_once ;;
-    recover)   cmd_recover ;;
-    readback)  cmd_readback ;;
-    status)    cmd_status ;;
+    stage)              cmd_stage ;;
+    arm-once)           cmd_arm_once ;;
+    arm-persistent)     cmd_arm_persistent ;;
+    disarm-persistent)  cmd_disarm_persistent ;;
+    recover)            cmd_recover ;;
+    readback)           cmd_readback ;;
+    status)             cmd_status ;;
     *)
         echo "usage: sh deploy.sh <stage|arm-once|recover|readback|status>" >&2
         echo "  see the header for the one-cycle metal attempt sequence" >&2
