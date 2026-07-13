@@ -1979,3 +1979,26 @@ The specific instances are worth keeping, because the pattern repeated:
 The counter-discipline that worked: make the machine tell you. gdb.
 bootverbose. PgsdModules in NVRAM. Every one of those turned a week of
 guessing into one observation.
+
+### The closing datum
+
+From the successful boot:
+
+    PgsdBasVerdict = MARK_VMAP_ATTEMPT
+    PgsdModules    = zfs.ko LAID_OUT file=5889984 img=6427360
+                            addr=0x1c01000 shnum=33
+
+**The laid-out image is LARGER than the file**, 6,427,360 against
+5,889,984, and that is the layout working rather than a fault. It was
+predicted to be smaller, on the reasoning that the layout drops the debug
+and non-allocatable sections. It does. But NOBITS sections occupy no
+bytes in the file and do occupy memory, ZFS has a great deal of BSS, and
+it more than makes up the difference.
+
+So the extra 537,376 bytes are ZFS's zero-initialised data, allocated and
+zeroed by the layout exactly as the reference does
+(`kern_bzero(firstaddr, lastaddr - firstaddr)` before the copy). The
+number confirms the layout rather than merely failing to contradict it.
+
+`BootCurrent: 0006` on the recovered system: the armed entry is what
+booted. The transfer ran.
