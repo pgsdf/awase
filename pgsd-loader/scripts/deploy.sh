@@ -127,33 +127,25 @@ cmd_stage() {
     [ -x "$B/pgsd-loader.efi" ] || { echo "deploy.sh: build first (no $B/pgsd-loader.efi)" >&2; exit 1; }
     [ -f "$PGSD_REAL_KERNEL" ] || { echo "deploy.sh: kernel not found: $PGSD_REAL_KERNEL" >&2; exit 1; }
     mkdir -p "$(esp EFI/BOOT)" "$(esp EFI/pgsd/bas/slots/1)" "$(esp EFI/freebsd)"
-    # boot-launcher is the BOOTX64 that starts the armed -boot.efi name.
+    # F11: \EFI\BOOT\BOOTX64.EFI is NOT touched, deliberately.
     #
-    # Back up the firmware-fallback loader FIRST. \EFI\BOOT\BOOTX64.EFI
-    # is what UEFI boots when it has no valid NVRAM entry, so if we
-    # overwrite it without keeping the original, an NVRAM reset cannot
-    # recover the machine: the firmware falls back to the armed loader
-    # and re-runs the failing transfer. recover restores this.
+    # Unnecessary: pgsd-loader triggers its armed path from its own
+    # FILENAME (bas_boot.bootArmed matches "pgsd-loader-boot.efi"), not
+    # from a load-options string. boot-launcher exists only to pass an
+    # option string that FreeBSD's efibootmgr cannot attach to a boot
+    # entry, and its own header says "emulation-only harness ... Never
+    # deployed to hardware." It was being deployed to hardware.
     #
-    # Never overwrite an existing backup. A second stage would otherwise
-    # save the ARMED launcher as the "original" and destroy the real one.
-    if [ -f "$(esp EFI/BOOT/BOOTX64.EFI)" ] && [ ! -f "$(esp $BOOTX64_BACKUP)" ]; then
-        cp "$(esp EFI/BOOT/BOOTX64.EFI)" "$(esp $BOOTX64_BACKUP)" || {
-            echo "deploy.sh: FAILED to back up BOOTX64.EFI; refusing to stage" >&2
-            echo "deploy.sh: without a restorable firmware-fallback path." >&2
-            exit 1
-        }
-        echo "deploy.sh: backed up the firmware-fallback loader -> $BOOTX64_BACKUP"
-    elif [ -f "$(esp $BOOTX64_BACKUP)" ]; then
-        echo "deploy.sh: firmware-fallback backup already present (kept)"
-    else
-        # No BOOTX64.EFI to begin with. Record that, so recover knows to
-        # REMOVE the one we are about to write rather than restore
-        # something that never existed.
-        : > "$(esp EFI/BOOT/BOOTX64.EFI.pgsd-none)"
-        echo "deploy.sh: no pre-existing BOOTX64.EFI; recover will remove ours"
-    fi
-    cp "$B/boot-launcher.efi"     "$(esp EFI/BOOT/BOOTX64.EFI)"
+    # And dangerous: BOOTX64.EFI is the UEFI removable-media fallback,
+    # and on this bench the Option-key picker boots it in preference to
+    # the NVRAM entry (F11). Overwriting it armed every recovery route
+    # the operator had: the picker, and an NVRAM reset. Both metal
+    # attempts were made with a recovery path that ran through the armed
+    # artifact, which is why the second "brick" could not be recovered.
+    # The machine was never broken.
+    #
+    # The armed loader lives at \EFI\pgsd\pgsd-loader-boot.efi, the
+    # NVRAM entry points straight at it, and BOOTX64.EFI stays stock.
     cp "$B/pgsd-loader.efi"       "$(esp EFI/pgsd/pgsd-loader-boot.efi)"
     # stock loader stays the fallback; never overwrite if present.
     if [ ! -f "$(esp EFI/freebsd/loader.efi)" ]; then
@@ -204,8 +196,11 @@ cmd_arm_once() {
         echo "deploy.sh: run 'recover' first; refusing to arm twice without recovery." >&2
         exit 1
     fi
-    loader_path="$(esp EFI/BOOT/BOOTX64.EFI)"
-    [ -f "$loader_path" ] || { echo "deploy.sh: staged loader not found ($loader_path); run stage first" >&2; exit 1; }
+    # F11: point the boot entry at the armed loader directly, NOT at
+    # BOOTX64.EFI, which must stay stock so the Option picker and an
+    # NVRAM reset remain real recovery routes.
+    loader_path="$(esp EFI/pgsd/pgsd-loader-boot.efi)"
+    [ -f "$loader_path" ] || { echo "deploy.sh: armed loader not found ($loader_path); run stage first" >&2; exit 1; }
 
     # Save the current BootOrder so recover can restore it exactly.
     cur=$(efibootmgr | awk -F': ' '/BootOrder/{print $2}')
