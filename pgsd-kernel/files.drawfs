@@ -1,65 +1,53 @@
 # files.drawfs: source list for the in-kernel drawfs device.
 #
 # drawfs ADR 0001 amendment (2026-07-13): drawfs is compiled into the
-# kernel rather than preloaded as a module.
+# kernel rather than preloaded as a module. It replaces vt and vt_efifb,
+# which are not modules and cannot be (there is no sys/modules/vt). The
+# framebuffer owner is a bootstrap dependency: it must exist before
+# anything can claim the framebuffer, and a module loaded later is a
+# module that races. That race is what AD-39 was written to prevent.
 #
-# It replaces vt and vt_efifb, which are not modules and cannot be
-# (there is no sys/modules/vt). The framebuffer owner is a bootstrap
-# dependency: it must exist before anything can claim the framebuffer.
-# A module loaded later is a module that races, and that race is what
-# AD-39 was written to prevent (vt(4) and drawfs were both writing
-# 0xc0180000 and vt's repaints were overwriting drawfs's cursor
-# sprites). Compiling drawfs in eliminates the race by construction.
+# It also removes drawfs's dependency on the loader: pgsd-loader builds
+# a module chain with exactly one entry, the kernel, and cannot preload
+# a .ko (campaign finding F14).
 #
-# It also removes drawfs's dependency on the loader. pgsd-loader builds
-# a module chain containing exactly one entry, the kernel: it does not
-# read /boot/loader.conf and cannot preload a .ko. On an armed boot
-# drawfs was therefore never loaded, nothing owned the framebuffer, and
-# nothing drew (campaign finding F14). Compiled in, it is simply there.
+# ---------------------------------------------------------------------
+# These are ORDINARY entries, and that is deliberate.
 #
-# This file is referenced from the PGSD kernel config with
+# The sources are STAGED into /usr/src/sys/dev/drawfs/ by the build
+# (pgsd-kernel-build.sh, stage_drawfs_overlay), so config(8) resolves
+# them under $S/ exactly as it does for every other kernel driver. No
+# compile-with, no local, no cleverness.
 #
-#     files   "files.drawfs"
+# An earlier attempt tried to compile drawfs straight out of the Awase
+# repo using `local` to suppress config's $S/ prefix. It failed on the
+# bench: `local` sets filetype = LOCAL, and config's rule generator only
+# emits a compile command for NORMAL, so the four objects appeared in the
+# link line with no rule to build them:
 #
-# which config(8) supports (usr.sbin/config/config.y: FILES ID SEMICOLON
-# { newfile($2); }), and which sys/arm/conf/GENERIC uses the same way.
-# The point of doing it this way is AD-57: the pinned FreeBSD source is
-# not modified. The source list lives in the awase tree, beside the
-# config that uses it.
+#     ld: error: cannot open drawfs.o: No such file or directory
 #
-# Sources mirror the module's Makefile (sys/modules/drawfs/Makefile)
-# exactly, including its exclusions:
+# `local` is not an out-of-tree mechanism. Every real use of it in
+# sys/conf/files is a file GENERATED into the build directory (t4fw_cfg.c
+# from an awk script, and so on), paired with no-implicit-rule and an
+# explicit compile-with. Chasing undocumented config(8) behaviour to
+# avoid staging cost more than staging does, which is itself the argument
+# for staging.
 #
-#   drawfs_drm.c is NOT here. It implements the Phase 2 DRM/KMS backend,
-#   requires drm-kmod headers, and is excluded from the default build.
-#   The standing project theme is that DRM is a strictly optional
-#   add-on and never the default, so the in-kernel build inherits that
-#   exclusion rather than quietly changing it. Enabling DRM in a
-#   compiled-in drawfs is a separate decision and would add the file
-#   here under an optional guard.
+# The constraint that matters is not "/usr/src must be byte-for-byte
+# pristine". It is that any modification be INTENTIONAL and
+# REPRODUCIBLE. The overlay is regenerated from the repo on every build
+# with rsync --delete, so the repo remains the single source of truth and
+# /usr/src is a build workspace rather than a hand-maintained tree.
+#
+# ---------------------------------------------------------------------
+# Sources mirror sys/modules/drawfs/Makefile exactly, including its
+# exclusions. drawfs_drm.c is NOT here: it is the Phase 2 DRM/KMS
+# backend, needs drm-kmod headers, and is excluded from the default
+# build. DRM is a strictly optional add-on and never the default, so the
+# in-kernel build inherits that exclusion rather than quietly changing it.
 
-# The `local` keyword is what keeps /usr/src pristine, and it is the
-# whole reason this approach works.
-#
-# config(8) normally prefixes every source path with $S/, the kernel
-# source root (usr.sbin/config/mkmakefile.cc:594), which would require
-# drawfs's sources to be copied into /usr/src/sys/dev/drawfs/. That
-# would make /usr/src dirty, and the AD-57 pin check treats a dirty tree
-# as not-the-pinned-source and fails the build. It would also revert the
-# out-of-tree module work done 2026-07-12, which exists precisely to keep
-# /usr/src a faithful checkout.
-#
-# `local` suppresses the prefix (mkmakefile.cc:552 `if (eq(wd, "local"))
-# filetype = LOCAL;` and :591-592 `if (filetype == LOCAL) f_srcprefix =
-# ""`). The path is then used as written, so the kernel compiles drawfs
-# straight from the Awase repo and /usr/src is never touched.
-#
-# The path is absolute because it must be: it is resolved from the
-# kernel build directory, not from this file. It assumes the deployed
-# checkout location from INSTALL.md Part 1. If the repo is elsewhere,
-# this list is the one place to change.
-
-/usr/local/src/awase/drawfs/sys/dev/drawfs/drawfs.c          optional drawfs local
-/usr/local/src/awase/drawfs/sys/dev/drawfs/drawfs_surface.c  optional drawfs local
-/usr/local/src/awase/drawfs/sys/dev/drawfs/drawfs_frame.c    optional drawfs local
-/usr/local/src/awase/drawfs/sys/dev/drawfs/drawfs_efifb.c    optional drawfs local
+dev/drawfs/drawfs.c		optional drawfs
+dev/drawfs/drawfs_surface.c	optional drawfs
+dev/drawfs/drawfs_frame.c	optional drawfs
+dev/drawfs/drawfs_efifb.c	optional drawfs

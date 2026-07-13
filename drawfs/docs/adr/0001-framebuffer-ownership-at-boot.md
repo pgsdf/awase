@@ -698,25 +698,52 @@ The PGSD kernel, booted by pgsd-loader with no module preloading of any
 kind, comes up with drawfs owning the framebuffer, inputfs and audiofs
 loaded from rc.d, and pgsd-sessiond drawing the login.
 
-### Implementation note: /usr/src stays pristine
+### Implementation note: the overlay, and what did not work
 
-The obvious way to compile drawfs in would be to copy its sources into
-/usr/src/sys/dev/drawfs/ and add them to sys/conf/files. That was
-rejected: it makes /usr/src dirty, the AD-57 pin check treats a dirty
-tree as not-the-pinned-source and fails the build, and it would revert
-the out-of-tree module work done 2026-07-12 which exists precisely to
-keep /usr/src a faithful checkout.
+The obvious way to compile drawfs in is to put its sources under
+/usr/src/sys/dev/drawfs/ and list them normally. The obstacle was the
+AD-57 pin check, which treats any dirty /usr/src as not-the-pinned-source
+and fails the build.
 
-config(8) has a supported escape. A files-list entry marked `local` is
-emitted with no $S/ prefix (usr.sbin/config/mkmakefile.cc:552 sets
-filetype = LOCAL on the keyword, and :591-592 sets f_srcprefix = "" for
-it), so its path is used exactly as written. pgsd-kernel/files.drawfs
-therefore names drawfs's sources by absolute path in the Awase repo, and
-the kernel compiles them straight out of it.
+**An attempt to avoid staging failed, and is recorded because the failure
+is instructive.** config(8)'s `local` keyword suppresses the $S/ prefix
+on a source path (mkmakefile.cc: `if (filetype == LOCAL) f_srcprefix =
+""`), which looked like a way to compile drawfs straight out of the Awase
+repo. It is not. `local` sets filetype = LOCAL, and the rule generator
+emits a compile command only for NORMAL:
 
-The config references the list with `files "files.drawfs"`, which
-config(8) supports (config.y: FILES ID SEMICOLON { newfile($2); }) and
-which sys/arm/conf/GENERIC uses the same way.
+    switch (ftp->f_type) {
+    case NORMAL:  ftype = "NORMAL"; break;
+    default:      fprintf(stderr, "config: don't know rules for %s\n", np);
+    }
 
-Result: drawfs is in the kernel, /usr/src is never written to, and the
-pin holds.
+So config listed the four objects in the link line and generated no rule
+to build them. The kernel link failed on the bench with "ld: error:
+cannot open drawfs.o". `local` is for files GENERATED into the build
+directory (t4fw_cfg.c from an awk script, and so on), always paired with
+no-implicit-rule and an explicit compile-with. It was never an
+out-of-tree mechanism, and reading one field of config's source was not
+a substitute for reading how the tree actually uses it.
+
+**The constraint was misstated.** It is not that /usr/src must be
+byte-for-byte pristine. It is that any modification must be INTENTIONAL
+and REPRODUCIBLE. Once that is said plainly, staging is obviously fine.
+
+**The overlay.** pgsd-kernel-build.sh stages drawfs/sys/dev/drawfs/ into
+/usr/src/sys/dev/drawfs/ before buildkernel, with rsync --delete, on
+every build. The Awase repo remains the single source of truth: a file
+removed from the repo disappears from the overlay, and a file added by
+hand does not survive a rebuild. The staging fails closed, because a
+kernel configured with `device drawfs` and no drawfs sources fails at
+link after a full compile, which is a slow way to learn nothing.
+
+The AD-57 drift check keeps its full meaning. The build registers
+sys/dev/drawfs/ in the fork's .git/info/exclude, which is local to the
+checkout and never committed, so `git status --porcelain` does not report
+the overlay at all. The exemption is enforced by git rather than by a
+special case in our check, and it is verified: an untracked directory
+listed in info/exclude produces empty porcelain output.
+
+So /usr/src is a build workspace with one declared, regenerated overlay,
+rather than a hand-maintained tree, and the kernel is built with
+FreeBSD's machinery exactly as intended.

@@ -276,6 +276,17 @@ verify_pin() {
         if [ "$head_commit" = "$pin_commit" ]; then
             ok "AD-57 pin satisfied: /usr/src HEAD matches pinned commit"
             # Drift check: a dirty tree is not the pinned source.
+            #
+            # sys/dev/drawfs/ is exempt, and the exemption is enforced by
+            # git rather than by this check: the build registers that path
+            # in the fork's .git/info/exclude, which is local to the
+            # checkout and never committed, so `git status --porcelain`
+            # simply does not report it. The overlay is regenerated from
+            # the Awase repo with rsync --delete on every build (see
+            # stage_drawfs_overlay), so it is intentional and reproducible
+            # rather than drift, and the repo stays the single source of
+            # truth. Everything else in /usr/src is still required to be a
+            # faithful checkout of the pinned commit.
             if [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then
                 if [ "$allow" = "1" ]; then
                     warn "/usr/src has uncommitted local changes; PGSD_ALLOW_UNPINNED set, proceeding UNREPRODUCIBLY"
@@ -634,6 +645,86 @@ phase_check() {
 # ======================================================================
 # Phase: build
 
+# ======================================================================
+# drawfs overlay
+#
+# drawfs is compiled INTO the kernel (drawfs ADR 0001 amendment,
+# 2026-07-13), so config(8) must find its sources under /usr/src/sys/.
+# FreeBSD's kernel build has no supported way to compile a driver from
+# outside the source tree; an attempt to do so with config's `local`
+# keyword failed on the bench, because `local` is for files GENERATED
+# into the build directory and its rule generator emits no compile
+# command for them (the objects appeared in the link line with nothing
+# to build them).
+#
+# So the sources are STAGED. The important property is not that /usr/src
+# stays byte-for-byte pristine; it is that any modification to it is
+# INTENTIONAL and REPRODUCIBLE. This overlay is:
+#
+#   - regenerated from the repo on every build, with rsync --delete, so
+#     the Awase repo remains the single source of truth and a stale or
+#     hand-edited overlay cannot survive;
+#   - confined to one directory, sys/dev/drawfs/, which exists in the
+#     FreeBSD tree for no other reason;
+#   - registered in .git/info/exclude, which is local to the checkout and
+#     never committed, so `git status` in the pinned fork stays clean and
+#     the AD-57 drift check keeps its meaning for everything else.
+#
+# /usr/src is therefore a build workspace with one declared overlay,
+# rather than a hand-maintained tree. That is a weaker and far more
+# manageable constraint than the one it replaces, and it uses FreeBSD's
+# kernel build machinery exactly as intended.
+
+DRAWFS_SRC_DIR="${REPO_ROOT}/drawfs/sys/dev/drawfs"
+DRAWFS_DEST_DIR="${SRC_DIR}/sys/dev/drawfs"
+
+stage_drawfs_overlay() {
+    emit ""
+    emit "=== staging the drawfs overlay into ${DRAWFS_DEST_DIR}"
+
+    if [ ! -d "$DRAWFS_SRC_DIR" ]; then
+        fail "drawfs sources not found: $DRAWFS_SRC_DIR"
+        return 1
+    fi
+
+    if ! command -v rsync >/dev/null 2>&1; then
+        fail "rsync not found; it is required to stage the drawfs overlay"
+        note "pkg install -y rsync"
+        return 1
+    fi
+
+    mkdir -p "$DRAWFS_DEST_DIR" || {
+        fail "could not create $DRAWFS_DEST_DIR"
+        return 1
+    }
+
+    # --delete: the repo is the source of truth. A file removed from the
+    # repo must disappear from the overlay, and a file added by hand must
+    # not survive a rebuild.
+    if ! rsync -a --delete "$DRAWFS_SRC_DIR/" "$DRAWFS_DEST_DIR/"; then
+        fail "rsync of the drawfs overlay failed"
+        return 1
+    fi
+    ok "staged $(ls -1 "$DRAWFS_DEST_DIR"/*.c 2>/dev/null | wc -l | tr -d ' ') C sources + headers"
+
+    # Keep the pinned fork's git status clean. .git/info/exclude is local
+    # to this checkout and is never committed, so this does not modify the
+    # fork and does not follow the tree to another machine. It is exactly
+    # the mechanism git provides for a locally-generated path.
+    exclude_file="${SRC_DIR}/.git/info/exclude"
+    if [ -d "${SRC_DIR}/.git" ]; then
+        mkdir -p "$(dirname "$exclude_file")"
+        if ! grep -qx 'sys/dev/drawfs/' "$exclude_file" 2>/dev/null; then
+            printf '\n# Awase: drawfs is compiled into the PGSD kernel and staged\n# here from the repo on every build (ADR 0001 amendment). Local\n# only; never committed to the fork.\nsys/dev/drawfs/\n' >> "$exclude_file"
+            ok "registered sys/dev/drawfs/ in .git/info/exclude (local, uncommitted)"
+        else
+            ok "sys/dev/drawfs/ already excluded from the fork's git status"
+        fi
+    fi
+
+    return 0
+}
+
 phase_build() {
     hdr "PGSD kernel build ($KERNCONF)"
 
@@ -682,6 +773,18 @@ phase_build() {
         emit "Step 2/4: SKIPPING clean (use --clean to force a full rebuild)"
         emit "  incremental builds can produce stale output if the config"
         emit "  recently changed; pass --clean if in doubt"
+    fi
+
+    # Stage the drawfs overlay BEFORE buildkernel. config(8) runs as part
+    # of buildkernel and must find dev/drawfs/*.c under /usr/src/sys, so
+    # this cannot be deferred. Fail closed: a kernel configured with
+    # `device drawfs` and no drawfs sources fails at link with
+    # "cannot open drawfs.o", after a full compile. Better to stop here.
+    if ! stage_drawfs_overlay; then
+        emit ""
+        emit "  ERROR: could not stage the drawfs overlay; refusing to build"
+        emit "  a kernel that declares 'device drawfs' with no drawfs sources."
+        return 1
     fi
 
     # The actual buildkernel.
