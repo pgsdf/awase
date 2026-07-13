@@ -184,34 +184,41 @@ SYSINIT(bootcrumb_early, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, bootcrumb_early,
     NULL);
 
 /*
- * Stage: init is created, and the root mount is imminent.
+ * Stage: the root mount is about to begin.
  *
- * This is as close to the mount as a MODULE can get, and the limitation
- * is worth stating precisely rather than papering over.
+ * PLACEMENT, and the first attempt got this wrong in a way worth
+ * recording, because the mistake was to violate a constraint documented
+ * three paragraphs above it in this same file.
  *
- * vfs_mountroot() is not a SYSINIT. It is called directly from
- * start_init() (sys/kern/init_main.c:746), which runs inside the init
- * process, created by SYSINIT(init, SI_SUB_CREATE_INIT, SI_ORDER_FIRST).
- * So there is no SYSINIT that runs immediately after the mount, and a
- * module cannot bracket it. Bracketing would mean editing
- * vfs_mountroot.c, which AD-57 forbids: the pinned FreeBSD source is not
- * modified.
+ * The marker was first placed at SI_SUB_CREATE_INIT, on the reasoning
+ * that create_init() is what leads to start_init() and thus to
+ * vfs_mountroot(). That is true, and it does not matter, because
+ * SI_SUB_CREATE_INIT is 0x2500000 and SI_SUB_DRIVERS is 0x3100000: it
+ * runs BEFORE efirt attaches. efi_rt_ok() returned ENXIO, the marker
+ * correctly did nothing, and the variable never appeared. The facility
+ * behaved exactly as designed; the placement was wrong.
  *
- * A marker here therefore means: the kernel reached the point where init
- * is created and the root mount is about to be attempted. If this marker
- * is present and the system did not come up, the fault is at or after
- * the root mount.
+ * The right anchor is kick_init(), which is what makes the init process
+ * RUNNABLE and therefore what actually starts start_init() and the mount:
  *
- * The OTHER half of that discriminator lives in userspace, and it has to:
- * the only thing that proves root was mounted is that something on root
- * ran. See the bootcrumb rc.d service, which writes PgsdKernelRootMounted
- * as early as rc.d allows. PreMountRoot present with no RootMounted is the
- * signature of the entire F13/F15 class (a stale boot environment; a ZFS
- * root with no zfs.ko), and that single distinction would have replaced
- * days of inference.
+ *     SYSINIT(kickinit, SI_SUB_KTHREAD_INIT, SI_ORDER_MIDDLE,
+ *             kick_init, NULL);       (sys/kern/init_main.c:874)
  *
- * SI_ORDER_ANY at SI_SUB_CREATE_INIT: after create_init's
- * SI_ORDER_FIRST, before the process is scheduled.
+ * SI_SUB_KTHREAD_INIT is 0xe000000, comfortably after SI_SUB_DRIVERS. So
+ * SI_ORDER_FIRST at that subsystem runs after efirt is up and before init
+ * is kicked, which is precisely "the mount is about to begin".
+ *
+ * A marker here means the kernel got all the way to the point where the
+ * root mount starts. If it is present and the system did not come up, the
+ * fault is at or after the root mount.
+ *
+ * The OTHER half of the discriminator lives in userspace, and it has to:
+ * the only thing that proves root was mounted is that something living on
+ * root ran. See the bootcrumb rc.d service, which writes
+ * PgsdKernelRootMounted. PreMountRoot present with RootMounted absent is
+ * the signature of the entire F13/F15 class (a stale boot environment; a
+ * ZFS root with no zfs.ko), and that single distinction would have
+ * replaced days of inference.
  */
 static void
 bootcrumb_premount(void *arg __unused)
@@ -219,5 +226,5 @@ bootcrumb_premount(void *arg __unused)
 
 	bootcrumb_mark("PreMountRoot", NULL);
 }
-SYSINIT(bootcrumb_premount, SI_SUB_CREATE_INIT, SI_ORDER_ANY,
+SYSINIT(bootcrumb_premount, SI_SUB_KTHREAD_INIT, SI_ORDER_FIRST,
     bootcrumb_premount, NULL);
