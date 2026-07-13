@@ -64,6 +64,29 @@ fn recordVerdict(verdict: []const u8) void {
     ) catch {};
 }
 
+/// ADR 0006: the module-preload outcome, in its OWN NVRAM variable.
+///
+/// PgsdBasVerdict is a single variable that every marker OVERWRITES, so
+/// by the time it is read back it holds only the last thing written
+/// (MARK_VMAP_ATTEMPT, on every armed boot to date). The module outcome
+/// was therefore invisible: it was printed to a UEFI console on a machine
+/// whose screen goes dark, and recorded nowhere.
+///
+/// That is the same mistake the campaign has made repeatedly: producing
+/// evidence into a channel nobody can read. This variable is separate,
+/// written once, and survives the marker sequence, so `deploy.sh
+/// readback` can say whether zfs.ko was read, parsed, and described to
+/// the kernel.
+fn recordModule(note: []const u8) void {
+    const rs = uefi.system_table.runtime_services;
+    rs.setVariable(
+        std.unicode.utf8ToUtf16LeStringLiteral("PgsdModules"),
+        &pgsd_guid,
+        .{ .non_volatile = true, .bootservice_access = true, .runtime_access = true },
+        note,
+    ) catch {};
+}
+
 const banner = "pgsd-loader " ++ version ++ " (L0: presence and chainload)\r\n";
 pub const version = "0.1.0";
 
@@ -270,6 +293,11 @@ pub fn main() uefi.Status {
                             mod_end_rel = mod_rel + mod_size;
                             var zb: [96]u8 = undefined;
                             if (std.fmt.bufPrint(&zb, "MOD: zfs.ko {d} bytes at 0x{x} shnum={d}\r\n", .{ mod_size, mod_rel + lr.base_paddr, me.shnum })) |m| printAscii(m) else |_| {}
+                            // And to NVRAM, which survives the reboot.
+                            // The console this prints to goes dark; the
+                            // variable does not.
+                            var zn: [96]u8 = undefined;
+                            if (std.fmt.bufPrint(&zn, "zfs.ko OK size={d} addr=0x{x} shnum={d}", .{ mod_size, mod_rel + lr.base_paddr, me.shnum })) |m| recordModule(m) else |_| recordModule("zfs.ko OK");
                         } else |e| {
                             // A module the kernel would reject. Say so
                             // now, in the loader, where there is still a
@@ -277,10 +305,14 @@ pub fn main() uefi.Status {
                             // screen.
                             var zb: [96]u8 = undefined;
                             if (std.fmt.bufPrint(&zb, "MOD: zfs.ko PARSE FAILED: {s}\r\n", .{@errorName(e)})) |m| printAscii(m) else |_| {}
+                            var zn: [96]u8 = undefined;
+                            if (std.fmt.bufPrint(&zn, "zfs.ko PARSE_FAILED {s}", .{@errorName(e)})) |m| recordModule(m) else |_| recordModule("zfs.ko PARSE_FAILED");
                         }
                     } else |e| {
                         var zb: [96]u8 = undefined;
                         if (std.fmt.bufPrint(&zb, "MOD: zfs.ko READ FAILED: {s}\r\n", .{@errorName(e)})) |m| printAscii(m) else |_| {}
+                        var zn: [96]u8 = undefined;
+                        if (std.fmt.bufPrint(&zn, "zfs.ko READ_FAILED {s}", .{@errorName(e)})) |m| recordModule(m) else |_| recordModule("zfs.ko READ_FAILED");
                     }
 
                     const chain_rel = std.mem.alignForward(u64, mod_end_rel, 4096);

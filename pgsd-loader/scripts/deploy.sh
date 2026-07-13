@@ -386,10 +386,28 @@ cmd_recover() {
 
 cmd_readback() {
     # Read-only; root only needed if efivar requires it.
+    echo "== boot verdict (last marker before the jump) =="
     if efivar --print "$PGSD_GUID-PgsdBasVerdict" 2>/dev/null; then
         :
     else
         echo "deploy.sh: could not read PgsdBasVerdict (try sudo, or no armed cycle has run)" >&2
+    fi
+
+    # ADR 0006: the module-preload outcome, in its own variable.
+    #
+    # PgsdBasVerdict is overwritten by every marker, so it only ever holds
+    # the last one (MARK_VMAP_ATTEMPT on every armed boot so far). The
+    # module outcome was printed to a UEFI console on a machine whose
+    # screen goes dark, and recorded nowhere: evidence produced into a
+    # channel nobody can read, which is a mistake this campaign has made
+    # more than once. This variable survives.
+    echo ""
+    echo "== module preload (ADR 0006) =="
+    if efivar --print "$PGSD_GUID-PgsdModules" 2>/dev/null; then
+        :
+    else
+        echo "  (not set: no armed cycle has run since module preloading landed,"
+        echo "   or the loader did not reach the module read)"
     fi
 }
 
