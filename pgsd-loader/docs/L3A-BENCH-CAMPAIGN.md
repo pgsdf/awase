@@ -1283,3 +1283,40 @@ If the transfer fails on metal again with all three defects corrected,
 that is a significant finding in itself, and the campaign should not
 retry a fourth time without a new, specific, source-identified defect.
 The standard does not relax because we have run out of ideas.
+
+#### deploy.sh re-exercised against the mock harness (2026-07-12)
+
+ADR 0005 Decision 7's first precondition: deploy.sh had been edited
+since it was deprecated (the header, the guard) but never RUN. That is
+precisely the condition that bricked the bench the first time: code
+carefully written and never executed.
+
+Four tests against a mock efibootmgr maintaining fake BootOrder and
+entry state. All pass.
+
+1. **The Decision 7 guard refuses.** arm-once without
+   PGSD_DEPLOY_ACK=i-have-read-adr-0005-decision-7 exits non-zero and
+   explains why, naming the three corrected defects and the reinstall
+   risk.
+
+2. **arm-once arms correctly.** With acknowledgement: the prior
+   BootOrder is saved, a new entry is created ACTIVE, and it lands at
+   the ORDER HEAD (0004,0000,0003,...). Both properties matter: this
+   bench's firmware ignores BootNext (finding F1) and skips inactive
+   entries (F2), so an armed entry must be both active and first.
+
+3. **recover restores exactly.** The saved order is restored byte for
+   byte, the armed entry is reaped, and the saved-order file is removed.
+   No PGSD entry survives.
+
+4. **The crash-safe trap holds under injected failure.** With
+   head-placement made to fail mid-arm, which is the EXACT scenario that
+   bricked the bench, deploy.sh detected it, fired its EXIT trap,
+   disarmed, restored the order, reaped the entry, and exited non-zero
+   with nothing armed. The failure that cost a reinstall now
+   self-recovers.
+
+deploy.sh is therefore exercised, not merely reviewed. The other two
+Decision 7 preconditions (a tested recovery path, and the operator
+accepting the reinstall risk before arming) are the operator's, not the
+tooling's.
