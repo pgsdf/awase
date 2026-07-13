@@ -263,6 +263,39 @@ device		kbdmux			# keyboard multiplexer
 # into the build script during AD-39's tooling work. See
 # BACKLOG.md AD-39 "Recovery-path check" for the full history.
 
+# drawfs: the framebuffer owner, compiled in.
+#
+# drawfs ADR 0001 amendment (2026-07-13). drawfs replaces vt and
+# vt_efifb, removed above. Those are not modules and cannot be: there
+# is no sys/modules/vt. The framebuffer owner is a bootstrap
+# dependency, so it must exist before anything can claim the
+# framebuffer, and a module loaded later is a module that races. That
+# race is exactly what AD-39 was written to prevent. Compiling drawfs
+# in eliminates it by construction rather than by load ordering.
+#
+# It also removes drawfs's dependency on the loader, which is what
+# broke on metal (campaign finding F14): pgsd-loader builds a module
+# chain containing exactly one entry, the kernel. It does not read
+# /boot/loader.conf and cannot preload a .ko, so drawfs was never
+# loaded on an armed boot, nothing owned the framebuffer, and nothing
+# drew. Compiled in, it is simply there.
+#
+# inputfs and audiofs stay MODULES, deliberately. The same principle
+# gives them a different answer, which is the sign it is a principle
+# and not a rule of thumb: they replace modules (sys/modules/hid/hkbd,
+# sys/modules/sound/driver/hda), neither is a bootstrap dependency, and
+# both MUST load after root mounts. inputfs panics if loaded before
+# /var/run exists; audiofs's rc.d service carries REQUIRE: FILESYSTEMS.
+# Only the framebuffer owner has to exist before anything else can
+# touch what it owns.
+#
+# The source list lives beside this config rather than in
+# sys/conf/files, so the pinned FreeBSD tree is not modified (AD-57).
+# config(8) supports this (usr.sbin/config/config.y: FILES ID SEMICOLON)
+# and sys/arm/conf/GENERIC uses it the same way.
+files		"files.drawfs"
+device		drawfs			# PGSD framebuffer substrate (AD-39, ADR 0001)
+
 device		agp			# support several AGP chipsets
 
 # CardBus bridge support

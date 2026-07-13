@@ -20,7 +20,10 @@
 # --skip-kernel acknowledges a staged, not yet runnable install; an
 # interactive run completes and prints a prominent GENERIC notice.
 # Deploy userland BEFORE installing the kernel: the kernel's AD-8
-# closure check expects drawfs.ko from this install.
+# closure check verified drawfs.ko from this install. As of the ADR 0001
+# amendment (2026-07-13) drawfs is compiled INTO the kernel, so that
+# ordering constraint is lifted: the kernel no longer depends on this
+# install having deployed a module.
 #
 # Installed binaries:
 #   $PREFIX/bin/semadrawd     : semantic rendering compositor
@@ -105,7 +108,8 @@ ALLOW_SEMADRAW_TERM="${AWASE_ALLOW_SEMADRAW_TERM:-$ALLOW_SEMADRAW_TERM}"
 # install.sh does not build kernels (ADR 0002 milestone 1): the PGSD
 # kernel lifecycle is owned by pgsd-kernel-build.sh, operator-invoked per
 # pgsd-kernel/KERNEL-RECIPE.md, run AFTER the userland deploy (the
-# kernel's AD-8 closure check refuses to install until drawfs.ko is on
+# (HISTORICAL) the kernel's AD-8 closure check used to refuse to install
+# until drawfs.ko was on
 # disk). The DECISION about this run is still made HERE, before anything
 # changes, so a non-interactive run that could only finish in a
 # non-functional state fails fast instead of deploying and then reporting
@@ -184,7 +188,7 @@ elif [ "$_noninteractive" -eq 1 ]; then
     echo "       this install would report a success the system cannot honor." >&2
     echo "" >&2
     echo "       The working order (userland first: the kernel's AD-8 closure" >&2
-    echo "       check expects drawfs.ko from this install):" >&2
+    echo "       check verifies drawfs is compiled into the kernel):" >&2
     echo "         sh pgsd-kernel/pgsd-kernel-build.sh check PGSD" >&2
     echo "         sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean PGSD" >&2
     echo "         sh install.sh --yes --skip-kernel" >&2
@@ -1245,7 +1249,9 @@ if kldstat -q -n inputfs.ko 2>/dev/null; then
     INPUTFS_WAS_LOADED=1
 fi
 
-# Same for drawfs. drawfs.ko is auto-loaded from /boot/loader.conf
+# drawfs is no longer a module at all: it is compiled into the kernel
+# (ADR 0001 amendment, 2026-07-13). Historically it was auto-loaded from
+# /boot/loader.conf
 # (drawfs_load=YES), so on any system that's been booted with drawfs
 # present it will be loaded. Without bumping it onto the new module
 # file, every install.sh invocation would silently leave the operator
@@ -2297,14 +2303,39 @@ fi
 # loader.conf: load drawfs at boot
 # ============================================================================
 
+# ============================================================================
+# loader.conf: drawfs is COMPILED IN, not preloaded
+# ============================================================================
+#
+# drawfs ADR 0001 amendment (2026-07-13): drawfs is a compiled-in device
+# (device drawfs in pgsd-kernel/PGSD), not a module. It replaces vt and
+# vt_efifb, which are not modules and cannot be, because the framebuffer
+# owner is a bootstrap dependency: it must exist before anything can
+# claim the framebuffer.
+#
+# drawfs_load="YES" is therefore REMOVED if present, not added. Asking
+# the loader to preload a module that is already in the kernel image is
+# at best noise and at worst an error.
+#
+# This also fixes the armed-boot path (campaign finding F14): pgsd-loader
+# builds a module chain containing exactly one entry, the kernel. It does
+# not read /boot/loader.conf and cannot preload a .ko, so a preloaded
+# drawfs was never going to arrive on a pgsd-loader boot. Compiled in, it
+# is simply there.
+#
+# inputfs and audiofs stay modules and are unaffected: neither is
+# preloaded (inputfs panics if loaded before /var/run is mounted, and
+# audiofs's rc.d service requires FILESYSTEMS), so both load from rc.d
+# after root mounts, as they always have.
+
 LOADER_CONF="/boot/loader.conf"
 echo ""
 echo "=== Configuring /boot/loader.conf ==="
 if grep -q "drawfs_load" "$LOADER_CONF" 2>/dev/null; then
-    echo "  already set  drawfs_load=\"YES\""
+    priv sed -i '' '/drawfs_load/d' "$LOADER_CONF"
+    echo "  removed  drawfs_load (drawfs is compiled into the kernel)"
 else
-    echo "drawfs_load=\"YES\"" >> "$LOADER_CONF"
-    echo "  added  drawfs_load=\"YES\" to $LOADER_CONF"
+    echo "  ok       no drawfs_load (drawfs is compiled into the kernel)"
 fi
 
 # ============================================================================

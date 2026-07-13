@@ -601,7 +601,7 @@ during AD-10.2-.4 implementation:
 
 ## Amendment (2026-07-13): drawfs is compiled into the kernel
 
-**Proposed. Not ratified.**
+**Accepted. Ratified 2026-07-13 (operator). Implemented.**
 
 Path B is superseded. drawfs becomes a compiled-in device
 (`device drawfs` in the kernel config), not a preloaded module.
@@ -697,3 +697,26 @@ is the one the principle says to compile in anyway.
 The PGSD kernel, booted by pgsd-loader with no module preloading of any
 kind, comes up with drawfs owning the framebuffer, inputfs and audiofs
 loaded from rc.d, and pgsd-sessiond drawing the login.
+
+### Implementation note: /usr/src stays pristine
+
+The obvious way to compile drawfs in would be to copy its sources into
+/usr/src/sys/dev/drawfs/ and add them to sys/conf/files. That was
+rejected: it makes /usr/src dirty, the AD-57 pin check treats a dirty
+tree as not-the-pinned-source and fails the build, and it would revert
+the out-of-tree module work done 2026-07-12 which exists precisely to
+keep /usr/src a faithful checkout.
+
+config(8) has a supported escape. A files-list entry marked `local` is
+emitted with no $S/ prefix (usr.sbin/config/mkmakefile.cc:552 sets
+filetype = LOCAL on the keyword, and :591-592 sets f_srcprefix = "" for
+it), so its path is used exactly as written. pgsd-kernel/files.drawfs
+therefore names drawfs's sources by absolute path in the Awase repo, and
+the kernel compiles them straight out of it.
+
+The config references the list with `files "files.drawfs"`, which
+config(8) supports (config.y: FILES ID SEMICOLON { newfile($2); }) and
+which sys/arm/conf/GENERIC uses the same way.
+
+Result: drawfs is in the kernel, /usr/src is never written to, and the
+pin holds.

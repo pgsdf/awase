@@ -1030,14 +1030,37 @@ Remove them now? (default: Remove)" 16 70; then
         fi
     fi
 
-    # 3. drawfs.ko must be present at /boot/modules/.
+    # 3. drawfs must be IN THE KERNEL, not on disk as a module.
+    #
+    # drawfs ADR 0001 amendment (2026-07-13): drawfs is a compiled-in
+    # device, not a preloaded module. This check used to require
+    # /boot/modules/drawfs.ko, which no longer exists and must not.
+    #
+    # The intent is unchanged and still right: without drawfs the screen
+    # stays dark, because AD-39 removed vt/vt_efifb/sc/vga so drawfs
+    # could own the framebuffer, and nothing else will claim it. So this
+    # verifies the same thing against the new mechanism: the symbol is in
+    # the kernel we just installed.
+    if [ -f /boot/kernel/kernel ]; then
+        if strings /boot/kernel/kernel 2>/dev/null | grep -q '^drawfs$'; then
+            ok "drawfs is compiled into /boot/kernel/kernel"
+        else
+            fail "drawfs is NOT in /boot/kernel/kernel"
+            note "without drawfs, nothing owns the framebuffer (AD-39 removed"
+            note "  vt, vt_efifb, sc and vga) and the screen stays dark."
+            note "check that pgsd-kernel/PGSD has 'device drawfs' and"
+            note "  'files \"files.drawfs\"', then rebuild:"
+            note "  sudo sh pgsd-kernel/pgsd-kernel-build.sh build --clean"
+            fails=$((fails + 1))
+        fi
+    fi
+
+    # A stale drawfs.ko from a pre-amendment install is not fatal, but it
+    # is dead weight and it will confuse the next person who looks.
     if [ -f /boot/modules/drawfs.ko ]; then
-        ok "/boot/modules/drawfs.ko present"
-    else
-        fail "/boot/modules/drawfs.ko missing"
-        note "without drawfs.ko, the screen will stay dark after reboot"
-        note "rerun: cd $REPO_ROOT && sh install.sh"
-        fails=$((fails + 1))
+        warn "/boot/modules/drawfs.ko exists but is no longer used"
+        note "drawfs is compiled into the kernel now; this module is stale."
+        note "remove it: sudo rm /boot/modules/drawfs.ko"
     fi
 
     # 4. /boot/kernel.old/ exists as fallback.
