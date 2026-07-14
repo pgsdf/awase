@@ -1,6 +1,12 @@
 # BOOT-POOL-INVARIANTS, version 0.1
 
-Status: DRAFT CONTRACT. Not ratified.
+Status: **RATIFIED CONTRACT** (operator, 2026-07-13); drafted 2026-07-13.
+
+Ratified at version 0.1 with nine open questions named and classified
+by owner (section 11). The open questions are not defects: most are not
+this document's to answer, and several are not pgsd-loader's to answer
+at all. A contract's first version defines the safe envelope in which
+design can proceed; it does not settle every question inside it.
 
 Owned jointly by the installer and pgsd-loader; versioned
 independently of the ADRs that require it, as its sibling
@@ -375,8 +381,10 @@ section exists to prevent. "ZFS checksums it" is not "verified boot."
 
 ### 8.2 The asymmetry with the BAS, and whether it is acceptable
 
-The BAS verifies artifacts by manifest hash at use
-(BOOT-ARTIFACT-STORE section 13), and its correctness statement is
+The BAS verifies artifacts by manifest hash before any control transfer
+(BOOT-ARTIFACT-STORE invariant I5, and its section 13 conformance rule:
+*"The loader conforms by ... verification of the selected slot's
+manifest before any control transfer"*). Its correctness statement is
 explicit: *"a selector may designate a slot that verification then
 refuses, in which case the set is not reachable."*
 
@@ -451,8 +459,8 @@ is, never of what it means.
   cases, which are not the same case.
 
   This is a cross-document dependency, not a defect in either document.
-  BOOT-POOL-INVARIANTS has found it; it does not resolve it. The
-  resolution belongs to AD-59, and the space is open: extend LOM v1,
+  BOOT-POOL-INVARIANTS has found the problem and does not settle it. The
+  choice belongs to AD-59, and the space is open: extend LOM v1,
   define a new LOM version, introduce additional observations, or
   redefine which observations Decide requires. Selecting among those is
   AD-59's decision and this contract does not make it.
@@ -566,11 +574,32 @@ that the OE kernel is a BAS artifact, and it is not an authority
 violation.
 
 It is, however, a standing violation of **B2 (OE coherence)** for as
-long as it is the OE's actual boot path: the kernel comes from the BAS
-and the userland from ZFS, so a pool rollback reverts one without the
-other, which Decision 5.1 names a partial rollback. Closing that is what
-L3b is for, and it is the concrete reason B2 is named as an invariant
-rather than left implicit in Decision 5.1.
+long as it is the OE's actual boot path, and the word is used
+deliberately rather than softened to lifecycle language. B2 exists so
+that a later review can ask "does this preserve B2?" and receive a yes or
+a no; describing the present state as merely "not yet compliant" would
+make the invariant sound optional, which is the opposite of what an
+invariant is for.
+
+The violation is precise, sanctioned, and bounded:
+
+  - **Precise.** The kernel comes from the BAS and the userland from ZFS.
+    A pool rollback reverts one without the other, which project ADR 0001
+    Decision 5.1 names a partial rollback: *"whatever mechanism produced
+    it."*
+
+  - **The exposure.** Roll the pool back to a prior boot environment and
+    the machine boots the BAS kernel from whenever deploy.sh last ran,
+    against the rolled-back userland. Nothing detects this. It is exactly
+    the class of failure Decision 5.1 was written to forbid.
+
+  - **Sanctioned.** ADR 0004 authorises the L3a path for the bench, and
+    the current state is that authorisation being used, not an
+    architecture being asserted.
+
+  - **Bounded.** It ends when L3b provides the OE path. That is what L3b
+    is for, and it is the concrete reason B2 is named as an invariant
+    here rather than left implicit in a deployment ADR.
 
 **The loader has no observational capability today.** It reads no EFI
 variables, reads no pool, and hardcodes its root
