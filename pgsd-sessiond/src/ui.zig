@@ -1230,59 +1230,72 @@ fn drawBorder(enc: *Encoder, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: 
 // eye find the focused thing instantly instead of scanning a field of
 // uniformly amber text.
 //
-// Amber remains the right accent hue by construction: #12375c's
-// complement sits at about 30deg, which is amber/orange. The
-// background chose the accent.
+// The accent stays warm. Under the previous navy (#12375c) that was an
+// argument from the colour wheel: the background's complement sits near
+// 30deg, so the background chose the accent. Tokyo Night's near-neutral
+// #1a1b26 has no such complement to appeal to, and the warm accent is
+// now a choice rather than a derivation: it is the only warm hue on the
+// screen, so focus is unmistakable against a field of blues without
+// relying on brightness alone.
 //
-// A cool blue (CONTEXT) carries the header, keeping the established
-// semantic that the sysinfo block is read-once reference rather than
-// something you act on. It is close enough in hue to the background to
-// recede, and far enough in lightness to remain legible.
+// A cool blue (CONTEXT) still carries the header, keeping the semantic
+// that the sysinfo block is reference rather than something you act on.
 //
-// Contrast against #12375c (WCAG: 4.5 body, 3.0 large/UI):
-//   TEXT       #eaf2fb  10.77  primary text: field values
-//   TEXT_DIM   #9fb4cc   5.72  inactive labels, unselected rail items
-//   AMBER      #ffb454   6.90  accent: focus (active label, cursor)
-//   AMBER_DIM  #c98f45   4.34  accent, inactive
-//   CONTEXT    #7fc7e8   6.51  header: hostname
-//   CONTEXT_D  #5f8fb0   3.50  header: network, memory
-//   RULE       #2f5c8a   1.75  separators; deliberately low, a rule is
+// Tokyo Night (night variant). Contrast against the background #1a1b26
+// (WCAG: 4.5 body text, 3.0 large/UI):
+//
+//   TEXT       #c0caf5  10.59  primary text: field values
+//   TEXT_DIM   #9aa5ce   7.04  inactive labels, unselected rail items
+//   AMBER      #ff9e64   8.40  accent: focus (active label, cursor)
+//   AMBER_DIM  #e0af68   8.55  accent, inactive
+//   CONTEXT    #7aa2f7   6.79  header: hostname
+//   CONTEXT_D  #7dcfff   9.96  header: network, memory
+//   RULE       #414868   1.91  separators; deliberately low, a rule is
 //                              structure and not text
 //
-// TEXT and AMBER sit close in luminance (1.56:1) on purpose: they are
-// told apart by hue, not brightness, so the accent marks focus without
-// shouting over the content.
-const C_BG_R: f32 = 0.071; // #12375c
-const C_BG_G: f32 = 0.216;
-const C_BG_B: f32 = 0.361;
+// One deliberate departure from the theme, and it is a legibility one.
+// Tokyo Night's own secondary colour is `comment` #565f89, which scores
+// 2.76:1 here and fails AA. That is correct FOR COMMENTS, where being
+// visually recessive is the point, and wrong for a login screen, where
+// the secondary text is the network status, the memory figure, and the
+// field labels: things an operator has to read. #9aa5ce is the theme's
+// dim foreground and it passes at 7.04, so the substitution stays inside
+// the palette rather than importing a colour from outside it.
+//
+// TEXT and AMBER remain close in luminance on purpose, as in the previous
+// palette: they are told apart by hue, not brightness, so the accent marks
+// focus without shouting over the content.
+const C_BG_R: f32 = 0.102; // #1a1b26  background
+const C_BG_G: f32 = 0.106;
+const C_BG_B: f32 = 0.149;
 
-const C_TEXT_R: f32 = 0.918; // #eaf2fb  primary text
-const C_TEXT_G: f32 = 0.949;
-const C_TEXT_B: f32 = 0.984;
+const C_TEXT_R: f32 = 0.753; // #c0caf5  primary text
+const C_TEXT_G: f32 = 0.792;
+const C_TEXT_B: f32 = 0.961;
 
-const C_TEXT_DIM_R: f32 = 0.624; // #9fb4cc  secondary text
-const C_TEXT_DIM_G: f32 = 0.706;
-const C_TEXT_DIM_B: f32 = 0.800;
+const C_TEXT_DIM_R: f32 = 0.604; // #9aa5ce  secondary text
+const C_TEXT_DIM_G: f32 = 0.647;
+const C_TEXT_DIM_B: f32 = 0.808;
 
-const C_AMBER_R: f32 = 1.0; // #ffb454  accent: focus
-const C_AMBER_G: f32 = 0.706;
-const C_AMBER_B: f32 = 0.329;
+const C_AMBER_R: f32 = 1.0; // #ff9e64  accent: focus
+const C_AMBER_G: f32 = 0.620;
+const C_AMBER_B: f32 = 0.392;
 
-const C_AMBER_DIM_R: f32 = 0.788; // #c98f45
-const C_AMBER_DIM_G: f32 = 0.561;
-const C_AMBER_DIM_B: f32 = 0.271;
+const C_AMBER_DIM_R: f32 = 0.878; // #e0af68  accent, inactive
+const C_AMBER_DIM_G: f32 = 0.686;
+const C_AMBER_DIM_B: f32 = 0.408;
 
-const C_MINT_R: f32 = 0.498; // #7fc7e8  header context, bright
-const C_MINT_G: f32 = 0.780;
-const C_MINT_B: f32 = 0.910;
+const C_MINT_R: f32 = 0.478; // #7aa2f7  header context, bright
+const C_MINT_G: f32 = 0.635;
+const C_MINT_B: f32 = 0.969;
 
-const C_MINT_DIM_R: f32 = 0.373; // #5f8fb0  header context, dim
-const C_MINT_DIM_G: f32 = 0.561;
-const C_MINT_DIM_B: f32 = 0.690;
+const C_MINT_DIM_R: f32 = 0.490; // #7dcfff  header context, dim
+const C_MINT_DIM_G: f32 = 0.812;
+const C_MINT_DIM_B: f32 = 1.0;
 
-const C_RULE_R: f32 = 0.184; // #2f5c8a
-const C_RULE_G: f32 = 0.361;
-const C_RULE_B: f32 = 0.541;
+const C_RULE_R: f32 = 0.255; // #414868  separators
+const C_RULE_G: f32 = 0.282;
+const C_RULE_B: f32 = 0.408;
 
 // =============================================================================
 // Console layout (prototype)
