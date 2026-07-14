@@ -29,10 +29,19 @@ against different threat models and neither substitutes for the other:
 > be constructed above FAT rather than supplied by the filesystem
 > itself."*
 
-The consequence is that pgsd-loader must read ZFS to reach the OE. That
-capability is L3b, and Decision 4 states it plainly: *"The constrained
-ZFS read capability endorsed and gated by pgsd-loader ADR 0002 Decision
-5 is required."*
+The consequence is that an OE boot path requires a loader capability
+that can resolve the OE system image unit, which Decision 4 places on
+ZFS. That capability is L3b, and Decision 4 states its form plainly:
+*"The constrained ZFS read capability endorsed and gated by pgsd-loader
+ADR 0002 Decision 5 is required."*
+
+The invariant is the resolution, not the mechanism. What must be true is
+that the loader can resolve the OE's coherence unit and obtain the
+artifacts required for transfer. That ZFS is where the unit resides is a
+consequence of Decision 4; that a ZFS reader is how the loader gets
+there is an implementation choice this document constrains but does not
+mandate. A future manifest, index, or cache layer is not excluded by
+anything here.
 
 This document is the contract that makes "constrained" mean something.
 
@@ -75,7 +84,38 @@ it, and what the loader may do with what it reads.
 
 ---
 
-## 2. Non-goals
+## 2. Invariants
+
+Named so that ADRs, reviews, and code can cite them rather than
+paraphrase, as BOOT-ARTIFACT-STORE names I1 through I5.
+
+- **B1, authority split.** The OE kernel resides in its ZFS system image
+  unit; the loader, the RE kernel, and ME artifacts reside in the BAS.
+  Neither store substitutes for the other. (Project ADR 0001 Decision 4.)
+
+- **B2, OE coherence.** The loader shall never produce an operational
+  boot state in which the kernel and the userland originate from
+  different system image units. This is the architectural reason L3b
+  exists. (Project ADR 0001 Decision 5.1: *"a booted OE runs a kernel and
+  a userland from the same unit. A rollback that reverts one without the
+  other is a partial rollback and a violation, whatever mechanism
+  produced it."*)
+
+- **B3, read-only.** The loader never writes to the pool. Not a
+  property, not a timestamp, not an uberblock. A reader that cannot
+  write cannot make a damaged pool worse.
+
+- **B4, fail closed.** A pool that does not satisfy this contract is
+  refused, and the refusal is reported as a fact. The loader does not
+  attempt a partial read and does not guess.
+
+- **B5, no policy.** L3b produces observations, never conclusions. A
+  loader that concludes "the pool is bad, therefore boot Recovery" has
+  taken Decide's job. (AD-59 Part 6, Part 9.)
+
+---
+
+## 3. Non-goals
 
 Stated explicitly, because this project has repeatedly found layers
 doing each other's work, and the cost of discovering it late has been
@@ -104,7 +144,7 @@ feels obvious.
 
 ---
 
-## 3. Authority model
+## 4. Authority model
 
 Restated from project ADR 0001 Decision 4, because every other section
 depends on it:
@@ -136,18 +176,9 @@ the BAS. A BAS-resident OE kernel is decoupled from the userland it
 boots, and any pool rollback then produces a partial rollback by
 construction.
 
-> **Note on current implementation.** pgsd-loader today boots a kernel
-> staged into the BAS by deploy.sh. ADR 0004 sanctions this
-> (*"the pool-independent path that serves the Recovery environment by
-> design and the bench immediately"*), and it is the L3a path being
-> exercised, not a claim that the OE kernel is a BAS artifact. It is
-> nonetheless a partial-rollback hazard under Decision 5.1 for as long
-> as it is the OE's actual boot path, and closing that is what L3b is
-> for.
-
 ---
 
-## 4. Supported pool model
+## 5. Supported pool model
 
 **OPEN.** This section is the negotiation, and it cannot be written by
 the loader alone (ADR 0002 Decision 1). It is drafted here as the
@@ -201,29 +232,27 @@ can be shorter than FreeBSD's, because the installer creates the pool.**
 Whatever the answers, the contract must state what the loader does with
 a pool that violates them: **it refuses to read it, and says so.** It
 does not attempt a partial read, and it does not guess. An unsupported
-pool is a fact (section 7), not an error the loader resolves.
+pool is a fact (section 8), not an error the loader resolves.
 
 ---
 
-## 5. Loader read contract
+## 6. Loader read contract
 
-### 5.1 Minimum traversal
+### 5.1 The resolution requirement
 
-The loader reads what is needed to reach the OE kernel and no more. In
-ZFS terms that is, at minimum:
+**Contract.** The loader shall be able to resolve a supported OE system
+image unit and obtain the artifacts required for transfer, from a pool
+satisfying section 5, without executing code from the pool.
 
-  1. the vdev label and uberblock (find the newest valid uberblock),
-  2. the MOS (the meta object set the uberblock names),
-  3. the DSL directory tree (to resolve dataset names),
-  4. the pool's `bootfs` property, or whatever the BE identity model
-     (section 6) determines,
-  5. the target dataset's object set,
-  6. the file blocks of the kernel and its metadata.
+That is the whole of the requirement. It names an outcome, not a
+traversal: freezing the first implementation's block-walk into the
+contract would make a later manifest, index, or cache layer a contract
+amendment rather than an implementation choice, which is the opposite of
+what a contract is for.
 
-  OPEN Q5: is that the whole list? It is the traversal the stock loader
-  performs to boot, but the OE path may need more (a manifest? a
-  generation marker?) or less (if BE identity is not a ZFS property).
-  Section 6 must settle before this list is final.
+The traversal current OpenZFS layouts require is recorded in Appendix A
+as an implementation note, where it can be wrong without the contract
+being wrong.
 
 ### 5.2 Allowed traversal
 
@@ -254,7 +283,7 @@ the pool, that is an amendment to this contract, deliberately made.
 
 ---
 
-## 6. Boot environment identity
+## 7. Boot environment identity
 
 **OPEN, and deliberately not resolved here.**
 
@@ -304,7 +333,7 @@ already.
 
 ---
 
-## 7. Integrity and trust
+## 8. Integrity and trust
 
 ### 7.1 What ZFS guarantees, and what it does not
 
@@ -353,7 +382,7 @@ answer alone.
 
 ---
 
-## 8. Failure semantics
+## 9. Failure semantics
 
 **This section is the integration point with AD-59, and getting it
 wrong is how the loader silently becomes a policy engine.**
@@ -382,21 +411,28 @@ is, never of what it means.
 | `be_unreadable` | The boot environment was named and could not be read. |
 | `kernel_unavailable` | The boot environment was read and contains no loadable kernel. |
 
-  OPEN Q8: these map onto the LOM (AD-59 Part 10), which currently has
-  five observations, of which `selected_boot_environment` and
-  `available_boot_environments` are the ones L3b produces. Do the
-  failure facts above extend the LOM (a new version, an explicit act
-  per Part 10) or are they the `unavailable` sentinel that LOM v1
-  already defines? **The sentinel may be sufficient**, and if it is, the
-  answer is elegant: Part 11's rule E1 says a predicate over an
-  unavailable observation is *false*, so a pool failure makes any
-  policy rule depending on the OE simply not match, and Policy v1's
-  terminal Operational default would then select an OE that cannot
-  boot. **That is a real gap**, and it suggests the failure facts need
-  to be observable rather than collapsed into `unavailable`.
+  OPEN Q8 (AD-59 dependency). These facts must reach Decide as
+  observations. AD-59 Part 10's LOM v1 defines five observations and an
+  `unavailable` sentinel for a field with no producer. Part 11's rule E1
+  states that a predicate testing an observation for a concrete value
+  evaluates to FALSE when the observation is unavailable.
 
-That analysis is the strongest argument this document produces for why
-section 8 must be settled *with* AD-59, not after it.
+  The problem this raises, stated without proposing its resolution:
+
+      LOM v1's semantics may not distinguish "no observation producer
+      exists" from "an observed boot target is unavailable."
+
+  Both would present as the `unavailable` sentinel, and E1 makes any
+  predicate over either one false. Under Policy v1 (Part 12), evaluation
+  would then fall through to the terminal Operational default in both
+  cases, which are not the same case.
+
+  This is a cross-document dependency, not a defect in either document.
+  BOOT-POOL-INVARIANTS has found it; it does not resolve it. The
+  resolution belongs to AD-59, and the space is open: extend LOM v1,
+  define a new LOM version, introduce additional observations, or
+  redefine which observations Decide requires. Selecting among those is
+  AD-59's decision and this contract does not make it.
 
 ### 8.3 What the loader does NOT do
 
@@ -411,7 +447,7 @@ section 8 must be settled *with* AD-59, not after it.
 
 ---
 
-## 9. Evolution and versioning
+## 10. Evolution and versioning
 
 Versioned independently of the ADRs that require it, as
 BOOT-ARTIFACT-STORE is. The pattern is established: *"two storage
@@ -425,29 +461,99 @@ installer cannot make.
 
   OPEN Q9: the compatibility rule. If a pool declares a
   BOOT-POOL-INVARIANTS version the loader does not know, what happens?
-  (Refuse, per section 4.5, seems right, and it is the fail-closed
+  (Refuse, per section 5.5, seems right, and it is the fail-closed
   posture the rest of this document takes.)
 
 ---
 
-## 10. Open questions, collected
+## 11. Open questions, classified
 
-  Q1. Which feature flags does the installer enable on a boot pool?
-  Q2. Which vdev topologies are supported?
-  Q3. Is compression permitted on the boot path, and which algorithms?
-  Q4. Is encryption excluded on the boot path?
-  Q5. Is section 5.1's traversal the complete list?
-  Q6. What is the upgrade model, and therefore the BE identity model?
-  Q7. Does the OE kernel require verification beyond ZFS's integrity?
-  Q8. Do L3b's failure facts extend the LOM, or does the `unavailable`
-      sentinel suffice? (Section 8.2 argues it does not.)
-  Q9. What is the version-compatibility rule?
+Each is tagged with WHO can answer it. The classification is the point:
+several of these cannot be answered by this document or by pgsd-loader
+at all, and pretending otherwise is how a loader ADR ends up embedding a
+product decision (ADR 0002 Decision 1).
 
-Q6 and Q7 are product decisions and cannot be made by pgsd-loader
-(ADR 0002 Decision 1). Q1 through Q4 are the installer/loader
-negotiation this document exists to hold. Q8 must be settled jointly
-with AD-59.
+| # | Question | Class |
+|---|---|---|
+| Q1 | Which feature flags does the installer enable on a boot pool? | installer/loader contract |
+| Q2 | Which vdev topologies are supported? | installer/loader contract |
+| Q3 | Is compression permitted on the boot path, and which algorithms? | installer/loader contract |
+| Q4 | Is encryption excluded on the boot path? | installer/loader contract |
+| Q5 | Is Appendix A's traversal complete for the resolution requirement? | implementation choice |
+| Q6 | What is the upgrade model, and therefore BE identity? | **product decision** |
+| Q7 | Does the OE kernel require verification beyond ZFS's integrity? | **product decision** |
+| Q8 | Can LOM v1 distinguish "no producer" from "target unavailable"? | **AD-59 dependency** |
+| Q9 | What is the version-compatibility rule? | installer/loader contract |
 
-**None of these is a weakness in the draft. Identifying them is the
-work.** A first version's purpose is to define the safe envelope in
-which L3b can be designed, not to settle every question inside it.
+Q1 through Q4 and Q9 are the negotiation this document exists to hold:
+every guarantee the installer makes is a code path the loader does not
+write, and neither party can set the boundary alone.
+
+Q5 is an implementation choice, constrained by the contract but not
+fixed by it.
+
+Q6 and Q7 are product decisions. pgsd-loader cannot make them
+(ADR 0002 Decision 1), and ADR 0002 records that the upgrade model is
+*"explicitly not ruled."*
+
+Q8 is a cross-document dependency on AD-59. This contract found it and
+does not resolve it.
+
+**None of these is a weakness in the draft. Identifying them, and being
+clear about who owns each, is the work.** A first version's purpose is
+to define the safe envelope in which L3b can be designed, not to settle
+every question inside it.
+
+---
+
+## Appendix A: candidate ZFS traversal (implementation note)
+
+Not normative. This records the traversal current OpenZFS layouts
+require to satisfy section 6.1's resolution requirement, so that the
+contract can name an outcome while the implementation has somewhere to
+record the mechanism.
+
+  1. the vdev label and uberblock (find the newest valid uberblock),
+  2. the MOS (the meta object set the uberblock names),
+  3. the DSL directory tree (to resolve dataset names),
+  4. the pool's `bootfs` property, or whatever the BE identity model
+     (section 8) determines,
+  5. the target dataset's object set,
+  6. the file blocks of the kernel and its metadata.
+
+This is the traversal FreeBSD's own boot reader performs
+(`stand/libsa/zfs/zfsimpl.c`). It may be wrong for PGSD without the
+contract being wrong: if a later design resolves the unit through a
+manifest or an index, Appendix A changes and section 6.1 does not.
+
+---
+
+## Appendix B: implementation status (informative)
+
+Not normative. Where the implementation is today, recorded separately
+from what must be true so that no future reader mistakes the present
+state for the specification.
+
+**The OE currently boots through the L3a (BAS) path.** deploy.sh stages
+`/boot/kernel/kernel` into a BAS slot and pgsd-loader boots it from
+there. ADR 0004 sanctions this explicitly, as the L3a path being
+exercised: *"the pool-independent path that serves the Recovery
+environment by design and the bench immediately."* It is not a claim
+that the OE kernel is a BAS artifact, and it is not an authority
+violation.
+
+It is, however, a standing violation of **B2 (OE coherence)** for as
+long as it is the OE's actual boot path: the kernel comes from the BAS
+and the userland from ZFS, so a pool rollback reverts one without the
+other, which Decision 5.1 names a partial rollback. Closing that is what
+L3b is for, and it is the concrete reason B2 is named as an invariant
+rather than left implicit in Decision 5.1.
+
+**The loader has no observational capability today.** It reads no EFI
+variables, reads no pool, and hardcodes its root
+(`vfs.root.mountfrom=zfs:zroot/ROOT/default`). The hardcoding is
+campaign finding F13, and it went off once already: the named boot
+environment had not existed for three reinstalls, and the kernel dropped
+to an invisible mountroot> prompt. That is the practical argument for
+section 7.3's prohibition on writing a dataset name into the loader as
+an assumption.
