@@ -48,6 +48,7 @@
 
 const std = @import("std");
 const compat = @import("compat");
+const idle = @import("idle.zig");
 const posix = std.posix;
 const pam = @import("pam.zig");
 const user_enum = @import("user_enum.zig");
@@ -964,6 +965,24 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
         var needs_redraw = true;
         var last_blink_phase: u64 = 0;
 
+        // SM-2 T0: the idle blanker, at the LOGIN SCREEN.
+        //
+        // The policy already ran for a running session: launch.zig ticks
+        // it in the parent's waitpid loop while the session child lives
+        // (ADR 0021 Section 9, vehicle (a), the SM-2 agent). It did NOT
+        // run here, because the login screen is not a session, so a
+        // machine left at the login prompt never blanked.
+        //
+        // Wiring it in is init/tick/deinit and nothing else, because the
+        // policy does not track activity itself: tick() asks SEMADRAWD
+        // how long since the last input (conn.queryIdle(), ADR 0013). The
+        // question is display-global, so both call sites ask the same
+        // thing of the same authority and cannot drift. There is no
+        // second copy of the policy here, only a second caller of it.
+        var idle_policy = idle.IdlePolicy.init(alloc);
+        defer idle_policy.deinit();
+        var idle_passes: u32 = 0;
+
 
         // Per-conversation status buffer. Auth attempts format
         // their failure messages here and hand a slice to
@@ -989,6 +1008,12 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             // completes, snapshotting "no network" for a machine
             // that comes online a few seconds later.
             if (state.maybeRefreshNetwork()) needs_redraw = true;
+
+            // Tick the blanker on launch.zig's cadence, so the login
+            // screen and a running session share one policy rate as well
+            // as one policy.
+            if (idle_passes % idle.POLICY_EVERY == 0) idle_policy.tick();
+            idle_passes +%= 1;
 
             // SM-4: wall-clock caret blink phase; a flip warrants a
             // redraw only once typing has started (solid before).

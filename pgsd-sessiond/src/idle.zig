@@ -51,7 +51,24 @@ const control = semadraw.control;
 /// default is the operator-requested 15 minutes (ADR 0021 Section 1);
 /// the ADR 0009 timeline gains this as the optional T0 stage.
 pub const ENV_BLANK_TIMEOUT = "PGSD_BLANK_TIMEOUT_S";
-pub const DEFAULT_T0_S: u64 = 900;
+
+/// T0, the idle blank timeout.
+///
+/// Operator decision 2026-07-13: 120 seconds, from 900. Overridable with
+/// PGSD_BLANK_TIMEOUT_S, which is what a bench operator wants when two
+/// minutes is too eager for the work in front of them.
+pub const DEFAULT_T0_S: u64 = 120;
+
+/// How often the policy is ticked, in caller passes.
+///
+/// Hoisted here from launch.zig because there are now TWO callers (the
+/// session wait loop, and the login render loop), and a policy rate
+/// duplicated at each call site is a policy rate that drifts. Both
+/// callers poll at a 1-second cadence, so this is a 10-second tick.
+///
+/// The tick is cheap: it asks semadrawd for the last-input time and
+/// compares. The blank itself happens once, on the transition.
+pub const POLICY_EVERY: u32 = 10;
 
 pub const IdlePolicy = struct {
     allocator: std.mem.Allocator,
@@ -129,7 +146,18 @@ pub const IdlePolicy = struct {
     fn ensureCtl(self: *IdlePolicy) ?posix.fd_t {
         if (self.ctl_fd) |fd| return fd;
         const fd = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch return null;
-        var addr: posix.sockaddr.un = .{ .family = posix.AF.UNIX, .path = [_]u8{0} ** 104 };
+        // Derive the path length from the type rather than hardcoding it.
+        //
+        // This was `[_]u8{0} ** 104`, the sun_path size on FreeBSD, which
+        // compiled only because the target happened to match. Wiring the
+        // policy into the login render loop pulled idle.zig into a compile
+        // path it had not been in, and the hardcoded 104 failed against a
+        // platform whose sockaddr.un is 108. The number was never ours to
+        // assert: it belongs to the struct.
+        var addr: posix.sockaddr.un = .{
+            .family = posix.AF.UNIX,
+            .path = std.mem.zeroes(@FieldType(posix.sockaddr.un, "path")),
+        };
         const path = control.DEFAULT_CTL_SOCKET_PATH;
         @memcpy(addr.path[0..path.len], path);
         compat.posix.connect(fd, @ptrCast(&addr), @sizeOf(posix.sockaddr.un)) catch {

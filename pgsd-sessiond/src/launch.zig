@@ -349,7 +349,9 @@ pub fn launch(
     var idle_policy = idle.IdlePolicy.init(allocator);
     defer idle_policy.deinit();
     const WAIT_TICK_NS: u64 = 1 * std.time.ns_per_s;
-    const POLICY_EVERY: u32 = 10;
+    // Shared with the login render loop (main.zig), so the two callers of
+    // the policy cannot drift apart on rate.
+    const POLICY_EVERY: u32 = idle.POLICY_EVERY;
     var passes: u32 = 0;
     while (true) {
         const w = c.waitpid(pid, &status, c.WNOHANG);
