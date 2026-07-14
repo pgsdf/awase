@@ -28,11 +28,30 @@
 //     (ADR 0021 Section 4), which is visible here purely as the
 //     idle measure collapsing.
 //
-// A published value of 0 is the ADR 0013 D3 sentinel (no input seen
-// since the daemon started) and is skipped rather than treated as
-// infinite idle: blanking a display nobody has touched since a
-// compositor restart, possibly seconds after boot, is not the
-// operator's intent; the first real input starts the clock.
+// A published value of 0 is the ADR 0013 D3 sentinel: no input has been
+// seen since semadrawd started. It is NOT skipped, and skipping it was a
+// bug.
+//
+// D3 says what the consumer must do with it: "The consumer treats 0 as
+// that case and measures idle from session start, which the per-session
+// agent knows, rather than subtracting from 0."
+//
+// The implementation returned early instead, so the clock never started.
+// That was invisible for a running session, because reaching one requires
+// typing a password, so last_input was always non-zero by the time
+// launch.zig began ticking. The LOGIN SCREEN is the first caller that can
+// observe the sentinel: boot the machine, touch nothing, and the display
+// never blanked.
+//
+// The fix is D3's own instruction. The consumer owns the fallback
+// baseline: idle is measured from policy creation when semadrawd has seen
+// no input. For the session agent that is session start, as D3 says. For
+// the login screen it is when the login policy was created, which is the
+// same thing one layer out: the moment this display came under policy.
+//
+// This also preserves what the old comment was reaching for. Nothing
+// blanks "seconds after boot", because the baseline is policy creation
+// and T0 must still elapse from there.
 //
 // Failure posture: fail-open to ON, recorded as intended in
 // ADR 0021 Section 12. Every connection here is optional and
@@ -72,6 +91,12 @@ pub const POLICY_EVERY: u32 = 10;
 
 pub const IdlePolicy = struct {
     allocator: std.mem.Allocator,
+
+    /// The fallback baseline for the ADR 0013 D3 sentinel: when this
+    /// policy came into existence. Used only while semadrawd reports it
+    /// has seen no input at all, which on a freshly booted machine at the
+    /// login screen is the entire time until someone touches a key.
+    baseline_ns: u64 = 0,
     t0_ns: u64,
     conn: ?*semadraw.client.Connection = null,
     ctl_fd: ?posix.fd_t = null,
@@ -85,6 +110,7 @@ pub const IdlePolicy = struct {
         return .{
             .allocator = allocator,
             .t0_ns = t0_s * std.time.ns_per_s,
+            .baseline_ns = @intCast(compat.time.nowMonotonic()),
         };
     }
 
@@ -128,11 +154,16 @@ pub const IdlePolicy = struct {
             }
             return;
         };
-        if (last_input == 0) return; // ADR 0013 D3 sentinel
-
         const now: u64 = @intCast(compat.time.nowMonotonic());
-        if (now <= last_input) return; // clock skew guard
-        const idle = now - last_input;
+
+        // ADR 0013 D3: a 0 means semadrawd has seen no input since it
+        // started. Measure from the baseline the consumer knows, rather
+        // than subtracting from 0 (which would read as infinite idle) or
+        // returning (which never starts the clock, and was the bug).
+        const since = if (last_input == 0) self.baseline_ns else last_input;
+
+        if (now <= since) return; // clock skew guard
+        const idle = now - since;
 
         if (idle >= self.t0_ns) {
             if (!self.blank_requested) {
