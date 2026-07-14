@@ -29,19 +29,34 @@ against different threat models and neither substitutes for the other:
 > be constructed above FAT rather than supplied by the filesystem
 > itself."*
 
-The consequence is that an OE boot path requires a loader capability
-that can resolve the OE system image unit, which Decision 4 places on
-ZFS. That capability is L3b, and Decision 4 states its form plainly:
+The consequence is that an OE boot path requires a capability that can
+provide the loader with the OE system image unit selected for transfer,
+and that unit resides, by Decision 4, on ZFS. That capability is L3b,
+and Decision 4 states the form it is expected to take:
 *"The constrained ZFS read capability endorsed and gated by pgsd-loader
 ADR 0002 Decision 5 is required."*
 
-The invariant is the resolution, not the mechanism. What must be true is
-that the loader can resolve the OE's coherence unit and obtain the
-artifacts required for transfer. That ZFS is where the unit resides is a
-consequence of Decision 4; that a ZFS reader is how the loader gets
-there is an implementation choice this document constrains but does not
-mandate. A future manifest, index, or cache layer is not excluded by
-anything here.
+The requirement is stated at the boundary, deliberately:
+
+  - something must IDENTIFY the selected unit,
+  - the loader must CONSUME that identity and obtain the unit's
+    artifacts,
+  - the SOURCE of the identity remains open.
+
+An earlier revision of this section said the loader must "resolve" the
+unit, which quietly assumed the loader is the resolver. It may not be.
+pgsd-loader ADR 0001's L1 already contemplates environment selection
+communicated TO the loader through *"a small ESP file or UEFI
+variable"*, and AD-59's Discover boundary is explicitly
+producer-agnostic (Part 9: the LOM's observations *"carry across a
+loader replacement even as the mechanism that reads them changes"*). A
+pre-loader selector, a verified identity in NVRAM, or a manifest are all
+admissible producers under this contract.
+
+What is NOT open is the consumption: whatever names the unit, the loader
+must be able to obtain that unit's kernel and its userland from the same
+unit (B2), from a pool satisfying section 5, without executing code from
+the pool.
 
 This document is the contract that makes "constrained" mean something.
 
@@ -188,7 +203,7 @@ each stated so the trade is visible.
 The categories are named by ADR 0002: *"vdev topology, compression set,
 encryption exclusions, pinned feature flags, and so on."*
 
-### 4.1 Feature flags
+### 5.1 Feature flags
 
 The empirical anchor is FreeBSD's own boot-time reader
 (`stand/libsa/zfs/zfsimpl.c`), which maintains an explicit allowlist,
@@ -206,20 +221,20 @@ can be shorter than FreeBSD's, because the installer creates the pool.**
   pool? The answer is the loader's entire feature-compatibility burden.
   A pinned, minimal set is the strongest form of this contract.
 
-### 4.2 vdev topology
+### 5.2 vdev topology
 
   OPEN Q2: single vdev only? Mirrors? Is RAIDZ supported for a boot
   pool? Each topology the installer permits is reconstruction logic the
   loader must implement.
 
-### 4.3 Compression
+### 5.3 Compression
 
   OPEN Q3: is compression permitted on the datasets the loader must
   read, and if so, which algorithms? Every algorithm is a decompressor
   in the loader. `off` on the boot path is the cheapest possible
   answer; lz4 alone is the next cheapest.
 
-### 4.4 Encryption
+### 5.4 Encryption
 
   OPEN Q4: excluded on the boot path, or supported? ADR 0002 names
   *"encryption exclusions"* as an invariant category, which suggests
@@ -227,7 +242,7 @@ can be shorter than FreeBSD's, because the installer creates the pool.**
   means key management in the loader, which is a different and much
   larger artifact.
 
-### 4.5 Unsupported configurations
+### 5.5 Unsupported configurations
 
 Whatever the answers, the contract must state what the loader does with
 a pool that violates them: **it refuses to read it, and says so.** It
@@ -238,11 +253,18 @@ pool is a fact (section 8), not an error the loader resolves.
 
 ## 6. Loader read contract
 
-### 5.1 The resolution requirement
+### 6.1 The consumption requirement
 
-**Contract.** The loader shall be able to resolve a supported OE system
-image unit and obtain the artifacts required for transfer, from a pool
-satisfying section 5, without executing code from the pool.
+**Contract.** Given the identity of a selected OE system image unit, the
+loader shall be able to obtain that unit's artifacts required for
+transfer, from a pool satisfying section 5, without executing code from
+the pool, and without taking the kernel and the userland from different
+units (B2).
+
+The requirement is stated on CONSUMPTION, not on resolution. Whatever
+names the unit (the pool's own property, a pre-loader selector, an EFI
+variable, a manifest) is open under section 7, and this contract binds
+only what the loader does once the unit is named.
 
 That is the whole of the requirement. It names an outcome, not a
 traversal: freezing the first implementation's block-walk into the
@@ -254,7 +276,7 @@ The traversal current OpenZFS layouts require is recorded in Appendix A
 as an implementation note, where it can be wrong without the contract
 being wrong.
 
-### 5.2 Allowed traversal
+### 6.2 Allowed traversal
 
 The loader traverses only what section 5.1 requires. It does not walk
 the dataset tree for its own sake, enumerate snapshots, or read
@@ -262,7 +284,7 @@ properties it has no use for. This is Discover's N4 (*"no collection
 beyond Decide's inputs"*) applied one layer down: extra reading is how
 a reader quietly becomes a filesystem.
 
-### 5.3 No mutation
+### 6.3 No mutation
 
 **The loader never writes to the pool.** Not a property, not a
 timestamp, not an uberblock, not a scrub. This is absolute and it is
@@ -274,7 +296,7 @@ loader must persist live in NVRAM or the BAS, never in the pool. (The
 bootcrumb facility already establishes this pattern from the kernel
 side.)
 
-### 5.4 No general filesystem responsibility
+### 6.4 No general filesystem responsibility
 
 Nothing in the loader may depend on L3b as though it were a filesystem
 layer. It exposes exactly the operations section 5.1 requires and no
@@ -295,7 +317,7 @@ tooling, and rollback policy before it ever reaches the loader."*
 This document therefore constrains the **properties** any identifier
 must have, without selecting the model.
 
-### 6.1 Required properties of a BE identifier
+### 7.1 Required properties of a BE identifier
 
 Whatever identifies a boot environment must be:
 
@@ -309,7 +331,7 @@ Whatever identifies a boot environment must be:
   - **Distinguishable.** Two boot environments must be tellable apart
     by their identifiers.
 
-### 6.2 Candidate models (none selected)
+### 7.2 Candidate models (none selected)
 
   - A ZFS dataset path (`zroot/ROOT/<name>`). Conventional, and what
     the stock loader uses. Names the coherence unit directly.
@@ -318,7 +340,7 @@ Whatever identifies a boot environment must be:
     enumerated from the DSL tree.
   - Something else, if the upgrade model is not BE-based.
 
-### 6.3 What this document requires
+### 7.3 What this document requires
 
   OPEN Q6: the upgrade model decision (a product decision, not a loader
   one) must be made before L3b's identity model is fixed. Until then,
@@ -335,7 +357,7 @@ already.
 
 ## 8. Integrity and trust
 
-### 7.1 What ZFS guarantees, and what it does not
+### 8.1 What ZFS guarantees, and what it does not
 
 ZFS's checksummed copy-on-write semantics guarantee that a block read
 back is the block that was written, or that the read fails. That is a
@@ -350,7 +372,7 @@ It does not answer:
 Those are different questions, and conflating them is the error this
 section exists to prevent. "ZFS checksums it" is not "verified boot."
 
-### 7.2 The asymmetry with the BAS, and whether it is acceptable
+### 8.2 The asymmetry with the BAS, and whether it is acceptable
 
 The BAS verifies artifacts by manifest hash at use
 (BOOT-ARTIFACT-STORE section 13), and its correctness statement is
@@ -387,7 +409,7 @@ answer alone.
 **This section is the integration point with AD-59, and getting it
 wrong is how the loader silently becomes a policy engine.**
 
-### 8.1 The principle
+### 9.1 The principle
 
 > **A loader failure and an architectural recovery decision are not the
 > same thing.**
@@ -398,7 +420,7 @@ taken Decide's job, and Part 6 N1 forbids Decide from reaching around
 Discover to obtain state, and the symmetric obligation is that the loader
 must not reach forward into policy.
 
-### 8.2 The facts L3b produces
+### 9.2 The facts L3b produces
 
 Each is an **observation**, in AD-59 Part 9's sense: a statement of what
 is, never of what it means.
@@ -434,7 +456,7 @@ is, never of what it means.
   redefine which observations Decide requires. Selecting among those is
   AD-59's decision and this contract does not make it.
 
-### 8.3 What the loader does NOT do
+### 9.3 What the loader does NOT do
 
   - It does not select Recovery because the OE failed. That is a policy
     conclusion.
