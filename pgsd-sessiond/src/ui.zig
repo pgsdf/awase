@@ -526,6 +526,9 @@ pub const State = struct {
     mem: ?sysinfo.MemStats = null,
     memory_last_refresh_ms: i64 = 0,
 
+    /// Log a telemetry failure once, not on every 2-second tick.
+    mem_error_logged: bool = false,
+
     /// Stage 6: status line displayed below the fields. Set by main
     /// when an auth attempt fails ("authentication failed; 2
     /// attempts remaining") or when an unrecoverable PAM error
@@ -754,7 +757,22 @@ pub const State = struct {
         }
         self.memory_last_refresh_ms = now;
 
-        const fresh = sysinfo.memStats() catch return false;
+        const fresh = sysinfo.memStats() catch |e| {
+            // Say WHICH failure, once, rather than silently showing
+            // "mem --" forever.
+            //
+            // The first version failed on every call (hw.pagesize read at
+            // the wrong width) and the only symptom was a dash on the login
+            // screen. That is a diagnostic-free failure, and this project
+            // has paid for enough of those: the bar could not tell anyone
+            // why it was empty, so the answer had to be found by reading
+            // source. Log it once and the next one costs a glance.
+            if (!self.mem_error_logged) {
+                self.mem_error_logged = true;
+                std.log.warn("memory telemetry unavailable: {s}", .{@errorName(e)});
+            }
+            return false;
+        };
 
         // Redraw only when something the operator can SEE would change.
         //

@@ -114,10 +114,21 @@ pub const MemStats = struct {
 };
 
 pub fn memStats() Error!MemStats {
-    // vm.stats.vm.* counters are pages, and they are u_int (32-bit), not
-    // u64. Reading a 4-byte sysctl into an 8-byte buffer leaves the upper
-    // half undefined, so this needs its own width.
-    const page_size = try querySysctlU64("hw.pagesize");
+    // WIDTHS MATTER HERE, and getting one wrong is a silent total failure
+    // rather than a wrong number: querySysctl* checks the returned length,
+    // so a width mismatch is an error, memStats() fails, and the bar shows
+    // "mem --" forever.
+    //
+    // hw.pagesize is SYSCTL_INT (sys/kern/kern_mib.c:177): 32 bits, not 64.
+    // Reading it as u64 asks the kernel for 8 bytes, gets 4, and fails the
+    // length check. That was the first version's bug, made while writing a
+    // comment warning about exactly this on the OTHER sysctls.
+    //
+    // The vm.stats.vm.* counters are CTLTYPE_U32 (sys/vm/vm_meter.c:374,
+    // VM_STATS_PROC and VM_STATS_UINT), so they are 32-bit too.
+    //
+    // hw.realmem and hw.physmem, read elsewhere in this file, ARE u64.
+    const page_size: u64 = try querySysctlU32("hw.pagesize");
 
     const active = try querySysctlU32("vm.stats.vm.v_active_count");
     const wired = try querySysctlU32("vm.stats.vm.v_wire_count");
