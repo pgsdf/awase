@@ -1009,6 +1009,12 @@ fn runUiOnly(alloc: std.mem.Allocator) u8 {
             // that comes online a few seconds later.
             if (state.maybeRefreshNetwork()) needs_redraw = true;
 
+            // Memory telemetry, on its own (slower) cadence. Returns true
+            // only when a BAR CELL would change, not on every byte: memory
+            // moves constantly and redrawing for a change the operator
+            // cannot see is work the login screen does not need to do.
+            if (state.maybeRefreshMemory()) needs_redraw = true;
+
             // Tick the blanker on launch.zig's cadence, so the login
             // screen and a running session share one policy rate as well
             // as one policy.

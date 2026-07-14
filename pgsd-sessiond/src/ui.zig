@@ -132,6 +132,18 @@ pub const CURSOR_BLINK_MS: i64 = 500;
 /// this is the inter-call interval for subsequent refreshes.
 pub const NETWORK_REFRESH_INTERVAL_MS: i64 = 1000;
 
+/// Memory telemetry cadence.
+///
+/// Slower than the network's because memory pressure is not something an
+/// operator watches for a state CHANGE (up/down); they read a level. A
+/// second is wasted work and a jittery bar. Two seconds is responsive
+/// enough to see a machine start swapping and cheap enough to ignore.
+pub const MEMORY_REFRESH_INTERVAL_MS: i64 = 2000;
+
+/// Cells in the memory bar. Each cell is one discrete unit of the total,
+/// so the resolution is 100/MEMORY_BAR_CELLS percent per cell.
+pub const MEMORY_BAR_CELLS: usize = 16;
+
 // Palette
 //
 // Two color families are used:
@@ -497,6 +509,23 @@ pub const State = struct {
     /// rate.
     network_last_refresh_ms: i64,
 
+    /// Live memory telemetry, raw. Rendering is ui.zig's job; State holds
+    /// the numbers.
+    ///
+    /// Distinct from realmem_str/physmem_str above, which are INSTALLED
+    /// memory: a system fact, constant, captured once. This is pressure,
+    /// which changes continuously and is resampled on
+    /// MEMORY_REFRESH_INTERVAL_MS. The login screen previously had only
+    /// the former, so it reported how much RAM the machine has and never
+    /// how much of it was in use.
+    ///
+    /// null until the first successful sample, and on sampling failure it
+    /// KEEPS the last good value rather than reverting to null: a stale
+    /// bar is more useful than a bar that flickers away, and matches the
+    /// network indicator's fail-soft posture.
+    mem: ?sysinfo.MemStats = null,
+    memory_last_refresh_ms: i64 = 0,
+
     /// Stage 6: status line displayed below the fields. Set by main
     /// when an auth attempt fails ("authentication failed; 2
     /// attempts remaining") or when an unrecoverable PAM error
@@ -671,6 +700,91 @@ pub const State = struct {
     /// This is intentional: a login screen with a stale network
     /// indicator is far less disruptive than one that pops an
     /// error dialog.
+    /// How the three segments divide the bar.
+    ///
+    /// The segments MUST sum to exactly MEMORY_BAR_CELLS. Rounding each
+    /// independently does not guarantee that (three roundings can sum to
+    /// cells+1 or cells-1), and a bar that is one cell short shows a gap
+    /// while one cell over writes past its own width. So: round the first
+    /// two, and give the remainder to free. Free is the right segment to
+    /// absorb the error because it is the least interesting of the three
+    /// and the one an operator is least likely to read precisely.
+    const BarCells = struct {
+        used: usize,
+        cache: usize,
+        free: usize,
+    };
+
+    fn barCells(m: sysinfo.MemStats) BarCells {
+        if (m.total_bytes == 0) {
+            return .{ .used = 0, .cache = 0, .free = MEMORY_BAR_CELLS };
+        }
+        const cells: u64 = MEMORY_BAR_CELLS;
+
+        // Round to nearest rather than truncating, so a segment holding
+        // most of a cell is shown rather than vanishing.
+        const used = (m.used_bytes * cells + m.total_bytes / 2) / m.total_bytes;
+        const cache = (m.cache_bytes * cells + m.total_bytes / 2) / m.total_bytes;
+
+        var u: usize = @intCast(@min(used, cells));
+        var c: usize = @intCast(@min(cache, cells - u));
+
+        // A nonzero segment never rounds away to nothing: a machine using
+        // a little memory should light one cell, not none. The bar is a
+        // pressure indicator, and "some" must be visually distinct from
+        // "none".
+        if (u == 0 and m.used_bytes > 0 and cells > 0) u = 1;
+        if (c == 0 and m.cache_bytes > 0 and u < cells) c = 1;
+
+        const f: usize = MEMORY_BAR_CELLS - @min(u + c, MEMORY_BAR_CELLS);
+        return .{ .used = u, .cache = @min(c, MEMORY_BAR_CELLS - u), .free = f };
+    }
+
+    /// Resample memory pressure if the interval has elapsed. Returns true
+    /// if the values changed enough to warrant a redraw.
+    ///
+    /// Fail-soft, like the network refresh: a failed sysctl keeps the last
+    /// good sample rather than clearing the bar. A login screen that
+    /// flickers its telemetry away on a transient failure is worse than
+    /// one showing a two-second-old number.
+    pub fn maybeRefreshMemory(self: *State) bool {
+        const now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
+        if (now - self.memory_last_refresh_ms < MEMORY_REFRESH_INTERVAL_MS) {
+            return false;
+        }
+        self.memory_last_refresh_ms = now;
+
+        const fresh = sysinfo.memStats() catch return false;
+
+        // Redraw only when something the operator can SEE would change.
+        //
+        // Memory moves constantly and redrawing for a change nobody can
+        // perceive is work the login screen does not need to do. But the
+        // gate must be the FINER of the two things drawn, not the coarser:
+        // the label has 0.1G resolution and a cell is roughly 1G, so gating
+        // on cells alone would leave the label stale for up to a gigabyte
+        // of change. Gate on the label's granularity, which subsumes the
+        // bar's.
+        if (self.mem) |old| {
+            const a = barCells(old);
+            const b = barCells(fresh);
+            const cells_same = a.used == b.used and a.cache == b.cache and a.free == b.free;
+
+            // The label prints used to one decimal of a GiB. Quantise to
+            // that, so "would the drawn text differ" is answered exactly
+            // rather than approximated.
+            const tenth_gib: u64 = (1 << 30) / 10;
+            const label_same = (old.used_bytes / tenth_gib) == (fresh.used_bytes / tenth_gib);
+
+            if (cells_same and label_same) {
+                self.mem = fresh;
+                return false;
+            }
+        }
+        self.mem = fresh;
+        return true;
+    }
+
     pub fn maybeRefreshNetwork(self: *State) bool {
         const now = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
         if (now - self.network_last_refresh_ms < NETWORK_REFRESH_INTERVAL_MS) {
@@ -1204,6 +1318,81 @@ const C_RULE_B: f32 = 0.541;
 // versus GENERIC is the single most operationally relevant fact, and a
 // login header that stated it would have saved real time. Add
 // sysinfo.kernelIdent() and a State field, then put it in the header.
+/// The segmented memory bar.
+///
+/// Discrete cells rather than a continuous fill, so the operator reads a
+/// LEVEL rather than estimating a proportion. Each cell is one unit of
+/// MEMORY_BAR_CELLS, and the three segments always sum to exactly that
+/// (see State.barCells, which owns the arithmetic and its invariant).
+fn drawMemBar(
+    state: *const State,
+    enc: *Encoder,
+    surface_w: f32,
+    y: f32,
+    gw: f32,
+    gh: f32,
+    pad_x: f32,
+    sf: f32,
+) !void {
+    const m = state.mem orelse {
+        // No sample yet. Say so rather than drawing an empty bar, which
+        // would read as "no memory in use" and be a lie.
+        const txt = "mem --";
+        const x: f32 = surface_w - pad_x - @as(f32, @floatFromInt(txt.len)) * gw;
+        try drawText(enc, txt, x, y, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
+        return;
+    };
+
+    const b = State.barCells(m);
+
+    // The numeric label: used of total, so the bar has a scale. Cache is
+    // deliberately NOT in the number: an operator asking "how much memory
+    // is this machine using" means active+wired, and putting cache in the
+    // figure would reintroduce exactly the misreading the bar exists to
+    // prevent.
+    var lblbuf: [32]u8 = undefined;
+    const lbl = std.fmt.bufPrint(&lblbuf, "{d:.1}/{d:.0}G", .{
+        @as(f64, @floatFromInt(m.used_bytes)) / (1 << 30),
+        @as(f64, @floatFromInt(m.total_bytes)) / (1 << 30),
+    }) catch "mem";
+
+    // Geometry: cells, then a gap, then the label, all right-aligned.
+    const cell_w: f32 = gw * 0.55;
+    const cell_gap: f32 = gw * 0.18;
+    const cell_h: f32 = gh * 0.62;
+    const bar_w: f32 = @as(f32, @floatFromInt(MEMORY_BAR_CELLS)) * (cell_w + cell_gap) - cell_gap;
+    const lbl_w: f32 = @as(f32, @floatFromInt(lbl.len)) * gw;
+    const gap: f32 = gw * 0.75;
+
+    const lbl_x: f32 = surface_w - pad_x - lbl_w;
+    const bar_x: f32 = lbl_x - gap - bar_w;
+    const cell_y: f32 = y + (gh - cell_h) * 0.5;
+
+    var i: usize = 0;
+    while (i < MEMORY_BAR_CELLS) : (i += 1) {
+        const cx: f32 = bar_x + @as(f32, @floatFromInt(i)) * (cell_w + cell_gap);
+
+        if (i < b.used) {
+            // Used: solid, full brightness. The thing that matters.
+            try enc.fillRect(cx, cell_y, cell_w, cell_h, C_MINT_R, C_MINT_G, C_MINT_B, 1);
+        } else if (i < b.used + b.cache) {
+            // Cache: dim solid. Present, reclaimable, not pressure.
+            try enc.fillRect(cx, cell_y, cell_w, cell_h, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
+        } else {
+            // Free: an outline, so the bar's full extent is always legible
+            // and the operator can see the scale even at low usage. A gap
+            // would make a nearly-idle machine look like a broken bar.
+            const t: f32 = sf; // one scaled pixel
+            try enc.fillRect(cx, cell_y, cell_w, t, C_RULE_R, C_RULE_G, C_RULE_B, 1);
+            try enc.fillRect(cx, cell_y + cell_h - t, cell_w, t, C_RULE_R, C_RULE_G, C_RULE_B, 1);
+            try enc.fillRect(cx, cell_y, t, cell_h, C_RULE_R, C_RULE_G, C_RULE_B, 1);
+            try enc.fillRect(cx + cell_w - t, cell_y, t, cell_h, C_RULE_R, C_RULE_G, C_RULE_B, 1);
+        }
+    }
+
+    try drawText(enc, lbl, lbl_x, y, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
+}
+
 pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32, surface_h: f32) !void {
     const sf: f32 = @floatFromInt(SCALE);
     const gw: f32 = @as(f32, @floatFromInt(font.Font.GLYPH_WIDTH)) * sf;
@@ -1229,12 +1418,23 @@ pub fn draw(state: *const State, enc: *Encoder, blink_phase: u64, surface_w: f32
         const net_x: f32 = surface_w * 0.42;
         try drawText(enc, state.network_str, net_x, y, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
 
-        // Memory, dim cyan, right-aligned. Dim deliberately: see the
-        // note above about it being the easy metric, not the useful one.
-        var membuf: [64]u8 = undefined;
-        const mem = std.fmt.bufPrint(&membuf, "mem {s}", .{state.physmem_str}) catch state.physmem_str;
-        const mem_x: f32 = surface_w - pad_x - @as(f32, @floatFromInt(mem.len)) * gw;
-        try drawText(enc, mem, mem_x, y, C_MINT_DIM_R, C_MINT_DIM_G, C_MINT_DIM_B, 1);
+        // Memory: a segmented pressure bar, right-aligned.
+        //
+        // This replaces "mem 16278 MB", which was INSTALLED memory: a
+        // constant, read once at init, that told an operator nothing they
+        // could act on. The bar is live telemetry.
+        //
+        // Three segments, not two, and that is the design. FreeBSD fills
+        // free RAM with cache aggressively, so a healthy machine has very
+        // little genuinely free memory. A "used vs free" bar would show it
+        // as nearly full when it is under no pressure at all, which is the
+        // classic misreading of FreeBSD memory. Inactive pages are
+        // reclaimable on demand: cache, not consumption.
+        //
+        //   solid  = active + wired   (genuinely consumed)
+        //   dim    = inactive         (cache, reclaimable)
+        //   outline= free             (unallocated)
+        try drawMemBar(state, enc, surface_w, y, gw, gh, pad_x, sf);
     }
     // Header rule.
     try enc.fillRect(0, header_h, surface_w, sf, C_RULE_R, C_RULE_G, C_RULE_B, 1);
@@ -2014,4 +2214,66 @@ test "console: entering the Session view clears a stale status message" {
     try s.handleAction(.session_picker);
     try s.handleAction(.enter); // confirm
     try testing.expectEqual(@as(?[]const u8, null), s.status_message);
+}
+
+// Memory bar segmentation.
+//
+// The invariant that matters: the three segments sum to exactly
+// MEMORY_BAR_CELLS. Rounding each independently does not guarantee it,
+// and a bar that is one cell short shows a gap while one cell over writes
+// past its own width.
+
+test "barCells: segments always sum to exactly the cell count" {
+    const cases = [_]sysinfo.MemStats{
+        // A freshly booted machine: little used, little cached, mostly free.
+        .{ .used_bytes = 500 << 20, .cache_bytes = 200 << 20, .free_bytes = 15 << 30, .total_bytes = 16 << 30 },
+        // A working machine: FreeBSD has filled RAM with cache.
+        .{ .used_bytes = 6 << 30, .cache_bytes = 9 << 30, .free_bytes = 1 << 30, .total_bytes = 16 << 30 },
+        // Under real pressure.
+        .{ .used_bytes = 15 << 30, .cache_bytes = 512 << 20, .free_bytes = 256 << 20, .total_bytes = 16 << 30 },
+        // Pathological: everything used.
+        .{ .used_bytes = 16 << 30, .cache_bytes = 0, .free_bytes = 0, .total_bytes = 16 << 30 },
+        // Pathological: nothing anywhere.
+        .{ .used_bytes = 0, .cache_bytes = 0, .free_bytes = 16 << 30, .total_bytes = 16 << 30 },
+        // Degenerate: no total. Must not divide by zero.
+        .{ .used_bytes = 0, .cache_bytes = 0, .free_bytes = 0, .total_bytes = 0 },
+    };
+
+    for (cases) |m| {
+        const b = State.barCells(m);
+        try std.testing.expectEqual(MEMORY_BAR_CELLS, b.used + b.cache + b.free);
+    }
+}
+
+test "barCells: a nonzero segment never rounds away to nothing" {
+    // 100 MB used of 16 GB is 0.6% of the bar, well under one cell of 16.
+    // It must still light one cell: a pressure indicator has to distinguish
+    // "some" from "none", or a slow leak is invisible until it is large.
+    const m = sysinfo.MemStats{
+        .used_bytes = 100 << 20,
+        .cache_bytes = 50 << 20,
+        .free_bytes = 16 << 30,
+        .total_bytes = 16 << 30,
+    };
+    const b = State.barCells(m);
+    try std.testing.expect(b.used >= 1);
+    try std.testing.expect(b.cache >= 1);
+    try std.testing.expectEqual(MEMORY_BAR_CELLS, b.used + b.cache + b.free);
+}
+
+test "barCells: cache is not counted as used" {
+    // The whole point of the three-way split. FreeBSD fills RAM with cache,
+    // so a machine with 9G inactive is NOT under memory pressure, and a
+    // two-way "used vs free" bar would show it as 94% full. The used segment
+    // must reflect only active+wired.
+    const m = sysinfo.MemStats{
+        .used_bytes = 4 << 30, // active + wired
+        .cache_bytes = 11 << 30, // inactive: reclaimable
+        .free_bytes = 1 << 30,
+        .total_bytes = 16 << 30,
+    };
+    const b = State.barCells(m);
+    // 4/16 = a quarter of the bar, not 15/16.
+    try std.testing.expectEqual(@as(usize, 4), b.used);
+    try std.testing.expect(b.cache > b.used);
 }

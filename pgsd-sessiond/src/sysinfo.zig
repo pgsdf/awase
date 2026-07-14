@@ -90,6 +90,69 @@ pub fn physMemBytes() Error!u64 {
     return querySysctlU64("hw.physmem");
 }
 
+/// Live memory pressure, in bytes, from FreeBSD's own page categories.
+///
+/// This is TELEMETRY, not a system fact: unlike hw.realmem and hw.physmem
+/// (installed memory, constant, read once), these change continuously and
+/// must be resampled. See State.maybeRefreshMemory.
+///
+/// The three-way split is the point, and it is why "used vs total" is the
+/// wrong model on FreeBSD. The kernel uses free RAM for cache
+/// aggressively, so a healthy machine has very little genuinely free
+/// memory, and a two-way bar would show it as nearly full when it is not
+/// under pressure at all. Inactive pages are reclaimable on demand: they
+/// are cache, not consumption.
+///
+///   used   = v_active_count + v_wire_count   (genuinely consumed)
+///   cache  = v_inactive_count                (reclaimable)
+///   free   = v_free_count                    (unallocated)
+pub const MemStats = struct {
+    used_bytes: u64,
+    cache_bytes: u64,
+    free_bytes: u64,
+    total_bytes: u64,
+};
+
+pub fn memStats() Error!MemStats {
+    // vm.stats.vm.* counters are pages, and they are u_int (32-bit), not
+    // u64. Reading a 4-byte sysctl into an 8-byte buffer leaves the upper
+    // half undefined, so this needs its own width.
+    const page_size = try querySysctlU64("hw.pagesize");
+
+    const active = try querySysctlU32("vm.stats.vm.v_active_count");
+    const wired = try querySysctlU32("vm.stats.vm.v_wire_count");
+    const inactive = try querySysctlU32("vm.stats.vm.v_inactive_count");
+    const free = try querySysctlU32("vm.stats.vm.v_free_count");
+    const total = try querySysctlU32("vm.stats.vm.v_page_count");
+
+    return .{
+        .used_bytes = (@as(u64, active) + @as(u64, wired)) * page_size,
+        .cache_bytes = @as(u64, inactive) * page_size,
+        .free_bytes = @as(u64, free) * page_size,
+        .total_bytes = @as(u64, total) * page_size,
+    };
+}
+
+fn querySysctlU32(name: []const u8) Error!u32 {
+    var name_z: [64]u8 = undefined;
+    if (name.len >= name_z.len) return Error.BufferTooSmall;
+    @memcpy(name_z[0..name.len], name);
+    name_z[name.len] = 0;
+
+    var value: u32 = 0;
+    var len: usize = @sizeOf(u32);
+    const rc = c.sysctlbyname(
+        @ptrCast(&name_z),
+        @ptrCast(&value),
+        &len,
+        null,
+        0,
+    );
+    if (rc != 0) return Error.SysctlFailed;
+    if (len != @sizeOf(u32)) return Error.SysctlFailed;
+    return value;
+}
+
 fn querySysctlU64(name: []const u8) Error!u64 {
     // sysctlbyname wants a NUL-terminated name. Names are short
     // (max ~32 chars in practice); stack buffer is fine.
