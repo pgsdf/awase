@@ -247,7 +247,7 @@ can be shorter than FreeBSD's, because the installer creates the pool.**
 Whatever the answers, the contract must state what the loader does with
 a pool that violates them: **it refuses to read it, and says so.** It
 does not attempt a partial read, and it does not guess. An unsupported
-pool is a fact (section 8), not an error the loader resolves.
+pool is a fact (section 9), not an error for the loader to repair.
 
 ---
 
@@ -325,9 +325,10 @@ Whatever identifies a boot environment must be:
     pool that satisfies section 4, without executing code from the pool.
   - **Stable across the boot.** It must name the same thing when
     Discover observes it and when Transfer acts on it.
-  - **Sufficient to reach the coherence unit.** It must resolve to the
-    system image unit that holds both kernel and userland (Decision
-    5.1), not to a kernel alone.
+  - **Sufficient to designate the coherence unit.** The identifier must
+    designate the system image unit that holds BOTH the kernel and the
+    userland (B2), not a kernel alone. Whatever performs the resolution,
+    what it arrives at must be the whole unit.
   - **Distinguishable.** Two boot environments must be tellable apart
     by their identifiers.
 
@@ -501,7 +502,7 @@ product decision (ADR 0002 Decision 1).
 | Q2 | Which vdev topologies are supported? | installer/loader contract |
 | Q3 | Is compression permitted on the boot path, and which algorithms? | installer/loader contract |
 | Q4 | Is encryption excluded on the boot path? | installer/loader contract |
-| Q5 | Is Appendix A's traversal complete for the resolution requirement? | implementation choice |
+| Q5 | Is Appendix A's traversal complete for the consumption requirement? | implementation choice |
 | Q6 | What is the upgrade model, and therefore BE identity? | **product decision** |
 | Q7 | Does the OE kernel require verification beyond ZFS's integrity? | **product decision** |
 | Q8 | Can LOM v1 distinguish "no producer" from "target unavailable"? | **AD-59 dependency** |
@@ -531,13 +532,13 @@ every question inside it.
 ## Appendix A: candidate ZFS traversal (implementation note)
 
 Not normative. This records the traversal current OpenZFS layouts
-require to satisfy section 6.1's resolution requirement, so that the
+require to satisfy section 6.1's consumption requirement, so that the
 contract can name an outcome while the implementation has somewhere to
 record the mechanism.
 
   1. the vdev label and uberblock (find the newest valid uberblock),
   2. the MOS (the meta object set the uberblock names),
-  3. the DSL directory tree (to resolve dataset names),
+  3. the DSL directory tree (to look up dataset names),
   4. the pool's `bootfs` property, or whatever the BE identity model
      (section 8) determines,
   5. the target dataset's object set,
