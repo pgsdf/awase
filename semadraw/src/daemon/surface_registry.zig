@@ -35,6 +35,17 @@ pub const SurfaceState = struct {
     visible: bool = false,
 };
 
+/// A compositor-assigned configuration (D-12 stage 2, ADR 0022
+/// section 5), identified by its per-surface monotonic serial. The
+/// serial is an acknowledgement token for compositor state identity,
+/// not a synchronization primitive; the transaction is the
+/// pending/current promotion above.
+pub const Configure = struct {
+    serial: u64,
+    logical_width: f32,
+    logical_height: f32,
+};
+
 /// Surface state
 pub const Surface = struct {
     id: protocol.SurfaceId,
@@ -95,6 +106,22 @@ pub const Surface = struct {
     // Frame state
     pending_commit: bool = false,
     frame_number: u64 = 0,
+
+    // ADR 0022 section 5 configure state (D-12 stage 2). Serial 0 is
+    // the creation configuration, so the allocator starts at 1.
+    // `pending_configure` is the at-most-one outstanding configure;
+    // assigning while one is pending overwrites it, which is the
+    // structural half of supersession (the semantic half, that an
+    // acknowledgement of a superseded serial acknowledges nothing,
+    // lands with the acknowledgement logic in stage 3).
+    // `acked_serial` is the configuration identity the client last
+    // acknowledged; 0 from creation, per the ADR's creation rule.
+    // Retention is expressed by what is NOT here: assigning a
+    // configure never touches `current` or `pending` state; presented
+    // geometry changes only when an acknowledging commit promotes.
+    next_config_serial: u64 = 1,
+    pending_configure: ?Configure = null,
+    acked_serial: u64 = 0,
 
     pub fn getPixelCount(self: *const Surface) u64 {
         return @intFromFloat(@abs(self.current.logical_width * self.current.logical_height));
@@ -333,6 +360,33 @@ pub const SurfaceRegistry = struct {
     /// Get a surface by ID
     pub fn getSurface(self: *SurfaceRegistry, id: protocol.SurfaceId) ?*Surface {
         return self.surfaces.get(id);
+    }
+
+    /// D-12 stage 2 (ADR 0022 section 5): assign a new configuration
+    /// to the surface, allocating its serial and recording it as the
+    /// pending configure. Deliberately policy-independent: callers
+    /// decide WHEN a surface is configured (today the administrative
+    /// ctl verb; NDE-1's surface manager later); this method only
+    /// runs the state machine, so both front ends share one
+    /// implementation. Emission to the owning client is the daemon's
+    /// job. Retention means current state is NOT touched here; the
+    /// presented geometry changes when an acknowledging commit
+    /// promotes (stage 3).
+    pub fn assignConfigure(
+        self: *SurfaceRegistry,
+        id: protocol.SurfaceId,
+        logical_width: f32,
+        logical_height: f32,
+    ) error{SurfaceNotFound}!Configure {
+        const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+        const cfg = Configure{
+            .serial = surface.next_config_serial,
+            .logical_width = logical_width,
+            .logical_height = logical_height,
+        };
+        surface.next_config_serial += 1;
+        surface.pending_configure = cfg;
+        return cfg;
     }
 
     /// Attach a buffer to a surface
@@ -914,4 +968,32 @@ test "SurfaceRegistry: mid-draw mutation is not visible until commit (I3)" {
     _ = try registry.commit(id);
     try std.testing.expectEqual(@as(f32, 500), surface.current.position_x);
     try std.testing.expectEqual(@as(f32, 500), surface.current.position_y);
+}
+
+test "assignConfigure allocates monotonic serials and records pending" {
+    // D-12 stage 2 (ADR 0022 section 5).
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+
+    // Creation is serial 0: nothing pending, nothing acknowledged.
+    try std.testing.expectEqual(@as(?Configure, null), surface.pending_configure);
+    try std.testing.expectEqual(@as(u64, 0), surface.acked_serial);
+
+    const a = try registry.assignConfigure(surface.id, 132, 43);
+    try std.testing.expectEqual(@as(u64, 1), a.serial);
+    try std.testing.expectEqual(a, surface.pending_configure.?);
+
+    // Retention: assigning never touches current or pending state;
+    // the presented geometry changes only on an acknowledging commit.
+    try std.testing.expectEqual(@as(f32, 800), surface.current.logical_width);
+    try std.testing.expectEqual(@as(f32, 800), surface.pending.logical_width);
+
+    // Structural supersession: a second assignment overwrites the
+    // pending configure under a new serial. At most one outstanding.
+    const b = try registry.assignConfigure(surface.id, 200, 50);
+    try std.testing.expectEqual(@as(u64, 2), b.serial);
+    try std.testing.expectEqual(b, surface.pending_configure.?);
+
+    try std.testing.expectError(error.SurfaceNotFound, registry.assignConfigure(9999, 10, 10));
 }

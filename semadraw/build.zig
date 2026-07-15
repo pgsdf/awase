@@ -1182,6 +1182,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_ctl_tool_tests = b.addRunArtifact(ctl_tool_tests);
 
+    // D-12 stage 2: surface registry unit tests (the ADR 0022
+    // pending/current staging tests from D-12.1 through D-12.3, which
+    // were never wired into a test root before and run for the first
+    // time here, plus the stage 2 configure state machine tests).
+    const registry_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/daemon/surface_registry.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "protocol", .module = ipc_protocol_mod }},
+        }),
+    });
+    const run_registry_tests = b.addRunArtifact(registry_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_simd_tests.step);
@@ -1192,6 +1206,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_backend_tests.step);
     test_step.dependOn(&run_control_tests.step);
     test_step.dependOn(&run_ctl_tool_tests.step);
+    test_step.dependOn(&run_registry_tests.step);
     // Note: bsdinput tests are in src/backend/bsdinput.zig but not included here
     // due to circular module dependencies. Run manually on FreeBSD if needed:
     // zig test src/backend/bsdinput.zig -lc -linput -ludev

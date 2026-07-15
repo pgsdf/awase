@@ -2413,6 +2413,79 @@ pub const Daemon = struct {
         self.sendCaptureReply(idx, snap);
     }
 
+    /// D-12 stage 2 (ADR 0022 section 5): the operator assigns a
+    /// surface a configuration. The registry runs the
+    /// policy-independent state machine (serial allocation, pending
+    /// configure, structural supersession); this handler is the
+    /// administrative front end over it, and NDE-1's surface manager
+    /// later becomes the policy front end over the same machinery.
+    /// Retention is respected by construction: nothing here touches
+    /// current or pending surface state, so the presented geometry is
+    /// unchanged until an acknowledging commit promotes (stage 3).
+    fn handleCtlConfigure(self: *Daemon, idx: usize, payload: []const u8) void {
+        const req = control.ConfigurePayload.deserialize(payload) catch {
+            self.sendCtlError(idx, .protocol_error);
+            return;
+        };
+        if (!(req.logical_width > 0 and req.logical_height > 0) or
+            !std.math.isFinite(req.logical_width) or
+            !std.math.isFinite(req.logical_height))
+        {
+            self.sendCtlError(idx, .configure_invalid_geometry);
+            return;
+        }
+        const surface = self.surfaces.getSurface(req.surface_id) orelse {
+            self.sendCtlError(idx, .configure_unknown_surface);
+            return;
+        };
+        if (surface.owner == protocol.CLIENT_ID_DAEMON) {
+            // The cursor surface: cursor state does not inherit
+            // surface transaction semantics (ADR 0022; audit SA-2).
+            self.sendCtlError(idx, .configure_not_client_surface);
+            return;
+        }
+
+        const cfg = self.surfaces.assignConfigure(
+            req.surface_id,
+            req.logical_width,
+            req.logical_height,
+        ) catch {
+            self.sendCtlError(idx, .configure_unknown_surface);
+            return;
+        };
+
+        self.emitSurfaceConfigure(surface.owner, req.surface_id, cfg);
+
+        var pl: [control.ConfigureReplyPayload.SIZE]u8 = undefined;
+        (control.ConfigureReplyPayload{ .config_serial = cfg.serial }).serialize(&pl);
+        self.sendCtl(idx, .configure_reply, &pl);
+    }
+
+    /// D-12 stage 2: send surface_configure to the client that owns
+    /// the surface. Best-effort and informational, following the
+    /// emitFocusChanged posture: the configure is recorded in the
+    /// registry regardless, and a client that never hears (or never
+    /// acknowledges) is the ADR 0022 section 5 never-acknowledging
+    /// client, presented at its current configuration. scale is 1.0:
+    /// no per-surface scale exists yet; the wire field exists for
+    /// when per-output scale arrives.
+    fn emitSurfaceConfigure(self: *Daemon, owner: protocol.ClientId, surface_id: protocol.SurfaceId, cfg: surface_registry.Configure) void {
+        var payload: [protocol.SurfaceConfigureMsg.SIZE]u8 = undefined;
+        (protocol.SurfaceConfigureMsg{
+            .surface_id = surface_id,
+            .logical_width = cfg.logical_width,
+            .logical_height = cfg.logical_height,
+            .scale = 1.0,
+            .config_serial = cfg.serial,
+        }).serialize(&payload);
+        if (self.clients.findById(owner)) |session| {
+            _ = session.trySend(.surface_configure, &payload);
+        } else if (self.remote_clients.get(owner)) |remote_session| {
+            _ = remote_session.client.trySendMessage(.surface_configure, &payload);
+        }
+        // No recipient: nothing to do; the pending configure stands.
+    }
+
     /// CAPTURE-DESIGN.md commit 3: copy the composited frame into the
     /// caller's shared-memory object and reply with metadata only.
     ///
@@ -2508,7 +2581,7 @@ pub const Daemon = struct {
             const total = control.CtlHeader.SIZE + hdr.length;
             if (cc.len < total) break; // incomplete; wait for more
 
-            self.dispatchCtl(idx, hdr.msg_type);
+            self.dispatchCtl(idx, hdr.msg_type, cc.buf[control.CtlHeader.SIZE..total]);
 
             // Shift any pipelined bytes down. Control traffic is
             // policy-rate; the copy is trivial.
@@ -2517,7 +2590,7 @@ pub const Daemon = struct {
         }
     }
 
-    fn dispatchCtl(self: *Daemon, idx: usize, msg_type: control.CtlMsgType) void {
+    fn dispatchCtl(self: *Daemon, idx: usize, msg_type: control.CtlMsgType, payload: []const u8) void {
         switch (msg_type) {
             .status_query => self.sendCtlDisplayState(idx),
             // ADR 0021 §4: idempotent transitions, acknowledged
@@ -2537,9 +2610,11 @@ pub const Daemon = struct {
             // CAPTURE-DESIGN.md commit 3.
             .capture => self.handleCapture(idx),
             .capture_info => self.handleCaptureInfo(idx),
+            // D-12 stage 2: the administrative configure front end.
+            .configure => self.handleCtlConfigure(idx, payload),
             // Reply/notification opcodes arriving as requests: a
             // broken peer.
-            .ctl_ack, .ctl_error, .display_state, .capture_reply => self.sendCtlError(idx, .protocol_error),
+            .ctl_ack, .ctl_error, .display_state, .capture_reply, .configure_reply => self.sendCtlError(idx, .protocol_error),
         }
     }
 

@@ -8,11 +8,16 @@
 //
 // Usage: semadraw-ctl [--socket PATH]
 //        status|blank|unblank|watch|capture-info|capture <path>
+//        |configure <surface-id> <width> <height>
 // watch: hold the connection open and print every display_state
 // notification as it arrives (ADR 0021 Section 8; the Section 10
 // notification bench check), until EOF or interrupt.
 // capture-info: print the frame metadata (the sizing probe).
 // capture <path>: write the composited screen to <path> as PPM (P6).
+// configure: the D-12 stage 2 administrative front end: tell the
+// compositor to assign the surface a configuration (ADR 0022
+// section 5); prints the allocated config_serial. The presented
+// geometry does not change until the client acknowledges (stage 3).
 // Exit codes: 0 reply received, 1 usage, 2 connect failed (also the
 // unauthorized-peer outcome: the daemon closes without a reply),
 // 3 daemon replied ctl_error (code printed).
@@ -49,16 +54,24 @@ fn cmsgLen(len: usize) usize {
     return cmsgAlign(@sizeOf(std.c.cmsghdr)) + len;
 }
 
-/// Send a header-only request frame.
-fn sendVerb(sock: posix.fd_t, verb: control.CtlMsgType) void {
-    var out: [control.CtlHeader.SIZE]u8 = undefined;
-    (control.CtlHeader{ .msg_type = verb, .flags = 0, .length = 0 }).serialize(&out);
+/// Send one request frame: header plus its (tiny) payload.
+fn sendFrame(sock: posix.fd_t, verb: control.CtlMsgType, payload: []const u8) void {
+    std.debug.assert(payload.len <= control.MAX_CTL_PAYLOAD);
+    var out: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8 = undefined;
+    (control.CtlHeader{ .msg_type = verb, .flags = 0, .length = @intCast(payload.len) }).serialize(out[0..control.CtlHeader.SIZE]);
+    @memcpy(out[control.CtlHeader.SIZE..][0..payload.len], payload);
+    const total = control.CtlHeader.SIZE + payload.len;
     var off: usize = 0;
-    while (off < out.len) {
-        const wn = posix.system.write(sock, out[off..].ptr, out.len - off);
+    while (off < total) {
+        const wn = posix.system.write(sock, out[off..].ptr, total - off);
         if (wn < 0) fail("semadraw-ctl: write failed", .{}, 2);
         off += @intCast(wn);
     }
+}
+
+/// Send a header-only request frame.
+fn sendVerb(sock: posix.fd_t, verb: control.CtlMsgType) void {
+    sendFrame(sock, verb, &.{});
 }
 
 /// Send the capture request frame with the shared-memory descriptor
@@ -292,6 +305,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var verb: ?control.CtlMsgType = null;
     var watch = false;
     var capture_path: ?[]const u8 = null;
+    var configure_req: ?control.ConfigurePayload = null;
 
     const args_owned = try compat.args.alloc(gpa, init.args);
     defer args_owned.deinit(gpa);
@@ -310,6 +324,18 @@ pub fn main(init: std.process.Init.Minimal) !void {
             verb = .unblank;
         } else if (std.mem.eql(u8, a, "capture-info")) {
             verb = .capture_info;
+        } else if (std.mem.eql(u8, a, "configure")) {
+            verb = .configure;
+            if (i + 3 >= args.len) fail("semadraw-ctl: configure requires <surface-id> <width> <height>", .{}, 1);
+            configure_req = .{
+                .surface_id = std.fmt.parseInt(u32, args[i + 1], 10) catch
+                    fail("semadraw-ctl: surface-id must be an unsigned integer", .{}, 1),
+                .logical_width = std.fmt.parseFloat(f32, args[i + 2]) catch
+                    fail("semadraw-ctl: width must be a number", .{}, 1),
+                .logical_height = std.fmt.parseFloat(f32, args[i + 3]) catch
+                    fail("semadraw-ctl: height must be a number", .{}, 1),
+            };
+            i += 3;
         } else if (std.mem.eql(u8, a, "capture")) {
             verb = .capture;
             i += 1;
@@ -322,7 +348,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
     }
     if (watch and verb != null) fail("semadraw-ctl: watch takes no verb", .{}, 1);
-    if (!watch and verb == null) fail("usage: semadraw-ctl [--socket PATH] status|blank|unblank|watch|capture-info|capture <path>", .{}, 1);
+    if (!watch and verb == null) fail("usage: semadraw-ctl [--socket PATH] status|blank|unblank|watch|capture-info|capture <path>|configure <surface-id> <width> <height>", .{}, 1);
 
     const fd = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch
         fail("semadraw-ctl: socket() failed", .{}, 2);
@@ -367,7 +393,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const v = verb.?;
     if (v == .capture) runCapture(gpa, fd, capture_path.?);
 
-    sendVerb(fd, v);
+    if (configure_req) |req| {
+        var cpl: [control.ConfigurePayload.SIZE]u8 = undefined;
+        req.serialize(&cpl);
+        sendFrame(fd, v, &cpl);
+    } else {
+        sendVerb(fd, v);
+    }
     var in: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8 = undefined;
     const reply = readOneReply(fd, &in);
     const payload = in[control.CtlHeader.SIZE..][0..reply.payload_len];
@@ -386,6 +418,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
             const h = control.CaptureHeader.deserialize(payload) catch
                 fail("semadraw-ctl: malformed capture_reply", .{}, 2);
             std.debug.print("frame: {d}x{d} stride={d} format={d}\n", .{ h.width, h.height, h.stride, h.format });
+        },
+        .configure_reply => {
+            const r = control.ConfigureReplyPayload.deserialize(payload) catch
+                fail("semadraw-ctl: malformed configure_reply", .{}, 2);
+            std.debug.print("configure: serial={d}\n", .{r.config_serial});
         },
         .ctl_ack => std.debug.print("ok\n", .{}),
         .ctl_error => failCtlError(payload),

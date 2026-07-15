@@ -62,6 +62,20 @@ pub const CtlMsgType = enum(u16) {
     capture = 0x0020,
     capture_info = 0x0021,
 
+    // D-12 stage 2 (ADR 0022 section 5). The administrative front end
+    // for compositor-assigned geometry: the operator tells the
+    // compositor to assign the surface a configuration, the daemon
+    // allocates the serial, records the pending configure, and emits
+    // surface_configure to the owning client. Deliberately
+    // administrative rather than protocol-shaped: it exposes exactly
+    // what drives and verifies the configure state machine, no more.
+    // NDE-1's surface manager later becomes the policy front end over
+    // the same registry machinery; this verb remains as the operator
+    // and bench facility. Payload: ConfigurePayload. Reply:
+    // configure_reply carrying the allocated serial, so the bench can
+    // name serials when driving supersession.
+    configure = 0x0030,
+
     // Replies and notifications (compositor -> session authority).
     ctl_ack = 0x8001, // request accepted and applied
     ctl_error = 0x8002, // payload: CtlErrorPayload
@@ -71,6 +85,7 @@ pub const CtlMsgType = enum(u16) {
     // (ADR 0021 §8), so the policy agent can restart its idle
     // timeline without polling races.
     capture_reply = 0x8004, // payload: CaptureHeader
+    configure_reply = 0x8005, // payload: ConfigureReplyPayload
 };
 
 pub const CtlError = enum(u16) {
@@ -93,6 +108,14 @@ pub const CtlError = enum(u16) {
     //
     // System/runtime: the daemon could not map the object.
     capture_map_failed = 0x0014,
+
+    // Configure failures (D-12 stage 2), all client/protocol class:
+    // the request itself is wrong.
+    configure_unknown_surface = 0x0020, // no surface with that id
+    configure_invalid_geometry = 0x0021, // non-positive or non-finite size
+    configure_not_client_surface = 0x0022, // daemon-owned surface (the
+    // cursor); cursor state does not inherit surface transaction
+    // semantics (ADR 0022; audit SA-2), so it is not configurable
 };
 
 /// ADR 0021 Section 3: the display axis. OFF is reserved for Tier B
@@ -213,6 +236,52 @@ test "unknown control opcode is rejected at deserialize" {
     try std.testing.expectError(error.InvalidMsgType, CtlHeader.deserialize(&buf));
 }
 
+/// D-12 stage 2: the configure request payload. Logical size as f32,
+/// matching SurfaceState and the client-protocol SurfaceConfigureMsg.
+/// Scale is deliberately absent: the operator interface exposes only
+/// what drives the state machine, and no per-surface scale exists yet.
+pub const ConfigurePayload = extern struct {
+    surface_id: u32,
+    logical_width: f32,
+    logical_height: f32,
+
+    pub const SIZE: usize = 12;
+
+    pub fn serialize(self: ConfigurePayload, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+        @memcpy(buf[4..8], std.mem.asBytes(&self.logical_width));
+        @memcpy(buf[8..12], std.mem.asBytes(&self.logical_height));
+    }
+
+    pub fn deserialize(buf: []const u8) !ConfigurePayload {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{
+            .surface_id = std.mem.readInt(u32, buf[0..4], .little),
+            .logical_width = @bitCast(std.mem.readInt(u32, buf[4..8], .little)),
+            .logical_height = @bitCast(std.mem.readInt(u32, buf[8..12], .little)),
+        };
+    }
+};
+
+/// D-12 stage 2: the configure reply, carrying the serial the daemon
+/// allocated so the bench can name serials when driving supersession.
+pub const ConfigureReplyPayload = extern struct {
+    config_serial: u64,
+
+    pub const SIZE: usize = 8;
+
+    pub fn serialize(self: ConfigureReplyPayload, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u64, buf[0..8], self.config_serial, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !ConfigureReplyPayload {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{ .config_serial = std.mem.readInt(u64, buf[0..8], .little) };
+    }
+};
+
 test "payload roundtrips" {
     var b1: [1]u8 = undefined;
     (DisplayStatePayload{ .axis = @intFromEnum(DisplayAxis.blanked) }).serialize(&b1);
@@ -220,6 +289,21 @@ test "payload roundtrips" {
     var b2: [2]u8 = undefined;
     (CtlErrorPayload{ .code = @intFromEnum(CtlError.not_implemented) }).serialize(&b2);
     try std.testing.expectEqual(@as(u16, 1), (try CtlErrorPayload.deserialize(&b2)).code);
+}
+
+test "configure payloads roundtrip and fit the payload budget" {
+    try std.testing.expect(ConfigurePayload.SIZE <= MAX_CTL_PAYLOAD);
+    try std.testing.expect(ConfigureReplyPayload.SIZE <= MAX_CTL_PAYLOAD);
+    var b1: [ConfigurePayload.SIZE]u8 = undefined;
+    (ConfigurePayload{ .surface_id = 5, .logical_width = 132.5, .logical_height = 43.0 }).serialize(&b1);
+    const back = try ConfigurePayload.deserialize(&b1);
+    try std.testing.expectEqual(@as(u32, 5), back.surface_id);
+    try std.testing.expectEqual(@as(f32, 132.5), back.logical_width);
+    try std.testing.expectEqual(@as(f32, 43.0), back.logical_height);
+    var b2: [ConfigureReplyPayload.SIZE]u8 = undefined;
+    (ConfigureReplyPayload{ .config_serial = 7 }).serialize(&b2);
+    try std.testing.expectEqual(@as(u64, 7), (try ConfigureReplyPayload.deserialize(&b2)).config_serial);
+    try std.testing.expectError(error.BufferTooSmall, ConfigurePayload.deserialize(b1[0 .. ConfigurePayload.SIZE - 1]));
 }
 
 test "CaptureHeader roundtrips and fits the payload budget" {
