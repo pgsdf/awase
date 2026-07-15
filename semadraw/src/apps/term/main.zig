@@ -812,6 +812,11 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                             }
                         }
                         if (ok) {
+                            // F-D12-3: the renderer places the status
+                            // bar from its stored pixel dims; without
+                            // this, every frame repaints the bar at
+                            // the pre-resize bottom row.
+                            rend.resize(new_cols, new_rows);
                             adopted_serial = c.config_serial;
                             width_px = @intFromFloat(c.logical_width);
                             height_px = @intFromFloat(c.logical_height);

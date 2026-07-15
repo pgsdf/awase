@@ -42,6 +42,19 @@ pub const Renderer = struct {
         };
     }
 
+    /// D-12 stage 4 (F-D12-3): adopt a new grid size. The renderer
+    /// stores pixel dimensions at init and places the status bar at
+    /// self.height_px; a resize that does not pass through here
+    /// leaves the bar painted at the OLD bottom row on every frame,
+    /// which no compositor clear can remove because it is live
+    /// content, not stale pixels. Found as a band at exactly
+    /// rows * cell_height of the pre-resize grid that survived two
+    /// (correct) compositor repaint fixes.
+    pub fn resize(self: *Self, new_cols: u32, new_rows: u32) void {
+        self.width_px = new_cols * self.cell_width;
+        self.height_px = new_rows * self.cell_height;
+    }
+
     pub fn deinit(self: *Self) void {
         self.encoder.deinit();
     }

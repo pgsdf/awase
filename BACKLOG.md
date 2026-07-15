@@ -679,6 +679,18 @@ observable in the listing as acked_serial pinned at 0. Also fixed on
 metal: semadraw-ctl frame reads are now bounded to the current frame
 (F-CTL-1), found by the listing's coalesced multi-frame reply.
 
+Observation recorded while chasing F-D12-3 (candidate audit finding,
+not yet an SA number): the compositor does not clip a surface's SDCS
+execution to the surface's current logical extent. The shrunk term's
+renderer bug painted at y=2112 of a surface whose logical size was
+1600x900, and the pixels landed on the framebuffer. On a
+single-operator system this is a rendering-hygiene gap rather than an
+isolation breach, but it means a buggy client can paint outside the
+geometry the compositor assigned it, which is I1 enforced in state
+and unenforced in pixels. Needs an operator decision on whether
+render-time clipping to current extent becomes part of the ADR 0022
+contract.
+
 Remaining: stage 4, client-side configure handling and serial echo
 (client library, then semadraw-term reflow with TIOCSWINSZ); then the
 section 10 bench on metal.
