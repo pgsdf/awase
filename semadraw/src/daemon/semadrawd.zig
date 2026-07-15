@@ -2388,6 +2388,105 @@ pub const Daemon = struct {
         self.sendCtl(idx, .display_state, &pl);
     }
 
+    fn sendCaptureReply(self: *Daemon, idx: usize, snap: backend.FrameSnapshot) void {
+        var pl: [control.CaptureHeader.SIZE]u8 = undefined;
+        (control.CaptureHeader{
+            .width = snap.width,
+            .height = snap.height,
+            .stride = snap.stride,
+            .format = @intFromEnum(snap.format),
+        }).serialize(&pl);
+        self.sendCtl(idx, .capture_reply, &pl);
+    }
+
+    /// CAPTURE-DESIGN.md commit 3: the sizing probe. Same metadata
+    /// reply as capture, no descriptor and no copy, so a client can
+    /// size its shared-memory object before capturing.
+    fn handleCaptureInfo(self: *Daemon, idx: usize) void {
+        const snap = self.comp.frameSnapshot() orelse {
+            self.sendCtlError(idx, .capture_unavailable);
+            return;
+        };
+        self.sendCaptureReply(idx, snap);
+    }
+
+    /// CAPTURE-DESIGN.md commit 3: copy the composited frame into the
+    /// caller's shared-memory object and reply with metadata only.
+    ///
+    /// The ordering is ratified (operator, 2026-07-15) and matters:
+    /// the pending descriptor is consumed FIRST and exactly once,
+    /// success or failure, matching the receive path's latest-wins
+    /// semantics; a failed capture must never leave a stale
+    /// descriptor for a later request to implicitly reuse. Then
+    /// snapshot, overflow-safe size arithmetic, fstat for the
+    /// object's size, mmap, copy under the snapshot borrow (this
+    /// handler runs in the composite loop, so the borrow holds for
+    /// its duration; see backend.FrameSnapshot), munmap, reply.
+    ///
+    /// fstat is the size check; mmap is the type gate. A descriptor
+    /// that is not a shared-mappable object fails at mmap with a
+    /// distinct code, so st_mode is deliberately not inspected here:
+    /// FreeBSD reports shm objects with an unremarkable mode, and a
+    /// mode test would reject nothing mmap does not already reject.
+    fn handleCapture(self: *Daemon, idx: usize) void {
+        const cc = &self.ctl_clients.items[idx];
+
+        const shm_fd: posix.fd_t = cc.pending_fd orelse {
+            self.sendCtlError(idx, .capture_no_descriptor);
+            return;
+        };
+        cc.pending_fd = null;
+        defer closeFd(shm_fd);
+
+        const snap = self.comp.frameSnapshot() orelse {
+            self.sendCtlError(idx, .capture_unavailable);
+            return;
+        };
+
+        // Overflow-safe: u32 * u32 widened to u64 before the product.
+        const needed: u64 = @as(u64, snap.stride) * @as(u64, snap.height);
+        if (needed == 0 or needed > snap.pixels.len) {
+            // Snapshot metadata inconsistent with its own buffer: an
+            // internal fault, never the client's request. Reported as
+            // unavailable (retry later), and logged as the defect it is.
+            log.warn("capture: snapshot inconsistent (stride*height={d}, pixels={d})", .{ needed, snap.pixels.len });
+            self.sendCtlError(idx, .capture_unavailable);
+            return;
+        }
+
+        var st: std.c.Stat = undefined;
+        if (posix.system.fstat(shm_fd, &st) != 0) {
+            self.sendCtlError(idx, .capture_bad_descriptor);
+            return;
+        }
+        if (st.size < 0 or @as(u64, @intCast(st.size)) < needed) {
+            self.sendCtlError(idx, .capture_buffer_too_small);
+            return;
+        }
+
+        const mapped = posix.mmap(
+            null,
+            @intCast(needed),
+            .{ .READ = true, .WRITE = true },
+            .{ .TYPE = .SHARED },
+            shm_fd,
+            0,
+        ) catch {
+            self.sendCtlError(idx, .capture_map_failed);
+            return;
+        };
+
+        @memcpy(mapped[0..@intCast(needed)], snap.pixels[0..@intCast(needed)]);
+
+        // Unmap before replying, per the ratified ordering: once the
+        // reply is on the wire the object is the client's to read,
+        // and the daemon holds no mapping of client-provided memory
+        // a moment longer than the copy requires.
+        posix.munmap(mapped);
+
+        self.sendCaptureReply(idx, snap);
+    }
+
     /// Read and dispatch on a control connection. Any framing
     /// violation (unknown opcode, oversize payload, EOF mid-frame)
     /// is an error to the caller, which drops the connection: the
@@ -2432,9 +2531,12 @@ pub const Daemon = struct {
             // ADR 0012 verbs relocate here (Section 10 amendment) and
             // are implemented with the lock machinery.
             .session_lock, .session_unlock => self.sendCtlError(idx, .not_implemented),
+            // CAPTURE-DESIGN.md commit 3.
+            .capture => self.handleCapture(idx),
+            .capture_info => self.handleCaptureInfo(idx),
             // Reply/notification opcodes arriving as requests: a
             // broken peer.
-            .ctl_ack, .ctl_error, .display_state => self.sendCtlError(idx, .protocol_error),
+            .ctl_ack, .ctl_error, .display_state, .capture_reply => self.sendCtlError(idx, .protocol_error),
         }
     }
 

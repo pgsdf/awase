@@ -58,6 +58,20 @@ output file's descriptor either.
   4. `semadraw-ctl` maps the buffer, converts BGRX, and writes the file
      **as the invoking user**.
 
+**One addition beyond the agreed sketch: `capture_info`, a sizing
+probe (commit 3, operator-ratified error grammar).** The client must
+size the shared-memory object before sending it, and it has no
+channel to learn stride and height: the reply that carries them is
+the reply to the capture it cannot yet size. `capture_info` replies
+with the same `CaptureHeader` metadata, takes no descriptor, and
+copies nothing. A display change between probe and capture is caught
+by the capture-time size check, which fails with
+`capture_buffer_too_small`; the client re-probes and retries. Failure
+replies use the existing `ctl_error` mechanism with distinct codes,
+classed so a client can tell "fix the request" (no descriptor, bad
+descriptor, buffer too small) from "retry later" (no snapshot
+available) from "system fault" (mapping failed).
+
 **Why not stream the pixels over the socket.** A 4K frame is ~33 MB. The
 control socket is a control socket, and streaming that through it means
 partial writes, backpressure, cancellation, clients that stop reading,

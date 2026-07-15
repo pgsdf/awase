@@ -821,6 +821,18 @@ pub const Compositor = struct {
         return .{ .width = out.config.width, .height = out.config.height };
     }
 
+    /// CAPTURE-DESIGN.md commit 3: one coherent snapshot of the
+    /// composited frame from the active backend, or null before
+    /// initOutput or when the backend cannot produce one. The
+    /// backend.FrameSnapshot atomicity and lifetime contract applies
+    /// to the caller of this method identically: the pixels are a
+    /// borrow, valid until the next mutating backend operation,
+    /// never retained beyond the current event-loop turn.
+    pub fn frameSnapshot(self: *const Self) ?backend_mod.FrameSnapshot {
+        const out = self.output orelse return null;
+        return out.be.frameSnapshot();
+    }
+
     /// Mark entire output as needing repaint
     pub fn damageAll(self: *Self) void {
         self.damage_tracker.markFullRepaint();

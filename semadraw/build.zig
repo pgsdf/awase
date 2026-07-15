@@ -1151,6 +1151,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_backend_tests = b.addRunArtifact(backend_tests);
 
+    // CAPTURE-DESIGN.md commit 3: control-interface wire contract
+    // unit tests (CaptureHeader roundtrip, plus the pre-existing
+    // CtlHeader and payload tests, which were never wired into a
+    // test root before and run for the first time here). control.zig
+    // imports only std, so the test module needs no dependencies.
+    const control_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/ipc/control.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_control_tests = b.addRunArtifact(control_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_simd_tests.step);
@@ -1159,6 +1173,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_client_connection_tests.step);
     test_step.dependOn(&run_sdcs_decode_tests.step);
     test_step.dependOn(&run_backend_tests.step);
+    test_step.dependOn(&run_control_tests.step);
     // Note: bsdinput tests are in src/backend/bsdinput.zig but not included here
     // due to circular module dependencies. Run manually on FreeBSD if needed:
     // zig test src/backend/bsdinput.zig -lc -linput -ludev

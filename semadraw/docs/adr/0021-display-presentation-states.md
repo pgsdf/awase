@@ -222,6 +222,16 @@ relocating its verbs there; 0x0035/0x0036 remain permanently reserved
 in the client range rather than being reused, so no stale document or
 client can ever collide with a reassigned meaning.
 
+Amendment (operator, 2026-07-15): the control interface also carries
+CAPTURE (0x0020, with its sizing probe capture_info 0x0021). Screen
+capture is an operator action, not a compositor service offered to
+clients: on the client protocol any client could screenshot any
+other, and reading the screen is at least as sensitive as blanking
+it, so the same argument that placed blank and lock here applies
+with at least equal force. This is an implementation of this ADR's
+decision, not a new architectural direction; the design record is
+semadraw/docs/CAPTURE-DESIGN.md.
+
 ## 9. Policy vehicle and sequencing (flagged for ratification)
 
 The blank timeline is policy and lives with the SM-2 per-session agent

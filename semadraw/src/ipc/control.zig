@@ -49,6 +49,19 @@ pub const CtlMsgType = enum(u16) {
     session_lock = 0x0010,
     session_unlock = 0x0011,
 
+    // CAPTURE-DESIGN.md commit 3 (ADR 0021 Section 8 amendment,
+    // 2026-07-15). capture consumes the SCM_RIGHTS descriptor that
+    // accompanied the request frame: the daemon copies the composited
+    // frame into the caller's shared-memory object and replies with
+    // metadata only; pixels never travel through this socket.
+    // capture_info is the sizing probe: same capture_reply metadata,
+    // no descriptor and no copy, so a client can size the object
+    // before capturing (it has no other channel to learn stride and
+    // height, and the capture-time buffer_too_small check still
+    // protects against a display change between the two requests).
+    capture = 0x0020,
+    capture_info = 0x0021,
+
     // Replies and notifications (compositor -> session authority).
     ctl_ack = 0x8001, // request accepted and applied
     ctl_error = 0x8002, // payload: CtlErrorPayload
@@ -57,12 +70,29 @@ pub const CtlMsgType = enum(u16) {
     // every display-axis transition, including input-driven wake
     // (ADR 0021 §8), so the policy agent can restart its idle
     // timeline without polling races.
+    capture_reply = 0x8004, // payload: CaptureHeader
 };
 
 pub const CtlError = enum(u16) {
     not_implemented = 1, // verb assigned but its machinery not landed
     protocol_error = 2, // malformed frame, oversize, unknown type
     invalid_state = 3, // request legal but not from this state
+
+    // Capture failures (CAPTURE-DESIGN.md commit 3), classed so a
+    // client can respond appropriately: fix the request, retry
+    // later, or report a fault, rather than guessing from one code.
+    //
+    // Client/protocol errors: the request itself is wrong.
+    capture_no_descriptor = 0x0010, // no SCM_RIGHTS fd accompanied capture
+    capture_bad_descriptor = 0x0011, // descriptor rejected by fstat
+    capture_buffer_too_small = 0x0012, // object smaller than stride * height;
+    // retry with a larger object (capture_info gives the sizing)
+    //
+    // Operational: nothing wrong with the request; retry later.
+    capture_unavailable = 0x0013, // backend has no coherent snapshot
+    //
+    // System/runtime: the daemon could not map the object.
+    capture_map_failed = 0x0014,
 };
 
 /// ADR 0021 Section 3: the display axis. OFF is reserved for Tier B
@@ -130,6 +160,41 @@ pub const CtlErrorPayload = extern struct {
     }
 };
 
+/// CAPTURE-DESIGN.md commit 3: the capture reply payload. Metadata
+/// only; the pixels travel through the caller-provided shared-memory
+/// object, never through this socket (a 4K frame is ~33 MB and the
+/// ctl path is synchronous; the design commit carries the argument).
+/// Sent as the reply to capture (after the copy, describing exactly
+/// what was copied) and to capture_info (the sizing probe). stride
+/// is carried explicitly because it may exceed width * 4; format is
+/// the backend PixelFormat wire value.
+pub const CaptureHeader = extern struct {
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: u8,
+
+    pub const SIZE: usize = 13;
+
+    pub fn serialize(self: CaptureHeader, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.width, .little);
+        std.mem.writeInt(u32, buf[4..8], self.height, .little);
+        std.mem.writeInt(u32, buf[8..12], self.stride, .little);
+        buf[12] = self.format;
+    }
+
+    pub fn deserialize(buf: []const u8) !CaptureHeader {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{
+            .width = std.mem.readInt(u32, buf[0..4], .little),
+            .height = std.mem.readInt(u32, buf[4..8], .little),
+            .stride = std.mem.readInt(u32, buf[8..12], .little),
+            .format = buf[12],
+        };
+    }
+};
+
 test "CtlHeader is 8 bytes and roundtrips" {
     try std.testing.expectEqual(@as(usize, 8), CtlHeader.SIZE);
     var buf: [8]u8 = undefined;
@@ -155,4 +220,17 @@ test "payload roundtrips" {
     var b2: [2]u8 = undefined;
     (CtlErrorPayload{ .code = @intFromEnum(CtlError.not_implemented) }).serialize(&b2);
     try std.testing.expectEqual(@as(u16, 1), (try CtlErrorPayload.deserialize(&b2)).code);
+}
+
+test "CaptureHeader roundtrips and fits the payload budget" {
+    try std.testing.expect(CaptureHeader.SIZE <= MAX_CTL_PAYLOAD);
+    var buf: [CaptureHeader.SIZE]u8 = undefined;
+    const h = CaptureHeader{ .width = 3840, .height = 2160, .stride = 15360, .format = 1 };
+    h.serialize(&buf);
+    const back = try CaptureHeader.deserialize(&buf);
+    try std.testing.expectEqual(@as(u32, 3840), back.width);
+    try std.testing.expectEqual(@as(u32, 2160), back.height);
+    try std.testing.expectEqual(@as(u32, 15360), back.stride);
+    try std.testing.expectEqual(@as(u8, 1), back.format);
+    try std.testing.expectError(error.BufferTooSmall, CaptureHeader.deserialize(buf[0 .. CaptureHeader.SIZE - 1]));
 }
