@@ -204,7 +204,93 @@ const CtlClient = struct {
     fd: posix.fd_t,
     buf: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8,
     len: usize,
+    /// A descriptor received with SCM_RIGHTS on this connection, held
+    /// until a verb consumes it (CAPTURE-DESIGN.md commit 1: the
+    /// receive path can carry a descriptor; no verb consumes one yet,
+    /// capture will). The peer is the trusted session authority
+    /// sending at most one descriptor per request frame; if a new one
+    /// arrives while one is pending, the newer wins and the stale one
+    /// is closed. Closed with the connection on drop and at deinit.
+    pending_fd: ?posix.fd_t,
 };
+
+/// CMSG_* arithmetic for the control receive path, matching FreeBSD's
+/// sys/socket.h macros on amd64 (_ALIGN rounds up to sizeof(long)).
+/// Zig 0.16's std carries the msghdr/cmsghdr types but not the macros,
+/// so the receive path owns this arithmetic, per the raw-posix idiom
+/// established in the 0.16 migration.
+fn cmsgAlign(len: usize) usize {
+    return (len + @sizeOf(usize) - 1) & ~(@as(usize, @sizeOf(usize) - 1));
+}
+
+fn cmsgSpace(len: usize) usize {
+    return cmsgAlign(@sizeOf(std.c.cmsghdr)) + cmsgAlign(len);
+}
+
+fn cmsgLen(len: usize) usize {
+    return cmsgAlign(@sizeOf(std.c.cmsghdr)) + len;
+}
+
+/// Receive bytes on a control connection with recvmsg(2), so a
+/// descriptor passed with SCM_RIGHTS is delivered rather than silently
+/// discarded, which is what the previous read(2) path did to ancillary
+/// data (CAPTURE-DESIGN.md commit 1). Data bytes land after the bytes
+/// already buffered, exactly as read() placed them; returns the byte
+/// count, with 0 for both would-block and EOF, preserving the caller's
+/// framing behaviour unchanged. A received descriptor is stashed on
+/// the connection as pending_fd.
+fn recvCtl(cc: *CtlClient) !usize {
+    var iov = [1]posix.iovec{.{
+        .base = cc.buf[cc.len..].ptr,
+        .len = cc.buf.len - cc.len,
+    }};
+    var cmsg_buf: [cmsgSpace(@sizeOf(posix.fd_t))]u8 align(@alignOf(usize)) = undefined;
+    var msg = posix.msghdr{
+        .name = null,
+        .namelen = 0,
+        .iov = &iov,
+        .iovlen = 1,
+        .control = &cmsg_buf,
+        .controllen = @intCast(cmsg_buf.len),
+        .flags = 0,
+    };
+
+    // CMSG_CLOEXEC at receipt rather than fixed up afterwards: a
+    // received descriptor must never be inheritable across an exec.
+    const rc = posix.system.recvmsg(cc.fd, &msg, posix.MSG.CMSG_CLOEXEC);
+    if (rc < 0) {
+        return switch (posix.errno(rc)) {
+            // Same contract as the read() path: nothing to read is a
+            // zero-byte receive. EINTR (which std.posix.read retried
+            // internally) also maps to 0; the data is still pending,
+            // so the level-triggered poll fires again.
+            .AGAIN, .INTR => 0,
+            else => error.CtlRecvFailed,
+        };
+    }
+
+    // Truncated ancillary data means the peer attached more than the
+    // one descriptor the protocol carries per frame. The peer is a
+    // trusted daemon speaking a tiny protocol, so per the framing
+    // posture below this is a violation: error, and the caller drops
+    // the connection. The kernel closes descriptors it truncated.
+    if (msg.flags & posix.MSG.CTRUNC != 0) return error.CtlControlTruncated;
+
+    if (msg.controllen >= @sizeOf(std.c.cmsghdr)) {
+        const cmsg: *const std.c.cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
+        if (cmsg.level == posix.SOL.SOCKET and
+            cmsg.type == posix.SCM.RIGHTS and
+            cmsg.len == cmsgLen(@sizeOf(posix.fd_t)))
+        {
+            const data = @as([*]const u8, @ptrCast(&cmsg_buf)) + cmsgAlign(@sizeOf(std.c.cmsghdr));
+            const received: *const posix.fd_t = @ptrCast(@alignCast(data));
+            if (cc.pending_fd) |old| closeFd(old);
+            cc.pending_fd = received.*;
+        }
+    }
+
+    return @intCast(rc);
+}
 
 /// Control connections are the session authority plus headroom for a
 /// bench prober; there is no fan-out use case (ADR 0021 Section 5).
@@ -1069,7 +1155,10 @@ pub const Daemon = struct {
 
     pub fn deinit(self: *Daemon) void {
         // ADR 0021: close control connections and the control listener.
-        for (self.ctl_clients.items) |*cc| closeFd(cc.fd);
+        for (self.ctl_clients.items) |*cc| {
+            if (cc.pending_fd) |pfd| closeFd(pfd);
+            closeFd(cc.fd);
+        }
         self.ctl_clients.deinit(self.allocator);
         self.ctl_server.deinit();
 
@@ -2232,6 +2321,7 @@ pub const Daemon = struct {
     }
 
     fn dropCtlClient(self: *Daemon, idx: usize) void {
+        if (self.ctl_clients.items[idx].pending_fd) |pfd| closeFd(pfd);
         closeFd(self.ctl_clients.items[idx].fd);
         _ = self.ctl_clients.swapRemove(idx);
     }
@@ -2265,6 +2355,7 @@ pub const Daemon = struct {
             .fd = fd,
             .buf = undefined,
             .len = 0,
+            .pending_fd = null,
         });
         log.info("control: session authority connected (uid={d})", .{creds.uid});
     }
@@ -2305,10 +2396,7 @@ pub const Daemon = struct {
     fn handleCtlMessage(self: *Daemon, idx: usize) !void {
         const cc = &self.ctl_clients.items[idx];
 
-        const n = posix.read(cc.fd, cc.buf[cc.len..]) catch |err| switch (err) {
-            error.WouldBlock => 0,
-            else => return err,
-        };
+        const n = try recvCtl(cc);
         if (n == 0 and cc.len == 0) return error.ConnectionClosed;
         cc.len += n;
 
