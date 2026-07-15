@@ -6,7 +6,11 @@ const std = @import("std");
 /// All multi-byte values are little-endian.
 
 pub const PROTOCOL_VERSION_MAJOR: u16 = 0;
-pub const PROTOCOL_VERSION_MINOR: u16 = 1;
+// 0.2 (D-12, ADR 0022 section 7): COMMIT grows config_serial and the
+// state setters stage rather than apply. The bump marks the
+// compatibility event; enforcement remains major-only, and the daemon
+// accepts the 0.1 COMMIT size for a deprecation window (see CommitMsg).
+pub const PROTOCOL_VERSION_MINOR: u16 = 2;
 
 /// Default socket path
 pub const DEFAULT_SOCKET_PATH = "/var/run/semadraw.sock";
@@ -90,6 +94,7 @@ pub const MsgType = enum(u16) {
     focus_changed = 0x9003, // Keyboard focus changed (D-7, ADR 0011 D5); sent to the gaining client (surface_id = focused surface) and the losing/cleared client (surface_id = 0)
     session_locked = 0x9004, // Compositor entered session-lock mode (D-10, ADR 0012); sent to all clients, WM treats as a suspension signal
     session_unlocked = 0x9005, // Compositor left session-lock mode (D-10, ADR 0012); sent to all clients
+    surface_configure = 0x9006, // Compositor assigns surface configuration: logical size, scale, config_serial (D-12, ADR 0022 section 5); client acknowledges by echoing the serial on COMMIT; at most one outstanding per surface, a newer configure supersedes
     gesture_event = 0x9030, // Gesture event (interval-shaped, see ADR 0017-rev2)
     clipboard_data = 0x9050, // Clipboard data
 };
@@ -259,24 +264,92 @@ pub const AttachBufferInlineMsg = extern struct {
     }
 };
 
-/// Commit request - present the attached buffer
+/// Commit request - present the attached buffer.
+///
+/// D-12 (ADR 0022 section 7): carries `config_serial`, the identity of
+/// the compositor-provided configuration this frame was drawn for. The
+/// serial is an acknowledgement token, not a transaction; the
+/// transaction is the pending/current promotion in the registry. A
+/// client that has never been configured commits serial 0 (ADR 0022
+/// section 5, creation rule), so the first frame is not a special case.
+///
+/// Geometry fields are deliberately NOT here: a client tells the
+/// compositor which configuration it drew for, never what size it is
+/// (invariant I1).
 pub const CommitMsg = extern struct {
     surface_id: SurfaceId,
-    flags: u32, // Reserved
+    flags: u32, // Reserved (a serial is not a flag; ADR 0022 section 7)
+    config_serial: u64,
 
-    pub const SIZE: usize = 8;
+    pub const SIZE: usize = 16;
+    /// The protocol 0.1 wire size. Accepted by deserialize for a
+    /// deprecation window (compat policy: documented for two minor
+    /// versions): a 0.1 client's commit reads as config_serial 0,
+    /// which under ADR 0022 section 5 is exactly the
+    /// never-acknowledging client, presented at its current
+    /// configuration, self-consistent and merely stale.
+    pub const SIZE_V01: usize = 8;
 
     pub fn serialize(self: CommitMsg, buf: []u8) void {
         std.debug.assert(buf.len >= SIZE);
         std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
         std.mem.writeInt(u32, buf[4..8], self.flags, .little);
+        std.mem.writeInt(u64, buf[8..16], self.config_serial, .little);
     }
 
     pub fn deserialize(buf: []const u8) !CommitMsg {
+        if (buf.len >= SIZE) {
+            return .{
+                .surface_id = std.mem.readInt(u32, buf[0..4], .little),
+                .flags = std.mem.readInt(u32, buf[4..8], .little),
+                .config_serial = std.mem.readInt(u64, buf[8..16], .little),
+            };
+        }
+        if (buf.len >= SIZE_V01) {
+            return .{
+                .surface_id = std.mem.readInt(u32, buf[0..4], .little),
+                .flags = std.mem.readInt(u32, buf[4..8], .little),
+                .config_serial = 0,
+            };
+        }
+        return error.BufferTooSmall;
+    }
+};
+
+/// Surface configuration event, daemon to client (D-12, ADR 0022
+/// sections 5 and 7). The compositor is the single authority for
+/// surface configuration (I1); this event assigns one, identified by
+/// `config_serial` (per surface, monotonic). The client produces
+/// commands for it and acknowledges by echoing the serial on COMMIT.
+/// At most one configure is outstanding per surface: a newer configure
+/// supersedes the pending one, and an acknowledgement of a superseded
+/// serial acknowledges nothing.
+pub const SurfaceConfigureMsg = extern struct {
+    surface_id: SurfaceId,
+    logical_width: f32,
+    logical_height: f32,
+    scale: f32,
+    config_serial: u64,
+
+    pub const SIZE: usize = 24;
+
+    pub fn serialize(self: SurfaceConfigureMsg, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+        @memcpy(buf[4..8], std.mem.asBytes(&self.logical_width));
+        @memcpy(buf[8..12], std.mem.asBytes(&self.logical_height));
+        @memcpy(buf[12..16], std.mem.asBytes(&self.scale));
+        std.mem.writeInt(u64, buf[16..24], self.config_serial, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !SurfaceConfigureMsg {
         if (buf.len < SIZE) return error.BufferTooSmall;
         return .{
             .surface_id = std.mem.readInt(u32, buf[0..4], .little),
-            .flags = std.mem.readInt(u32, buf[4..8], .little),
+            .logical_width = @bitCast(std.mem.readInt(u32, buf[4..8], .little)),
+            .logical_height = @bitCast(std.mem.readInt(u32, buf[8..12], .little)),
+            .scale = @bitCast(std.mem.readInt(u32, buf[12..16], .little)),
+            .config_serial = std.mem.readInt(u64, buf[16..24], .little),
         };
     }
 };
@@ -1403,6 +1476,46 @@ test "HelloReplyMsg serialize/deserialize roundtrip" {
     try std.testing.expectEqual(msg.server_flags, decoded.server_flags);
 }
 
+test "CommitMsg roundtrips at 0.2 size and reads 0.1 size as serial 0" {
+    // D-12 (ADR 0022 section 7): SIZE grew 8 to 16 with config_serial.
+    const msg = CommitMsg{ .surface_id = 7, .flags = 0, .config_serial = 0x0102030405060708 };
+    var buf: [CommitMsg.SIZE]u8 = undefined;
+    msg.serialize(&buf);
+    const decoded = try CommitMsg.deserialize(&buf);
+    try std.testing.expectEqual(msg.surface_id, decoded.surface_id);
+    try std.testing.expectEqual(msg.flags, decoded.flags);
+    try std.testing.expectEqual(msg.config_serial, decoded.config_serial);
+
+    // The 0.1 wire size is accepted for the deprecation window and
+    // reads as serial 0: the never-acknowledging client of ADR 0022
+    // section 5, not an error.
+    const old = try CommitMsg.deserialize(buf[0..CommitMsg.SIZE_V01]);
+    try std.testing.expectEqual(msg.surface_id, old.surface_id);
+    try std.testing.expectEqual(@as(u64, 0), old.config_serial);
+
+    // Below the 0.1 size remains malformed.
+    try std.testing.expectError(error.BufferTooSmall, CommitMsg.deserialize(buf[0 .. CommitMsg.SIZE_V01 - 1]));
+}
+
+test "SurfaceConfigureMsg serialize/deserialize roundtrip" {
+    const msg = SurfaceConfigureMsg{
+        .surface_id = 3,
+        .logical_width = 132.5,
+        .logical_height = 43.25,
+        .scale = 2.0,
+        .config_serial = 9,
+    };
+    var buf: [SurfaceConfigureMsg.SIZE]u8 = undefined;
+    msg.serialize(&buf);
+    const decoded = try SurfaceConfigureMsg.deserialize(&buf);
+    try std.testing.expectEqual(msg.surface_id, decoded.surface_id);
+    try std.testing.expectEqual(msg.logical_width, decoded.logical_width);
+    try std.testing.expectEqual(msg.logical_height, decoded.logical_height);
+    try std.testing.expectEqual(msg.scale, decoded.scale);
+    try std.testing.expectEqual(msg.config_serial, decoded.config_serial);
+    try std.testing.expectError(error.BufferTooSmall, SurfaceConfigureMsg.deserialize(buf[0 .. SurfaceConfigureMsg.SIZE - 1]));
+}
+
 test "KeyPressMsg serialize/deserialize roundtrip" {
     const msg = KeyPressMsg{
         .surface_id = 1,
@@ -1495,6 +1608,7 @@ test "message type values match protocol spec" {
 
     try std.testing.expectEqual(@as(u16, 0x9001), @intFromEnum(MsgType.key_press));
     try std.testing.expectEqual(@as(u16, 0x9002), @intFromEnum(MsgType.mouse_event));
+    try std.testing.expectEqual(@as(u16, 0x9006), @intFromEnum(MsgType.surface_configure));
     try std.testing.expectEqual(@as(u16, 0x9030), @intFromEnum(MsgType.gesture_event));
 }
 

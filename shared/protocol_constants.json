@@ -180,7 +180,7 @@
     "semadraw_ipc": {
         "version": {
             "major": 0,
-            "minor": 1
+            "minor": 2
         },
         "header_size": 8,
         "alignment": 4,
@@ -326,6 +326,10 @@
                 "SESSION_UNLOCKED": {
                     "value": "0x9005",
                     "description": "Compositor left session-lock mode (D-10, ADR 0012); sent to all clients"
+                },
+                "SURFACE_CONFIGURE": {
+                    "value": "0x9006",
+                    "description": "Compositor assigns surface configuration: logical size, scale, config_serial (D-12, ADR 0022 section 5); client acknowledges by echoing the serial on COMMIT; at most one outstanding per surface, a newer configure supersedes"
                 },
                 "GESTURE_EVENT": {
                     "value": "0x9030",

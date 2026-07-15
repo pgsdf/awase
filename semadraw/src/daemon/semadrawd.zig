@@ -1825,7 +1825,10 @@ pub const Daemon = struct {
     }
 
     fn handleRemoteCommit(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
-        if (payload == null or payload.?.len < protocol.CommitMsg.SIZE) {
+        // D-12: SIZE_V01 is the floor, not SIZE. The 0.1 commit size is
+        // accepted for the deprecation window and deserializes as
+        // config_serial 0 (see protocol.CommitMsg).
+        if (payload == null or payload.?.len < protocol.CommitMsg.SIZE_V01) {
             try self.sendRemoteError(session, .protocol_error, 0);
             return;
         }
@@ -2760,7 +2763,10 @@ pub const Daemon = struct {
     }
 
     fn handleCommit(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
-        if (payload == null or payload.?.len < protocol.CommitMsg.SIZE) {
+        // D-12: SIZE_V01 is the floor, not SIZE. The 0.1 commit size is
+        // accepted for the deprecation window and deserializes as
+        // config_serial 0 (see protocol.CommitMsg).
+        if (payload == null or payload.?.len < protocol.CommitMsg.SIZE_V01) {
             try session.sendError(.protocol_error, 0);
             return;
         }

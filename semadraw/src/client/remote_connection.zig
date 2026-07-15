@@ -214,7 +214,9 @@ pub const RemoteConnection = struct {
     /// Commit a surface and wait for frame complete
     pub fn commit(self: *Self, surface_id: protocol.SurfaceId) !u64 {
         var msg_buf: [protocol.CommitMsg.SIZE]u8 = undefined;
-        const msg = protocol.CommitMsg{ .surface_id = surface_id, .flags = 0 };
+        // D-12: serial 0, the never-configured acknowledgement (ADR 0022
+        // section 5); remote configure plumbing arrives with stage 4.
+        const msg = protocol.CommitMsg{ .surface_id = surface_id, .flags = 0, .config_serial = 0 };
         msg.serialize(&msg_buf);
         try self.sendMessage(.commit, &msg_buf);
 

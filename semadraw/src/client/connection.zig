@@ -254,6 +254,12 @@ pub const Connection = struct {
         const msg = protocol.CommitMsg{
             .surface_id = surface_id,
             .flags = 0,
+            // D-12 (ADR 0022 section 5): serial 0 is the
+            // never-configured acknowledgement, and no configure has
+            // been received on this connection. Serial tracking for
+            // received surface_configure events arrives with the
+            // client-side configure plumbing (D-12 stage 4).
+            .config_serial = 0,
         };
         var payload: [protocol.CommitMsg.SIZE]u8 = undefined;
         msg.serialize(&payload);
