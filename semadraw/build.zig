@@ -1165,6 +1165,23 @@ pub fn build(b: *std.Build) void {
     });
     const run_control_tests = b.addRunArtifact(control_tests);
 
+    // CAPTURE-DESIGN.md commit 4: semadraw-ctl conversion tests. The
+    // stride-honoring BGRX-to-RGB conversion is where capture bugs
+    // live (shear, byte order); PPM-first exists to make them
+    // visible, and these make them visible before the bench does.
+    const ctl_tool_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/semadraw_ctl.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "control", .module = ipc_control_mod },
+                .{ .name = "compat", .module = compat_mod },
+            },
+        }),
+    });
+    const run_ctl_tool_tests = b.addRunArtifact(ctl_tool_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_simd_tests.step);
@@ -1174,6 +1191,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sdcs_decode_tests.step);
     test_step.dependOn(&run_backend_tests.step);
     test_step.dependOn(&run_control_tests.step);
+    test_step.dependOn(&run_ctl_tool_tests.step);
     // Note: bsdinput tests are in src/backend/bsdinput.zig but not included here
     // due to circular module dependencies. Run manually on FreeBSD if needed:
     // zig test src/backend/bsdinput.zig -lc -linput -ludev

@@ -332,60 +332,6 @@ pub const ClientSocket = struct {
         return .partial;
     }
 
-    /// Send a message with a file descriptor (SCM_RIGHTS)
-    pub fn sendMessageWithFd(self: *ClientSocket, msg_type: protocol.MsgType, payload: []const u8, fd_to_send: posix.fd_t) !void {
-        const header = protocol.MsgHeader{
-            .msg_type = msg_type,
-            .flags = 0,
-            .length = @intCast(payload.len),
-        };
-
-        var hdr_buf: [protocol.MsgHeader.SIZE]u8 = undefined;
-        header.serialize(&hdr_buf);
-
-        // Combine header and payload for sendmsg
-        var iov = [_]posix.iovec_const{
-            .{ .base = &hdr_buf, .len = hdr_buf.len },
-            .{ .base = payload.ptr, .len = payload.len },
-        };
-
-        // Set up control message for SCM_RIGHTS
-        var cmsg_buf: [posix.CMSG_SPACE(@sizeOf(posix.fd_t))]u8 align(@alignOf(posix.cmsghdr)) = undefined;
-        const cmsg: *posix.cmsghdr = @ptrCast(&cmsg_buf);
-        cmsg.level = posix.SOL.SOCKET;
-        cmsg.type = posix.SCM.RIGHTS;
-        cmsg.len = posix.CMSG_LEN(@sizeOf(posix.fd_t));
-
-        const fd_ptr: *posix.fd_t = @ptrCast(@alignCast(posix.CMSG_DATA(cmsg)));
-        fd_ptr.* = fd_to_send;
-
-        var msg = posix.msghdr_const{
-            .name = null,
-            .namelen = 0,
-            .iov = &iov,
-            .iovlen = iov.len,
-            .control = &cmsg_buf,
-            .controllen = cmsg_buf.len,
-            .flags = 0,
-        };
-
-        _ = try posix.sendmsg(self.fd, &msg, 0);
-    }
-
-    /// Receive a message that may include a file descriptor
-    pub fn recvMessageWithFd(self: *ClientSocket, allocator: std.mem.Allocator) !?MessageWithFd {
-        // For simplicity, we'll handle this when we have a complete message
-        const maybe_msg = try self.readMessage(allocator);
-        if (maybe_msg) |msg| {
-            // TODO: Implement fd receiving via recvmsg when needed
-            return .{
-                .message = msg,
-                .fd = null,
-            };
-        }
-        return null;
-    }
-
     pub fn close(self: *ClientSocket) void {
         // Free any pending large buffer
         if (self.large_buf) |buf| {
@@ -413,16 +359,6 @@ pub const Message = struct {
     }
 };
 
-/// Message with optional file descriptor
-pub const MessageWithFd = struct {
-    message: Message,
-    fd: ?posix.fd_t,
-
-    pub fn deinit(self: *MessageWithFd, allocator: std.mem.Allocator) void {
-        self.message.deinit(allocator);
-        if (self.fd) |f| closeFd(f);
-    }
-};
 
 // ============================================================================
 // Tests

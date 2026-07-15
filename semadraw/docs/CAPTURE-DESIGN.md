@@ -1,8 +1,10 @@
 # Screen capture: design
 
-Status: DESIGN AGREED (operator, 2026-07-13). Implementation in
-progress: commit 1 (recvmsg transport) and commit 2 (FrameSnapshot
-API) landed and bench-verified; commits 3 through 5 remain.
+Status: DESIGN AGREED (operator, 2026-07-13). Implemented: commits
+1 through 4 (recvmsg transport, FrameSnapshot API, capture request
+and reply, semadraw-ctl capture writing PPM), with the ADR 0021
+Section 8 amendment in place. Commit 5 (PNG) remains, later and
+optionally, as a change to one function in semadraw-ctl.
 
 Recorded because the architectural questions are settled and the
 implementation is not, and the two should not be conflated. The next
@@ -38,8 +40,9 @@ privileged compositor operations, and reading the screen is at least as
 sensitive as blanking it.
 
 This is an implementation of ADR 0021's decision rather than a new
-architectural direction, so it needs no new ADR. ADR 0021 should mention
-CAPTURE as another operation carried over the control socket.
+architectural direction, so it needs no new ADR. ADR 0021 Section 8 carries the amendment
+naming CAPTURE as another operation on the control socket
+(2026-07-15, with commit 3).
 
 Reusing an IPC mechanism (the shared-memory primitives in `ipc/shm.zig`,
 built for the client protocol) is not the same as expanding an
