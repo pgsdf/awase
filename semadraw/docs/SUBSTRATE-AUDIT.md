@@ -51,6 +51,10 @@ purpose.
 Status key: OPEN (recorded, no ADR), ADR (design in progress or
 ratified), CLOSED (implemented and verified).
 
+Note: SA-3 was never assigned. The identifier was skipped by accident
+when SA-4 was recorded (b3b24d2, 2026-07-12); no finding was withdrawn.
+The gap is preserved because identifiers, once referenced, stay stable.
+
 ---
 
 ## SA-1: surface state mutation has no protocol transaction semantics
