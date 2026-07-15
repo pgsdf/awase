@@ -50,6 +50,58 @@ pub const DisplaySize = struct {
     height: u32,
 };
 
+/// CAPTURE-DESIGN.md commit 2: one coherent view of the composited
+/// frame, produced by the optional `frameSnapshot` vtable operation.
+///
+/// Deliberately ONE aggregate rather than getPixels() plus geometry
+/// getters. Separate getters invite a tear: read width, the display
+/// resizes, read stride, and the two now describe different frames,
+/// which produces a sheared or out-of-bounds capture. One struct
+/// makes the pairing true by construction, and the abstraction being
+/// exposed IS a snapshot.
+///
+/// Atomicity contract: the snapshot represents the same "current"
+/// surface state the compositor would read if it composited at that
+/// point in the event loop. Today that is guaranteed by two things
+/// together: the daemon's single-threaded event-loop topology (the
+/// snapshot is taken from a handler that runs in the same loop as
+/// compositing, so no composite is concurrently mutating the buffer)
+/// and the ADR 0022 pending/current surface state model (a commit
+/// promotes state atomically, so "current" is never half-applied).
+/// If the compositor architecture ever changes, multi-threaded or
+/// asynchronous composition, the frameSnapshot implementation must
+/// either preserve this invariant or explicitly weaken this contract;
+/// it must not be left to drift into falsehood silently.
+///
+/// Lifetime contract: `pixels` is a BORROWED view of backend-owned
+/// memory, not a copy. It remains valid until the backend processes
+/// the next mutating operation (render, clearRegion, resize) or is
+/// destroyed. Callers must not retain it beyond the current
+/// event-loop turn; a caller that needs the frame afterwards copies
+/// it out while the borrow holds. This is what makes the capture
+/// path's copy-into-shared-memory step mandatory rather than an
+/// implementation choice.
+///
+/// `stride` is carried explicitly because it may exceed width * 4:
+/// a padded surface captured as if it were tight produces a sheared
+/// image, the classic screenshot bug. The backend knows its stride;
+/// nothing else can infer it.
+///
+/// `format` names the byte order of `pixels`. Backends whose fourth
+/// byte is padding rather than coverage (drawfs: XRGB8888, laid out
+/// B,G,R,X in memory) report `.bgra8` with the alpha byte carrying
+/// no meaning; consumers converting to RGB drop the fourth byte
+/// either way. A distinct bgrx member would ripple through every
+/// exhaustive PixelFormat switch for no consumer benefit today; if
+/// a consumer ever needs the distinction, that is its own change.
+pub const FrameSnapshot = struct {
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: PixelFormat,
+    pixels: []const u8,
+};
+
 /// Render request sent to backend
 pub const RenderRequest = struct {
     /// Surface ID being rendered
@@ -224,6 +276,16 @@ pub const Backend = struct {
         flush: ?*const fn (ctx: *anyopaque) void = null,
         /// Get pointer to framebuffer pixels (for composition/output)
         getPixels: *const fn (ctx: *anyopaque) ?[]u8,
+
+        /// CAPTURE-DESIGN.md commit 2: produce one coherent
+        /// FrameSnapshot of the composited frame, or null if the
+        /// backend cannot produce one right now (no surface mapped,
+        /// zero-sized framebuffer). Optional, following the pattern
+        /// of clearRegion/flush/getKeyEvents: a backend that cannot
+        /// produce a coherent snapshot does not implement this, and
+        /// saying so is a truthful answer rather than a guessed one.
+        /// See FrameSnapshot for the atomicity and lifetime contract.
+        frameSnapshot: ?*const fn (ctx: *anyopaque) ?FrameSnapshot = null,
         /// Resize framebuffer
         resize: *const fn (ctx: *anyopaque, width: u32, height: u32) anyerror!void,
         /// Process pending events (keyboard, window, etc.)
@@ -332,6 +394,18 @@ pub const Backend = struct {
 
     pub fn getPixels(self: Backend) ?[]u8 {
         return self.vtable.getPixels(self.ptr);
+    }
+
+    /// One coherent view of the composited frame, or null when the
+    /// backend does not implement snapshots or cannot produce one
+    /// right now. See FrameSnapshot for the atomicity and lifetime
+    /// contract; in particular the returned pixels are borrowed and
+    /// must not be retained beyond the current event-loop turn.
+    pub fn frameSnapshot(self: Backend) ?FrameSnapshot {
+        if (self.vtable.frameSnapshot) |func| {
+            return func(self.ptr);
+        }
+        return null;
     }
 
     pub fn resize(self: Backend, width: u32, height: u32) !void {
@@ -533,4 +607,81 @@ test "RenderResult failure" {
     const result = RenderResult.failure(2, "test error");
     try std.testing.expectEqual(@as(u32, 2), result.surface_id);
     try std.testing.expect(result.error_msg != null);
+}
+
+// CAPTURE-DESIGN.md commit 2: the frameSnapshot wrapper contract.
+// A backend that does not implement the optional op answers null (a
+// truthful "cannot be captured" rather than a guessed one), and an
+// implementing backend's snapshot passes through with metadata and
+// pixels paired in one aggregate.
+const snapshot_test = struct {
+    var probe: u8 = 0;
+    const pixels = [_]u8{ 1, 2, 3, 4 } ** 4; // 2x2 at stride 8
+
+    fn caps(_: *anyopaque) Capabilities {
+        return .{
+            .name = "stub",
+            .max_width = 16,
+            .max_height = 16,
+            .supports_aa = false,
+            .hardware_accelerated = false,
+            .can_present = false,
+        };
+    }
+    fn initFb(_: *anyopaque, _: FramebufferConfig) anyerror!void {}
+    fn render(_: *anyopaque, request: RenderRequest) anyerror!RenderResult {
+        return RenderResult.success(request.surface_id, 0, 0);
+    }
+    fn getPx(_: *anyopaque) ?[]u8 {
+        return null;
+    }
+    fn resize(_: *anyopaque, _: u32, _: u32) anyerror!void {}
+    fn poll(_: *anyopaque) bool {
+        return true;
+    }
+    fn deinit(_: *anyopaque) void {}
+    fn snap(_: *anyopaque) ?FrameSnapshot {
+        return .{
+            .width = 2,
+            .height = 2,
+            .stride = 8,
+            .format = .bgra8,
+            .pixels = &pixels,
+        };
+    }
+
+    const without = Backend.VTable{
+        .getCapabilities = caps,
+        .initFramebuffer = initFb,
+        .render = render,
+        .getPixels = getPx,
+        .resize = resize,
+        .pollEvents = poll,
+        .deinit = deinit,
+    };
+    const with = Backend.VTable{
+        .getCapabilities = caps,
+        .initFramebuffer = initFb,
+        .render = render,
+        .getPixels = getPx,
+        .frameSnapshot = snap,
+        .resize = resize,
+        .pollEvents = poll,
+        .deinit = deinit,
+    };
+};
+
+test "frameSnapshot: backend without the optional op answers null" {
+    const b = Backend{ .ptr = &snapshot_test.probe, .vtable = &snapshot_test.without };
+    try std.testing.expect(b.frameSnapshot() == null);
+}
+
+test "frameSnapshot: implementing backend's snapshot passes through paired" {
+    const b = Backend{ .ptr = &snapshot_test.probe, .vtable = &snapshot_test.with };
+    const s = b.frameSnapshot() orelse return error.TestExpectedSnapshot;
+    try std.testing.expectEqual(@as(u32, 2), s.width);
+    try std.testing.expectEqual(@as(u32, 2), s.height);
+    try std.testing.expectEqual(@as(u32, 8), s.stride);
+    try std.testing.expectEqual(PixelFormat.bgra8, s.format);
+    try std.testing.expectEqualSlices(u8, &snapshot_test.pixels, s.pixels);
 }

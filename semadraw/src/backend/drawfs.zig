@@ -1527,6 +1527,28 @@ pub const DrawfsBackend = struct {
         return self.surface_map;
     }
 
+    /// CAPTURE-DESIGN.md commit 2. The snapshot is exactly the buffer
+    /// blitToEfifb sends to the display: semadrawd composites into
+    /// surface_map, so capture serializes a buffer the daemon already
+    /// holds rather than introducing a readback path. Format is the
+    /// drawfs surface format, XRGB8888 (B,G,R,X in memory), reported
+    /// as .bgra8 with the fourth byte carrying no meaning; see
+    /// FrameSnapshot. The returned pixels are a borrow of surface_map
+    /// under the FrameSnapshot lifetime contract: valid until the
+    /// next render/clearRegion/resize or deinit, not to be retained.
+    fn frameSnapshotImpl(ctx: *anyopaque) ?backend.FrameSnapshot {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        const map = self.surface_map orelse return null;
+        if (self.width == 0 or self.height == 0) return null;
+        return .{
+            .width = self.width,
+            .height = self.height,
+            .stride = self.surface_stride,
+            .format = .bgra8,
+            .pixels = map,
+        };
+    }
+
     fn resizeImpl(ctx: *anyopaque, width: u32, height: u32) anyerror!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
@@ -1734,6 +1756,7 @@ pub const DrawfsBackend = struct {
         .clearRegion = clearRegionImpl,
         .flush = flushImpl,
         .getPixels = getPixelsImpl,
+        .frameSnapshot = frameSnapshotImpl,
         .resize = resizeImpl,
         .pollEvents = pollEventsImpl,
         .getKeyEvents = getKeyEventsImpl,

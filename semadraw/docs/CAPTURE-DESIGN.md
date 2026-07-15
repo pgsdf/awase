@@ -1,6 +1,8 @@
 # Screen capture: design
 
-Status: DESIGN AGREED (operator, 2026-07-13). Not implemented.
+Status: DESIGN AGREED (operator, 2026-07-13). Implementation in
+progress: commit 1 (recvmsg transport) and commit 2 (FrameSnapshot
+API) landed and bench-verified; commits 3 through 5 remain.
 
 Recorded because the architectural questions are settled and the
 implementation is not, and the two should not be conflated. The next
@@ -144,10 +146,22 @@ lands independently so that a regression has an unambiguous owner.
 
   5. **PNG**, later and optionally.
 
-## What is NOT yet decided
+## Atomicity: decided (operator, 2026-07-15, with commit 2)
 
-  - Whether the capture should be atomic with respect to compositing (a
-    frame captured mid-composite could tear). The snapshot is taken from
-    the ctl handler, which runs in the same loop as compositing, so this
-    is probably safe today. It is not guaranteed by anything, and a
-    capture that tears would be a real defect.
+The snapshot represents the same "current" surface state the
+compositor would read if it composited at that point in the event
+loop. The guarantee rests on two things together: the daemon's
+single-threaded event-loop topology (the snapshot is taken from the
+ctl handler, which runs in the same loop as compositing, so no
+composite mutates the buffer concurrently) and the ADR 0022
+pending/current surface state model (a commit promotes state
+atomically, so "current" is never half-applied). If the compositor
+architecture ever changes, multi-threaded or asynchronous
+composition, the frameSnapshot implementation must preserve this
+invariant or explicitly weaken the contract; it must not drift into
+falsehood silently. The normative statement lives on FrameSnapshot in
+backend.zig, alongside the lifetime contract: pixels is a borrowed
+view, valid until the backend's next mutating operation, never
+retained beyond the current loop turn, which is what makes the
+capture path's copy into shared memory mandatory rather than an
+implementation choice.

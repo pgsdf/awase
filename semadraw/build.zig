@@ -1131,6 +1131,26 @@ pub fn build(b: *std.Build) void {
     });
     const run_sdcs_decode_tests = b.addRunArtifact(sdcs_decode_tests);
 
+    // CAPTURE-DESIGN.md commit 2: backend interface unit tests
+    // (the FrameSnapshot wrapper contract, plus the pre-existing
+    // RenderResult tests, which were never wired into a test root
+    // before and run for the first time here). backend.zig's
+    // backend-specific imports (software, drawfs, x11, ...) live
+    // inside createBackend and are lazily analyzed, so the test
+    // module needs only the shared input module, which the vtable's
+    // getInputfsEvents signature references. Same two-modules-over-
+    // one-file pattern as sdcs.zig (module root and test root in
+    // separate compilations).
+    const backend_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/backend/backend.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "input", .module = shared_input_mod }},
+        }),
+    });
+    const run_backend_tests = b.addRunArtifact(backend_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_simd_tests.step);
@@ -1138,6 +1158,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_ipc_protocol_tests.step);
     test_step.dependOn(&run_client_connection_tests.step);
     test_step.dependOn(&run_sdcs_decode_tests.step);
+    test_step.dependOn(&run_backend_tests.step);
     // Note: bsdinput tests are in src/backend/bsdinput.zig but not included here
     // due to circular module dependencies. Run manually on FreeBSD if needed:
     // zig test src/backend/bsdinput.zig -lc -linput -ludev
