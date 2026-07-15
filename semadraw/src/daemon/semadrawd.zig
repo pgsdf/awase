@@ -1840,7 +1840,7 @@ pub const Daemon = struct {
             return;
         }
 
-        const frame_number = self.surfaces.commit(msg.surface_id) catch {
+        const frame_number = self.surfaces.commit(msg.surface_id, msg.config_serial) catch {
             try self.sendRemoteError(session, .invalid_surface, msg.surface_id);
             return;
         };
@@ -2883,7 +2883,7 @@ pub const Daemon = struct {
         }
 
         // Mark surface as committed in registry
-        const frame_number = self.surfaces.commit(msg.surface_id) catch {
+        const frame_number = self.surfaces.commit(msg.surface_id, msg.config_serial) catch {
             try session.sendError(.invalid_surface, msg.surface_id);
             return;
         };

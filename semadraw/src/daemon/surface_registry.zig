@@ -620,8 +620,40 @@ pub const SurfaceRegistry = struct {
     /// boundary; audit SA-2). Its daemon-internal paths write current
     /// directly, because cursor position is compositor-owned pointer
     /// state with no client frame that must be atomic with it.
-    pub fn commit(self: *SurfaceRegistry, id: protocol.SurfaceId) !u64 {
+    /// D-12 stage 3 (ADR 0022 section 5): `config_serial` names the
+    /// configuration the client drew this frame for, and one new
+    /// semantic joins the stage 2 behaviour: a commit echoing the
+    /// PENDING configure's serial acknowledges it, and the configure's
+    /// geometry enters the promotion, atomically with the client
+    /// state and the frame (I3: the frame is presented under the
+    /// configuration it was drawn for). Everything else acknowledges
+    /// nothing and promotes under the retained configuration exactly
+    /// as stage 2 behaves:
+    ///   - serial 0 forever: the never-acknowledging (or pre-0.2)
+    ///     client, presented at its configuration indefinitely;
+    ///   - the previous serial mid-draw: the in-flight frame,
+    ///     presented at the geometry it was drawn for, the
+    ///     acknowledgement arriving on a later commit;
+    ///   - a superseded serial: acknowledges nothing; the compositor
+    ///     continues to await the current pending serial.
+    /// The registry does not know or care who assigned the configure;
+    /// the acknowledgement semantics are front-end independent.
+    pub fn commit(self: *SurfaceRegistry, id: protocol.SurfaceId, config_serial: u64) !u64 {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
+
+        // Acknowledgement, before promotion so the acknowledged
+        // geometry rides the same atomic assignment as the client
+        // state. Only the exact pending serial acknowledges; the
+        // steady-state echo of an already-acknowledged serial and any
+        // superseded serial both fall through to plain promotion.
+        if (surface.pending_configure) |cfg| {
+            if (config_serial == cfg.serial) {
+                surface.pending.logical_width = cfg.logical_width;
+                surface.pending.logical_height = cfg.logical_height;
+                surface.acked_serial = cfg.serial;
+                surface.pending_configure = null;
+            }
+        }
 
         // Composition order depends on visibility and z-order. Dirty it
         // only if promotion actually changes one of them: this is the
@@ -799,9 +831,9 @@ test "SurfaceRegistry z-order sorting" {
     try registry.setVisible(s3.id, true);
 
     // Staged state reaches composition only through commit.
-    _ = try registry.commit(s1.id);
-    _ = try registry.commit(s2.id);
-    _ = try registry.commit(s3.id);
+    _ = try registry.commit(s1.id, 0);
+    _ = try registry.commit(s2.id, 0);
+    _ = try registry.commit(s3.id, 0);
 
     const order = try registry.getCompositionOrder();
     try std.testing.expectEqual(@as(usize, 3), order.len);
@@ -919,7 +951,7 @@ test "SurfaceRegistry: commit promotes pending to current" {
     try std.testing.expectEqual(false, surface.current.visible);
     try std.testing.expectEqual(@as(usize, 0), (try registry.getCompositionOrder()).len);
 
-    const frame = try registry.commit(id);
+    const frame = try registry.commit(id, 0);
     try std.testing.expectEqual(@as(u64, 1), frame);
 
     // Promoted: every staged field is now current, together.
@@ -936,7 +968,7 @@ test "SurfaceRegistry: commit promotes pending to current" {
     // current and pending are coherent after promotion: a commit with
     // nothing staged since is a no-op on state.
     try std.testing.expectEqual(surface.pending.position_x, surface.current.position_x);
-    _ = try registry.commit(id);
+    _ = try registry.commit(id, 0);
     try std.testing.expectEqual(@as(f32, 100), surface.current.position_x);
 }
 
@@ -962,7 +994,7 @@ test "SurfaceRegistry: mid-draw mutation is not visible until commit (I3)" {
 
     // Frame 1: the client draws and commits at position (0, 0).
     try registry.setVisible(id, true);
-    _ = try registry.commit(id);
+    _ = try registry.commit(id, 0);
     try std.testing.expectEqual(@as(f32, 0), surface.current.position_x);
 
     // The client begins drawing frame 2 for the CURRENT position.
@@ -977,7 +1009,7 @@ test "SurfaceRegistry: mid-draw mutation is not visible until commit (I3)" {
     try std.testing.expectEqual(@as(f32, 0), surface.current.position_y);
 
     // The client now commits a frame drawn for the new position.
-    _ = try registry.commit(id);
+    _ = try registry.commit(id, 0);
     try std.testing.expectEqual(@as(f32, 500), surface.current.position_x);
     try std.testing.expectEqual(@as(f32, 500), surface.current.position_y);
 }
@@ -1008,4 +1040,93 @@ test "assignConfigure allocates monotonic serials and records pending" {
     try std.testing.expectEqual(b, surface.pending_configure.?);
 
     try std.testing.expectError(error.SurfaceNotFound, registry.assignConfigure(9999, 10, 10));
+}
+
+// D-12 stage 3: the four acknowledgement cases, operator-ratified.
+
+test "commit echoing the pending serial acknowledges and promotes geometry atomically" {
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+    const cfg = try registry.assignConfigure(surface.id, 132, 43);
+
+    // Frame drawn for the new configuration, alongside a staged
+    // client-state change: geometry and client state promote in the
+    // same assignment (I3).
+    try registry.setPosition(surface.id, 10, 20);
+    _ = try registry.commit(surface.id, cfg.serial);
+
+    try std.testing.expectEqual(@as(f32, 132), surface.current.logical_width);
+    try std.testing.expectEqual(@as(f32, 43), surface.current.logical_height);
+    try std.testing.expectEqual(@as(f32, 10), surface.current.position_x);
+    try std.testing.expectEqual(cfg.serial, surface.acked_serial);
+    try std.testing.expectEqual(@as(?Configure, null), surface.pending_configure);
+}
+
+test "commit with the old serial mid-draw promotes under retained geometry" {
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+    const cfg = try registry.assignConfigure(surface.id, 132, 43);
+
+    // The in-flight frame was drawn for the creation configuration
+    // (serial 0). It presents at the geometry it was drawn for; the
+    // configure stays pending, awaiting a later acknowledgement.
+    _ = try registry.commit(surface.id, 0);
+    try std.testing.expectEqual(@as(f32, 800), surface.current.logical_width);
+    try std.testing.expectEqual(@as(u64, 0), surface.acked_serial);
+    try std.testing.expectEqual(cfg, surface.pending_configure.?);
+
+    // The next frame acknowledges.
+    _ = try registry.commit(surface.id, cfg.serial);
+    try std.testing.expectEqual(@as(f32, 132), surface.current.logical_width);
+    try std.testing.expectEqual(cfg.serial, surface.acked_serial);
+}
+
+test "commit naming a superseded serial acknowledges nothing" {
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+    const a = try registry.assignConfigure(surface.id, 132, 43);
+    const b = try registry.assignConfigure(surface.id, 200, 50);
+
+    // Acknowledging the superseded serial does nothing: geometry
+    // retained, acked unchanged, the compositor continues to await b.
+    _ = try registry.commit(surface.id, a.serial);
+    try std.testing.expectEqual(@as(f32, 800), surface.current.logical_width);
+    try std.testing.expectEqual(@as(u64, 0), surface.acked_serial);
+    try std.testing.expectEqual(b, surface.pending_configure.?);
+
+    // Only the current pending serial acknowledges, at b's geometry
+    // with no intermediate presentation at a's.
+    _ = try registry.commit(surface.id, b.serial);
+    try std.testing.expectEqual(@as(f32, 200), surface.current.logical_width);
+    try std.testing.expectEqual(b.serial, surface.acked_serial);
+}
+
+test "perpetual serial-0 client presents at its configuration indefinitely" {
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+    _ = try registry.assignConfigure(surface.id, 132, 43);
+
+    // The stage 2 default preserved as the legacy/incomplete-client
+    // floor: commits carrying 0 never acknowledge, geometry never
+    // moves, and the surface keeps presenting correctly.
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        _ = try registry.commit(surface.id, 0);
+        try std.testing.expectEqual(@as(f32, 800), surface.current.logical_width);
+        try std.testing.expectEqual(@as(u64, 0), surface.acked_serial);
+    }
+    try std.testing.expect(surface.pending_configure != null);
+
+    // Steady-state echo after an acknowledgement also acknowledges
+    // nothing further: pending is clear, the echo names the acked
+    // configuration, promotion proceeds normally.
+    const cfg = surface.pending_configure.?;
+    _ = try registry.commit(surface.id, cfg.serial);
+    _ = try registry.commit(surface.id, cfg.serial);
+    try std.testing.expectEqual(cfg.serial, surface.acked_serial);
+    try std.testing.expectEqual(@as(f32, 132), surface.current.logical_width);
 }

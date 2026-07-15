@@ -649,6 +649,40 @@ multi-property atomic updates; and D-9 (subsurfaces), whose atomic
 parent-child positioning is a transaction over two surfaces and needs
 this substrate first.
 
+Progress record (2026-07-15). Registry substrate D-12.1 through
+D-12.3 in tree since the ADR landed. Stage 1 (wire): surface_configure
+0x9006 and config_serial on CommitMsg, minor bump 0.1 to 0.2 with the
+0.1 commit size accepted for a deprecation window as serial 0. Stage 2
+(emission): registry assignConfigure (per-surface monotonic serials,
+one pending slot, structural supersession), the administrative
+CONFIGURE ctl verb per the ratified front-end separation (registry
+machinery policy-independent; ctl now, NDE-1 later), plus a
+list_surfaces observability verb the first metal bench proved
+prerequisite. Stage 3 (acknowledgement): commit(id, serial); the exact
+pending serial acknowledges and its geometry promotes atomically with
+client state and frame; old, superseded, and zero serials promote
+under the retained configuration; four registry tests pin the
+operator-ratified case matrix.
+
+Stage 2 bench record (pgsd-bare-metal, 2026-07-15): against the live
+sessiond surface, retention held (size 3840x2160 unchanged across two
+configures), supersession visible (pending_serial 1 then 2,
+acked_serial 0 throughout), and the full error matrix fired on real
+cases: unknown surface, invalid geometry, and not-client-surface
+against the actual daemon-owned cursor. Finding worth keeping: a
+live, never-configured pgsd-sessiond received repeated
+surface_configure events without disruption (no reconnect, same
+surface id), so the stage 4 client floor, ignore configures and be
+merely stale, already holds for a real client, and sessiond is a
+living instance of section 10 requirement 5 (non-acknowledgment),
+observable in the listing as acked_serial pinned at 0. Also fixed on
+metal: semadraw-ctl frame reads are now bounded to the current frame
+(F-CTL-1), found by the listing's coalesced multi-frame reply.
+
+Remaining: stage 4, client-side configure handling and serial echo
+(client library, then semadraw-term reflow with TIOCSWINSZ); then the
+section 10 bench on metal.
+
 Bench (ADR 0022 section 10): the test that matters is requirement 2,
 position change during draw, which proves the general mechanism rather
 than a resize special case and fails on the tree as it stands. Also:
