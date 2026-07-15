@@ -115,10 +115,19 @@ const Reply = struct {
 };
 
 /// Read one reply into `in`: header, then its (tiny) payload.
+///
+/// Every read is bounded to the current frame's remainder. An
+/// unbounded read (`in[got..]`) can consume bytes of the NEXT frame
+/// when the kernel coalesces the daemon's back-to-back writes on the
+/// stream, and returning would discard them, leaving the next call to
+/// start mid-frame and see a garbage header. One-request-one-reply
+/// verbs could never hit this because nothing was ever behind the
+/// current frame; the surface listing pipelines N+1 frames and hit it
+/// on its first metal run.
 fn readOneReply(sock: posix.fd_t, in: *[control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8) Reply {
     var got: usize = 0;
     while (got < control.CtlHeader.SIZE) {
-        const rn = posix.read(sock, in[got..]) catch fail("semadraw-ctl: read failed", .{}, 2);
+        const rn = posix.read(sock, in[got..control.CtlHeader.SIZE]) catch fail("semadraw-ctl: read failed", .{}, 2);
         if (rn == 0) fail("semadraw-ctl: connection closed without a reply (peer not authorized?)", .{}, 2);
         got += rn;
     }
@@ -127,7 +136,7 @@ fn readOneReply(sock: posix.fd_t, in: *[control.CtlHeader.SIZE + control.MAX_CTL
     if (hdr.length > control.MAX_CTL_PAYLOAD) fail("semadraw-ctl: oversize reply", .{}, 2);
     const total = control.CtlHeader.SIZE + hdr.length;
     while (got < total) {
-        const rn = posix.read(sock, in[got..]) catch fail("semadraw-ctl: read failed", .{}, 2);
+        const rn = posix.read(sock, in[got..total]) catch fail("semadraw-ctl: read failed", .{}, 2);
         if (rn == 0) fail("semadraw-ctl: connection closed mid-reply", .{}, 2);
         got += rn;
     }
@@ -368,8 +377,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
         while (true) {
             var win: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8 = undefined;
             var wgot: usize = 0;
+            // Bounded reads, same reason as readOneReply: rapid
+            // consecutive notifications coalesce on the stream.
             while (wgot < control.CtlHeader.SIZE) {
-                const rn = posix.read(fd, win[wgot..]) catch fail("semadraw-ctl: read failed", .{}, 2);
+                const rn = posix.read(fd, win[wgot..control.CtlHeader.SIZE]) catch fail("semadraw-ctl: read failed", .{}, 2);
                 if (rn == 0) return; // daemon closed; clean exit
                 wgot += rn;
             }
@@ -378,7 +389,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             if (whdr.length > control.MAX_CTL_PAYLOAD) fail("semadraw-ctl: oversize notification", .{}, 2);
             const wtotal = control.CtlHeader.SIZE + whdr.length;
             while (wgot < wtotal) {
-                const rn = posix.read(fd, win[wgot..]) catch fail("semadraw-ctl: read failed", .{}, 2);
+                const rn = posix.read(fd, win[wgot..wtotal]) catch fail("semadraw-ctl: read failed", .{}, 2);
                 if (rn == 0) fail("semadraw-ctl: connection closed mid-notification", .{}, 2);
                 wgot += rn;
             }
@@ -411,6 +422,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var remaining = head.count;
         while (remaining > 0) : (remaining -= 1) {
             const r = readOneReply(fd, &in);
+            if (r.hdr.msg_type == .display_state) {
+                // An unsolicited axis notification (the idle blanker,
+                // another operator) interleaved with the listing:
+                // informational, not ours, skip without consuming a
+                // surface slot.
+                remaining += 1;
+                continue;
+            }
             if (r.hdr.msg_type != .surface_info)
                 fail("semadraw-ctl: unexpected frame in surface listing", .{}, 2);
             const info = control.SurfaceInfoPayload.deserialize(in[control.CtlHeader.SIZE..][0..r.payload_len]) catch
