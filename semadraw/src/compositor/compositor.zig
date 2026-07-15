@@ -594,8 +594,47 @@ pub const Compositor = struct {
             }
         }
 
-        // Clear with background color if full repaint
-        const clear_color: ?[4]f32 = if (self.damage_tracker.needs_full_repaint)
+        // F-D12-2: a full repaint must clear the frame even when NO
+        // surface renders this composite. The clear previously rode
+        // the first surface render, which meant an empty-scene
+        // composite (daemon just restarted, clients still
+        // reconnecting) performed no clear while clearAll() at the
+        // end consumed the flag anyway: the full-repaint request was
+        // silently eaten, and pixels inherited in the mapped drawfs
+        // surface across a daemon restart survived forever. Found on
+        // metal chasing the ghost status bar through three captures.
+        // Clear up front via clearRegion when the backend has it
+        // (drawfs does; same path blankComposite has always used);
+        // the ride-along clear_color remains as the fallback for
+        // backends without clearRegion, and the flag is retained at
+        // the end when neither path could execute.
+        var full_clear_done = false;
+        if (self.damage_tracker.needs_full_repaint and output.be.supportsClearRegion()) full_clear: {
+            output.be.clearRegion(.{
+                .framebuffer = .{
+                    .width = output.config.width,
+                    .height = output.config.height,
+                    .format = output.config.format,
+                },
+                .x = 0,
+                .y = 0,
+                .width = output.config.width,
+                .height = output.config.height,
+                .color = output.config.background_color,
+            }) catch |err| {
+                // Only a clear that actually ran counts: the
+                // ride-along fallback below takes over, and if that
+                // also cannot run (no surface renders this frame),
+                // the flag is retained at clearAll.
+                log.warn("full-repaint clearRegion failed: {}; falling back to first-surface clear", .{err});
+                break :full_clear;
+            };
+            full_clear_done = true;
+        }
+
+        // Clear with background color if full repaint (fallback path:
+        // backend without clearRegion, or its clear failed above).
+        const clear_color: ?[4]f32 = if (self.damage_tracker.needs_full_repaint and !full_clear_done)
             output.config.background_color
         else
             null;
@@ -763,7 +802,15 @@ pub const Compositor = struct {
             );
         }
 
+        // F-D12-2: never consume a full-repaint request this frame
+        // could not honour. If no up-front clear ran and no surface
+        // rendered (so the ride-along clear never fired either), the
+        // request survives to the next composite; a frame that
+        // performed the clear, by either path, consumes it as before.
+        const retain_full_repaint = self.damage_tracker.needs_full_repaint and
+            !full_clear_done and surfaces_rendered == 0;
         self.damage_tracker.clearAll();
+        if (retain_full_repaint) self.damage_tracker.markFullRepaint();
 
         self.total_composites += 1;
         self.total_surfaces_composed += surfaces_rendered;
