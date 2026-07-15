@@ -638,7 +638,24 @@ pub const SurfaceRegistry = struct {
     ///     continues to await the current pending serial.
     /// The registry does not know or care who assigned the configure;
     /// the acknowledgement semantics are front-end independent.
-    pub fn commit(self: *SurfaceRegistry, id: protocol.SurfaceId, config_serial: u64) !u64 {
+    pub const CommitResult = struct {
+        frame_number: u64,
+        /// True when this promotion changed the surface's on-screen
+        /// extent: position, logical size, or visibility. The caller
+        /// must repaint the region the surface VACATED, not only the
+        /// region it now covers; per-surface damage repaints a
+        /// surface's current extent, so a vacated region belongs to
+        /// nobody and goes stale without this signal. Found on metal
+        /// as the first bug of geometry promotion: the pre-shrink
+        /// status bar ghosted at the bottom of the panel, and the
+        /// capture tool convicted the composite (stale pixels in
+        /// surface_map, vacated extent never redrawn). Same
+        /// old-and-new-rect discipline the ADR 0005 cursor pump has
+        /// always applied.
+        extent_changed: bool,
+    };
+
+    pub fn commit(self: *SurfaceRegistry, id: protocol.SurfaceId, config_serial: u64) !CommitResult {
         const surface = self.getSurface(id) orelse return error.SurfaceNotFound;
 
         // Acknowledgement, before promotion so the acknowledged
@@ -665,12 +682,23 @@ pub const SurfaceRegistry = struct {
             self.order_dirty = true;
         }
 
+        // Captured before promotion, for the same reason order_dirty
+        // is: promotion is where the presentation-visible value
+        // changes. The acknowledged configure's geometry was written
+        // into pending above, so an acknowledging resize is included.
+        const extent_changed =
+            surface.current.visible != surface.pending.visible or
+            surface.current.position_x != surface.pending.position_x or
+            surface.current.position_y != surface.pending.position_y or
+            surface.current.logical_width != surface.pending.logical_width or
+            surface.current.logical_height != surface.pending.logical_height;
+
         // Promote. One assignment: current is never half-updated.
         surface.current = surface.pending;
 
         surface.pending_commit = true;
         surface.frame_number += 1;
-        return surface.frame_number;
+        return .{ .frame_number = surface.frame_number, .extent_changed = extent_changed };
     }
 
     /// Get surfaces in composition order (back to front)
@@ -951,7 +979,7 @@ test "SurfaceRegistry: commit promotes pending to current" {
     try std.testing.expectEqual(false, surface.current.visible);
     try std.testing.expectEqual(@as(usize, 0), (try registry.getCompositionOrder()).len);
 
-    const frame = try registry.commit(id, 0);
+    const frame = (try registry.commit(id, 0)).frame_number;
     try std.testing.expectEqual(@as(u64, 1), frame);
 
     // Promoted: every staged field is now current, together.
@@ -1129,4 +1157,29 @@ test "perpetual serial-0 client presents at its configuration indefinitely" {
     _ = try registry.commit(surface.id, cfg.serial);
     try std.testing.expectEqual(cfg.serial, surface.acked_serial);
     try std.testing.expectEqual(@as(f32, 132), surface.current.logical_width);
+}
+
+test "commit reports extent_changed when promotion moves the surface" {
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const surface = try registry.createSurface(1, 1000, 800, 600);
+
+    // Unchanged promotion: no extent change.
+    var r = try registry.commit(surface.id, 0);
+    try std.testing.expect(!r.extent_changed);
+
+    // Staged position change promotes: extent changed (the vacated
+    // region must be repainted; this is the ghost-status-bar bug).
+    try registry.setPosition(surface.id, 50, 50);
+    r = try registry.commit(surface.id, 0);
+    try std.testing.expect(r.extent_changed);
+
+    // Acknowledging a configure changes geometry at promotion.
+    const cfg = try registry.assignConfigure(surface.id, 132, 43);
+    r = try registry.commit(surface.id, cfg.serial);
+    try std.testing.expect(r.extent_changed);
+
+    // Steady state after the acknowledgement: no further change.
+    r = try registry.commit(surface.id, cfg.serial);
+    try std.testing.expect(!r.extent_changed);
 }

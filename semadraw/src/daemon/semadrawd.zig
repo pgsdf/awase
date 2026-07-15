@@ -1840,24 +1840,32 @@ pub const Daemon = struct {
             return;
         }
 
-        const frame_number = self.surfaces.commit(msg.surface_id, msg.config_serial) catch {
+        const commit_result = self.surfaces.commit(msg.surface_id, msg.config_serial) catch {
             try self.sendRemoteError(session, .invalid_surface, msg.surface_id);
             return;
         };
+
+        // The promotion moved, resized, or hid the surface: the region
+        // it vacated belongs to no surface's current extent, so
+        // per-surface damage will never repaint it. Full repaint is
+        // proportionate for an operator-rate event under B3.3 Pass 1;
+        // fine-grained old-extent damage can ride the later damage
+        // passes. (First geometry-promotion bug, found by capture.)
+        if (commit_result.extent_changed) self.comp.damageAll();
 
         self.comp.onSurfaceCommit(msg.surface_id) catch {};
 
         var reply_buf: [protocol.FrameCompleteMsg.SIZE]u8 = undefined;
         const reply = protocol.FrameCompleteMsg{
             .surface_id = msg.surface_id,
-            .frame_number = frame_number,
+            .frame_number = commit_result.frame_number,
             .timestamp_ns = @intCast(realtimeNowNs()),
         };
         reply.serialize(&reply_buf);
         try session.client.sendMessage(.frame_complete, &reply_buf);
 
-        log.debug("remote client {} committed surface {} frame {}", .{ session.id, msg.surface_id, frame_number });
-        events.emitFrameComplete(msg.surface_id, frame_number, "software", null);
+        log.debug("remote client {} committed surface {} frame {}", .{ session.id, msg.surface_id, commit_result.frame_number });
+        events.emitFrameComplete(msg.surface_id, commit_result.frame_number, "software", null);
     }
 
     fn handleRemoteSetVisible(self: *Daemon, session: *RemoteSession, payload: ?[]u8) !void {
@@ -2883,26 +2891,34 @@ pub const Daemon = struct {
         }
 
         // Mark surface as committed in registry
-        const frame_number = self.surfaces.commit(msg.surface_id, msg.config_serial) catch {
+        const commit_result = self.surfaces.commit(msg.surface_id, msg.config_serial) catch {
             try session.sendError(.invalid_surface, msg.surface_id);
             return;
         };
 
         // Notify compositor of surface damage
+        // The promotion moved, resized, or hid the surface: the region
+        // it vacated belongs to no surface's current extent, so
+        // per-surface damage will never repaint it. Full repaint is
+        // proportionate for an operator-rate event under B3.3 Pass 1;
+        // fine-grained old-extent damage can ride the later damage
+        // passes. (First geometry-promotion bug, found by capture.)
+        if (commit_result.extent_changed) self.comp.damageAll();
+
         self.comp.onSurfaceCommit(msg.surface_id) catch {};
 
         // Send frame_complete
         var reply_buf: [protocol.FrameCompleteMsg.SIZE]u8 = undefined;
         const reply = protocol.FrameCompleteMsg{
             .surface_id = msg.surface_id,
-            .frame_number = frame_number,
+            .frame_number = commit_result.frame_number,
             .timestamp_ns = @intCast(realtimeNowNs()),
         };
         reply.serialize(&reply_buf);
         try session.send(.frame_complete, &reply_buf);
 
-        log.debug("client {} committed surface {} frame {}", .{ session.id, msg.surface_id, frame_number });
-        events.emitFrameComplete(msg.surface_id, frame_number, "software", null);
+        log.debug("client {} committed surface {} frame {}", .{ session.id, msg.surface_id, commit_result.frame_number });
+        events.emitFrameComplete(msg.surface_id, commit_result.frame_number, "software", null);
     }
 
     fn handleSetVisible(self: *Daemon, session: *client_session.ClientSession, payload: ?[]u8) !void {
