@@ -83,12 +83,33 @@ pub const Surface = struct {
         self.frame_count += 1;
     }
 
+    /// D-12 stage 4: commit naming the configuration this frame was
+    /// drawn for. See Connection.commitFor.
+    pub fn commitFor(self: *Self, config_serial: u64) !void {
+        if (self.state == .destroyed) return error.SurfaceDestroyed;
+
+        try self.connection.commitFor(self.id, config_serial);
+        self.state = .presenting;
+        self.frame_count += 1;
+    }
+
     /// Attach SDCS buffer data and commit in one operation
     pub fn attachAndCommit(self: *Self, sdcs_data: []const u8) !void {
         if (self.state == .destroyed) return error.SurfaceDestroyed;
 
         try self.connection.attachBufferInline(self.id, sdcs_data);
         try self.connection.commit(self.id);
+        self.state = .presenting;
+        self.frame_count += 1;
+    }
+
+    /// D-12 stage 4: attach and commit naming the configuration this
+    /// frame was drawn for. See Connection.commitFor.
+    pub fn attachAndCommitFor(self: *Self, sdcs_data: []const u8, config_serial: u64) !void {
+        if (self.state == .destroyed) return error.SurfaceDestroyed;
+
+        try self.connection.attachBufferInline(self.id, sdcs_data);
+        try self.connection.commitFor(self.id, config_serial);
         self.state = .presenting;
         self.frame_count += 1;
     }

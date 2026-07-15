@@ -68,6 +68,12 @@ pub const Event = union(enum) {
     key_press: protocol.KeyPressMsg,
     mouse_event: protocol.MouseEventMsg,
     focus_changed: protocol.FocusChangedMsg,
+    // D-12 stage 4 (ADR 0022 section 5): the compositor assigned a
+    // configuration. The application produces frames for it and
+    // acknowledges by committing with its serial (commitFor); an
+    // application that ignores this event is merely stale, never
+    // broken.
+    surface_configure: protocol.SurfaceConfigureMsg,
     gesture_event: ParsedGesture,
     clipboard_data: ClipboardData,
     disconnected: void,
@@ -248,6 +254,27 @@ pub const Connection = struct {
     }
 
     /// Commit a surface (present its contents)
+    /// D-12 stage 4: commit naming the configuration this frame was
+    /// drawn for. A serial matching the surface's pending configure
+    /// acknowledges it and the frame is presented under that
+    /// configuration; the steady state is echoing the adopted serial
+    /// on every commit. plain commit() below sends 0, which is
+    /// truthful for an application that has never adopted a
+    /// configure (ADR 0022 creation rule) and is the
+    /// never-acknowledging floor for one that ignores them.
+    pub fn commitFor(self: *Self, surface_id: protocol.SurfaceId, config_serial: u64) !void {
+        if (self.state != .connected) return error.NotConnected;
+
+        const msg = protocol.CommitMsg{
+            .surface_id = surface_id,
+            .flags = 0,
+            .config_serial = config_serial,
+        };
+        var payload: [protocol.CommitMsg.SIZE]u8 = undefined;
+        msg.serialize(&payload);
+        try self.sendMessage(.commit, &payload);
+    }
+
     pub fn commit(self: *Self, surface_id: protocol.SurfaceId) !void {
         if (self.state != .connected) return error.NotConnected;
 
@@ -587,6 +614,13 @@ pub const Connection = struct {
                 if (msg.payload) |p| {
                     if (protocol.FocusChangedMsg.deserialize(p)) |m| {
                         return .{ .focus_changed = m };
+                    } else |_| {}
+                }
+            },
+            .surface_configure => {
+                if (msg.payload) |p| {
+                    if (protocol.SurfaceConfigureMsg.deserialize(p)) |m| {
+                        return .{ .surface_configure = m };
                     } else |_| {}
                 }
             },

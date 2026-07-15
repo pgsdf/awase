@@ -230,6 +230,97 @@ pub const Screen = struct {
         };
     }
 
+    /// D-12 stage 4 (ADR 0022 section 5): resize the grid to a
+    /// compositor-assigned configuration. Policy, operator-ratified:
+    /// truncate/pad, no rewrap (classical xterm behaviour; content
+    /// right of the new width or below the new height is cut, growth
+    /// appears blank; full-screen apps repaint on SIGWINCH and
+    /// readline redraws the prompt), and scrollback is DISCARDED with
+    /// the view reset (each saved line is exactly cols cells wide, so
+    /// a width change invalidates the whole ring). Both choices live
+    /// entirely in this client; richer behaviour later never touches
+    /// the configure/acknowledgement design. This is the reference
+    /// client: its purpose is to exercise the substrate, not to be a
+    /// good terminal.
+    pub fn resize(self: *Self, new_cols: u32, new_rows: u32) !void {
+        if (new_cols == 0 or new_rows == 0) return error.InvalidSize;
+        if (new_cols == self.cols and new_rows == self.rows) return;
+
+        // Primary buffer: intersection copy into a fresh blank grid.
+        const new_cells = try self.allocator.alloc(Cell, new_cols * new_rows);
+        errdefer self.allocator.free(new_cells);
+        for (new_cells) |*cell| cell.* = Cell.blank();
+        const copy_rows = @min(self.rows, new_rows);
+        const copy_cols = @min(self.cols, new_cols);
+        var r: u32 = 0;
+        while (r < copy_rows) : (r += 1) {
+            @memcpy(
+                new_cells[r * new_cols ..][0..copy_cols],
+                self.cells[r * self.cols ..][0..copy_cols],
+            );
+        }
+
+        // Alt buffer, if allocated: same policy. Allocated before any
+        // frees so failure leaves the screen untouched.
+        var new_alt: ?[]Cell = null;
+        if (self.alt_cells) |alt| {
+            const na = try self.allocator.alloc(Cell, new_cols * new_rows);
+            for (na) |*cell| cell.* = Cell.blank();
+            r = 0;
+            while (r < copy_rows) : (r += 1) {
+                @memcpy(
+                    na[r * new_cols ..][0..copy_cols],
+                    alt[r * self.cols ..][0..copy_cols],
+                );
+            }
+            new_alt = na;
+        }
+        errdefer if (new_alt) |na| self.allocator.free(na);
+
+        const new_dirty = try self.allocator.alloc(bool, new_rows);
+        @memset(new_dirty, true);
+
+        // Point of no return: swap everything in.
+        self.allocator.free(self.cells);
+        self.cells = new_cells;
+        if (self.alt_cells) |alt| {
+            self.allocator.free(alt);
+            self.alt_cells = new_alt;
+        }
+        self.allocator.free(self.dirty_rows);
+        self.dirty_rows = new_dirty;
+        self.cols = new_cols;
+        self.rows = new_rows;
+
+        // Scrollback: discard content, keep the ring allocation
+        // (lines are freed and reset to empty; the ring itself is
+        // sized by line count, not width).
+        if (self.scrollback) |sb| {
+            for (sb) |*line| {
+                if (line.len > 0) {
+                    self.allocator.free(line.*);
+                    line.* = &[_]Cell{};
+                }
+            }
+        }
+        self.scrollback_count = 0;
+        self.scrollback_start = 0;
+        self.scroll_view_offset = 0;
+
+        // Clamp everything that names a coordinate. The scroll region
+        // resets to the full box: a region tuned to the old height is
+        // meaningless in the new one, and applications re-establish
+        // regions after SIGWINCH.
+        self.cursor_col = @min(self.cursor_col, new_cols - 1);
+        self.cursor_row = @min(self.cursor_row, new_rows - 1);
+        self.saved_cursor_col = @min(self.saved_cursor_col, new_cols - 1);
+        self.saved_cursor_row = @min(self.saved_cursor_row, new_rows - 1);
+        self.scroll_top = 0;
+        self.scroll_bottom = new_rows - 1;
+
+        self.dirty = true;
+    }
+
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.cells);
         self.allocator.free(self.dirty_rows);
@@ -1484,7 +1575,12 @@ test "Screen alternative buffer" {
     try std.testing.expect(scr.using_alt_buffer);
     try std.testing.expectEqual(@as(u21, ' '), scr.getCell(0, 0).char);
 
-    // Write to alt buffer
+    // Write to alt buffer. Plain enterAltBuffer (mode 47) deliberately
+    // does NOT move the cursor; only the 1049 WithCursorSave variant
+    // touches it. Home explicitly so the assertion below tests buffer
+    // isolation, not cursor position. (Expectation corrected when this
+    // test first ran, 2026-07-15; it had never been wired to run.)
+    scr.setCursor(0, 0);
     scr.putChar('A');
     scr.putChar('l');
     scr.putChar('t');
@@ -1599,9 +1695,12 @@ test "Scrollback view navigation" {
         scr.newline();
     }
 
-    // Should have 4 lines in scrollback (lines 0-3 scrolled off)
-    // Current screen shows lines 4, 5, and new blank line
-    try std.testing.expectEqual(@as(u32, 4), scr.scrollback_count);
+    // Every iteration re-homes to the bottom row, so every newline
+    // scrolls: six iterations, six lines in scrollback. (Expectation
+    // corrected from 4 when this test first ran, 2026-07-15; the
+    // original arithmetic assumed sequential writing without the
+    // per-iteration setCursor.)
+    try std.testing.expectEqual(@as(u32, 6), scr.scrollback_count);
     try std.testing.expectEqual(@as(u32, 0), scr.scroll_view_offset);
 
     // Scroll view up into history
@@ -1843,8 +1942,12 @@ test "AD-16.4 insertChars at right edge with no room is a no-op" {
 
     // Cursor at cols (no room to insert). Pre-fix the @min in
     // chars_to_insert calculation reduced n to 0 and the loop
-    // underflowed.
-    scr.setCursor(4, 0);
+    // underflowed. setCursor clamps to cols-1, so the deferred-wrap
+    // state (cursor_col == cols) the guard exists for is set
+    // directly; via setCursor the cursor lands at the last column,
+    // where an insert legitimately shifts D off. (Corrected when
+    // this test first ran, 2026-07-15.)
+    scr.cursor_col = 4;
     scr.insertChars(5);
     try std.testing.expectEqual(@as(u21, 'A'), scr.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'D'), scr.getCell(3, 0).char);
@@ -1918,4 +2021,72 @@ test "AD-16.6 deleteChars with n=0 is a no-op" {
     try std.testing.expectEqual(@as(u21, 'A'), scr.getCell(0, 0).char);
     try std.testing.expectEqual(@as(u21, 'B'), scr.getCell(1, 0).char);
     try std.testing.expectEqual(@as(u21, 'C'), scr.getCell(2, 0).char);
+}
+
+// D-12 stage 4: resize under the operator-ratified policy,
+// truncate/pad without rewrap, scrollback discarded.
+
+test "resize grows with blank padding and preserves content" {
+    var scr = try Screen.init(std.testing.allocator, 4, 2);
+    defer scr.deinit();
+    scr.putChar('A');
+    scr.putChar('B');
+    try scr.resize(6, 3);
+    try std.testing.expectEqual(@as(u32, 6), scr.cols);
+    try std.testing.expectEqual(@as(u32, 3), scr.rows);
+    try std.testing.expectEqual(@as(u21, 'A'), scr.getCell(0, 0).char);
+    try std.testing.expectEqual(@as(u21, 'B'), scr.getCell(1, 0).char);
+    try std.testing.expectEqual(@as(u21, ' '), scr.getCell(5, 2).char);
+    try std.testing.expectEqual(@as(u32, 2), scr.scroll_bottom);
+    try std.testing.expect(scr.dirty);
+}
+
+test "resize shrink truncates and clamps cursor and region" {
+    var scr = try Screen.init(std.testing.allocator, 8, 4);
+    defer scr.deinit();
+    scr.cursor_col = 7;
+    scr.cursor_row = 3;
+    scr.saved_cursor_col = 7;
+    scr.saved_cursor_row = 3;
+    try scr.resize(3, 2);
+    try std.testing.expectEqual(@as(u32, 2), scr.cursor_col);
+    try std.testing.expectEqual(@as(u32, 1), scr.cursor_row);
+    try std.testing.expectEqual(@as(u32, 2), scr.saved_cursor_col);
+    try std.testing.expectEqual(@as(u32, 1), scr.saved_cursor_row);
+    try std.testing.expectEqual(@as(u32, 0), scr.scroll_top);
+    try std.testing.expectEqual(@as(u32, 1), scr.scroll_bottom);
+}
+
+test "resize discards scrollback and resets the view" {
+    var scr = try Screen.init(std.testing.allocator, 4, 2);
+    defer scr.deinit();
+    // Fill and scroll so lines enter scrollback.
+    var i: u32 = 0;
+    while (i < 6) : (i += 1) {
+        scr.putChar('x');
+        scr.newline();
+    }
+    try std.testing.expect(scr.scrollback_count > 0);
+    scr.scroll_view_offset = 1;
+    try scr.resize(5, 3);
+    try std.testing.expectEqual(@as(u32, 0), scr.scrollback_count);
+    try std.testing.expectEqual(@as(u32, 0), scr.scroll_view_offset);
+}
+
+test "resize carries the alt buffer under the same policy" {
+    var scr = try Screen.init(std.testing.allocator, 4, 2);
+    defer scr.deinit();
+    try scr.enterAltBuffer(true);
+    scr.putChar('Z');
+    try scr.resize(6, 3);
+    try std.testing.expectEqual(@as(u21, 'Z'), scr.getCell(0, 0).char);
+    scr.exitAltBuffer();
+    try std.testing.expectEqual(@as(u32, 6), scr.cols);
+}
+
+test "resize to the same size is a no-op and zero is rejected" {
+    var scr = try Screen.init(std.testing.allocator, 4, 2);
+    defer scr.deinit();
+    try scr.resize(4, 2);
+    try std.testing.expectError(error.InvalidSize, scr.resize(0, 2));
 }

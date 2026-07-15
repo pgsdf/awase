@@ -561,9 +561,19 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         }
     }
 
-    const width_px  = actual_cols * cell_w;
+    // D-12 stage 4: mutable, updated when a compositor configure is
+    // adopted, so the AD-40 reconnect path recreates the surface at
+    // the ADOPTED dimensions rather than the launch ones.
+    var width_px  = actual_cols * cell_w;
     // Extra row at bottom for the session status bar
-    const height_px = actual_rows * cell_h + cell_h;
+    var height_px = actual_rows * cell_h + cell_h;
+
+    // D-12 stage 4: the configuration this client has adopted and
+    // draws for; echoed on every commit. 0 until the first configure
+    // is adopted (the ADR 0022 creation rule), and reset on
+    // reconnect, where the recreated surface starts at serial 0 by
+    // the same rule.
+    var adopted_serial: u64 = 0;
 
     var surface = try client.Surface.create(conn, @floatFromInt(width_px), @floatFromInt(height_px));
     defer surface.destroy();
@@ -600,7 +610,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
     state.sessions[0].?.bindParser();
 
     log.info("session 1 started", .{});
-    try renderFrame(allocator, &state, &rend, surface, conn, true);
+    try renderFrame(allocator, &state, &rend, surface, conn, true, adopted_serial);
 
     const blink_ms: i64 = 500;
     var last_blink  = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
@@ -696,8 +706,10 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         }
 
         // AD-40 reconnect attempt, 1 Hz. Replays connect, surface
-        // create at the ORIGINAL dimensions (no size re-query: a
-        // mid-session resize would disturb the grid), and show, then
+        // create at the current width/height_px (the launch
+        // dimensions, or the adopted configure's since D-12 stage 4;
+        // the grid was already reflowed when it was adopted), and
+        // show, then
         // forces a full repaint from client-side screen state. The
         // old connection and surface objects are abandoned, never
         // destroyed: their teardown would touch the dead socket (the
@@ -715,6 +727,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                     new_surface.show() catch break :reconnect;
                     conn = new_conn;
                     surface = new_surface;
+                    adopted_serial = 0; // new surface, creation configuration
                     connected = true;
                     sess.scr.dirty = true;
                     needs_render = true;
@@ -763,7 +776,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                             &state.activeSession().scr,
                             conn, m, &rend);
                         if (chord_menu.visible and state.activeSession().scr.dirty) {
-                            if (renderFrame(allocator, &state, &rend, surface, conn, blink_vis)) {
+                            if (renderFrame(allocator, &state, &rend, surface, conn, blink_vis, adopted_serial)) {
                                 state.activeSession().scr.dirty = false;
                             } else |_| {
                                 // AD-40: commit failed mid-stream;
@@ -772,6 +785,39 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
                                 connected = false;
                                 last_reconnect_ms = @as(i64, @intCast(@divTrunc(compat.time.nowMonotonic(), std.time.ns_per_ms)));
                             }
+                        }
+                    },
+                    .surface_configure => |c| {
+                        // D-12 stage 4 (ADR 0022 section 5): the
+                        // compositor assigned a configuration. Not
+                        // ours (a stale id from before a reconnect):
+                        // ignore; the daemon retains the pending
+                        // configure against a surface we no longer
+                        // hold.
+                        if (c.surface_id != surface.id) continue;
+                        const new_cols: u32 = @max(1, @as(u32, @intFromFloat(c.logical_width)) / cell_w);
+                        // The status bar owns one cell row.
+                        const total_rows: u32 = @max(2, @as(u32, @intFromFloat(c.logical_height)) / cell_h);
+                        const new_rows: u32 = total_rows - 1;
+                        var ok = true;
+                        for (&state.sessions) |*slot| {
+                            if (slot.*) |*sess_i| {
+                                sess_i.scr.resize(new_cols, new_rows) catch |e| {
+                                    log.err("screen resize to {}x{} failed: {}; configure {} not adopted", .{ new_cols, new_rows, e, c.config_serial });
+                                    ok = false;
+                                    break;
+                                };
+                                // TIOCSWINSZ: the dead code lives.
+                                sess_i.shell.resize(@intCast(new_cols), @intCast(new_rows));
+                            }
+                        }
+                        if (ok) {
+                            adopted_serial = c.config_serial;
+                            width_px = @intFromFloat(c.logical_width);
+                            height_px = @intFromFloat(c.logical_height);
+                            state.activeSession().scr.dirty = true;
+                            needs_render = true;
+                            log.info("adopted configure serial {}: {}x{} cells", .{ c.config_serial, new_cols, new_rows });
                         }
                     },
                     .clipboard_data => |clip| {
@@ -785,7 +831,7 @@ fn run(allocator: std.mem.Allocator, config: Config) !void {
         }
 
         if (connected and (state.activeSession().scr.dirty or needs_render)) {
-            if (renderFrame(allocator, &state, &rend, surface, conn, blink_vis)) {
+            if (renderFrame(allocator, &state, &rend, surface, conn, blink_vis, adopted_serial)) {
                 state.activeSession().scr.dirty = false;
             } else |_| {
                 // AD-40: commit failed mid-stream; same transition as
@@ -845,6 +891,7 @@ fn renderFrame(
     surface: *client.Surface,
     conn: *client.Connection,
     blink_vis: bool,
+    config_serial: u64,
 ) !void {
     _ = conn;
     const sess = state.activeSession();
@@ -883,7 +930,10 @@ fn renderFrame(
 
     const sdcs = try rend.renderWithOverlayAndStatusBar(menu_ov, &status_labels, state.active);
     defer allocator.free(sdcs);
-    try surface.attachAndCommit(sdcs);
+    // D-12 stage 4: every frame names the configuration it was drawn
+    // for. 0 until a configure is adopted; the adopted serial's first
+    // echo acknowledges, and the steady-state echo names it thereafter.
+    try surface.attachAndCommitFor(sdcs, config_serial);
 }
 
 // ============================================================================

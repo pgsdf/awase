@@ -1196,6 +1196,20 @@ pub fn build(b: *std.Build) void {
     });
     const run_registry_tests = b.addRunArtifact(registry_tests);
 
+    // D-12 stage 4: terminal screen unit tests (the pre-existing 22
+    // VT100 grid tests, never wired into a test root before and
+    // running for the first time here, plus the resize tests for the
+    // operator-ratified truncate/pad and scrollback-discard policy).
+    const term_screen_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/term/screen.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "font", .module = term_font_mod }},
+        }),
+    });
+    const run_term_screen_tests = b.addRunArtifact(term_screen_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_simd_tests.step);
@@ -1207,6 +1221,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_control_tests.step);
     test_step.dependOn(&run_ctl_tool_tests.step);
     test_step.dependOn(&run_registry_tests.step);
+    test_step.dependOn(&run_term_screen_tests.step);
     // Note: bsdinput tests are in src/backend/bsdinput.zig but not included here
     // due to circular module dependencies. Run manually on FreeBSD if needed:
     // zig test src/backend/bsdinput.zig -lc -linput -ludev
