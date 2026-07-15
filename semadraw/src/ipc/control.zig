@@ -76,6 +76,14 @@ pub const CtlMsgType = enum(u16) {
     // name serials when driving supersession.
     configure = 0x0030,
 
+    // D-12 stage 2 observability. Without enumeration the operator
+    // guesses surface ids, which the first metal bench of the
+    // configure verb proved untenable (the cursor owns id 1 and a
+    // reconnecting client's id is whatever the churn left it at).
+    // Reply is one surfaces_reply carrying the count, then one
+    // surface_info frame per surface.
+    list_surfaces = 0x0031,
+
     // Replies and notifications (compositor -> session authority).
     ctl_ack = 0x8001, // request accepted and applied
     ctl_error = 0x8002, // payload: CtlErrorPayload
@@ -86,6 +94,8 @@ pub const CtlMsgType = enum(u16) {
     // timeline without polling races.
     capture_reply = 0x8004, // payload: CaptureHeader
     configure_reply = 0x8005, // payload: ConfigureReplyPayload
+    surfaces_reply = 0x8006, // payload: SurfacesReplyPayload (count)
+    surface_info = 0x8007, // payload: SurfaceInfoPayload, one per surface
 };
 
 pub const CtlError = enum(u16) {
@@ -282,6 +292,62 @@ pub const ConfigureReplyPayload = extern struct {
     }
 };
 
+/// D-12 stage 2 observability: the list_surfaces reply header.
+pub const SurfacesReplyPayload = extern struct {
+    count: u32,
+
+    pub const SIZE: usize = 4;
+
+    pub fn serialize(self: SurfacesReplyPayload, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.count, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !SurfacesReplyPayload {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{ .count = std.mem.readInt(u32, buf[0..4], .little) };
+    }
+};
+
+/// D-12 stage 2 observability: one surface's administrative view.
+/// pending_serial is 0 when no configure is outstanding (0 is never
+/// an allocated serial; it names the creation configuration).
+pub const SurfaceInfoPayload = extern struct {
+    surface_id: u32,
+    owner: u32,
+    owner_uid: u32,
+    logical_width: f32,
+    logical_height: f32,
+    pending_serial: u64,
+    acked_serial: u64,
+
+    pub const SIZE: usize = 36;
+
+    pub fn serialize(self: SurfaceInfoPayload, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+        std.mem.writeInt(u32, buf[4..8], self.owner, .little);
+        std.mem.writeInt(u32, buf[8..12], self.owner_uid, .little);
+        @memcpy(buf[12..16], std.mem.asBytes(&self.logical_width));
+        @memcpy(buf[16..20], std.mem.asBytes(&self.logical_height));
+        std.mem.writeInt(u64, buf[20..28], self.pending_serial, .little);
+        std.mem.writeInt(u64, buf[28..36], self.acked_serial, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !SurfaceInfoPayload {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{
+            .surface_id = std.mem.readInt(u32, buf[0..4], .little),
+            .owner = std.mem.readInt(u32, buf[4..8], .little),
+            .owner_uid = std.mem.readInt(u32, buf[8..12], .little),
+            .logical_width = @bitCast(std.mem.readInt(u32, buf[12..16], .little)),
+            .logical_height = @bitCast(std.mem.readInt(u32, buf[16..20], .little)),
+            .pending_serial = std.mem.readInt(u64, buf[20..28], .little),
+            .acked_serial = std.mem.readInt(u64, buf[28..36], .little),
+        };
+    }
+};
+
 test "payload roundtrips" {
     var b1: [1]u8 = undefined;
     (DisplayStatePayload{ .axis = @intFromEnum(DisplayAxis.blanked) }).serialize(&b1);
@@ -289,6 +355,29 @@ test "payload roundtrips" {
     var b2: [2]u8 = undefined;
     (CtlErrorPayload{ .code = @intFromEnum(CtlError.not_implemented) }).serialize(&b2);
     try std.testing.expectEqual(@as(u16, 1), (try CtlErrorPayload.deserialize(&b2)).code);
+}
+
+test "surface listing payloads roundtrip and fit the payload budget" {
+    try std.testing.expect(SurfaceInfoPayload.SIZE <= MAX_CTL_PAYLOAD);
+    var b: [SurfaceInfoPayload.SIZE]u8 = undefined;
+    (SurfaceInfoPayload{
+        .surface_id = 3,
+        .owner = 2,
+        .owner_uid = 1000,
+        .logical_width = 800,
+        .logical_height = 600,
+        .pending_serial = 4,
+        .acked_serial = 2,
+    }).serialize(&b);
+    const back = try SurfaceInfoPayload.deserialize(&b);
+    try std.testing.expectEqual(@as(u32, 3), back.surface_id);
+    try std.testing.expectEqual(@as(u32, 1000), back.owner_uid);
+    try std.testing.expectEqual(@as(f32, 800), back.logical_width);
+    try std.testing.expectEqual(@as(u64, 4), back.pending_serial);
+    try std.testing.expectEqual(@as(u64, 2), back.acked_serial);
+    var c: [SurfacesReplyPayload.SIZE]u8 = undefined;
+    (SurfacesReplyPayload{ .count = 2 }).serialize(&c);
+    try std.testing.expectEqual(@as(u32, 2), (try SurfacesReplyPayload.deserialize(&c)).count);
 }
 
 test "configure payloads roundtrip and fit the payload budget" {

@@ -2461,6 +2461,33 @@ pub const Daemon = struct {
         self.sendCtl(idx, .configure_reply, &pl);
     }
 
+    /// D-12 stage 2 observability: enumerate the registry for the
+    /// operator. One surfaces_reply with the count, then one
+    /// surface_info frame per surface, in registry (hash) order.
+    /// Sizes are the CURRENT (presented) state; pending_serial names
+    /// the outstanding configure, 0 when none.
+    fn handleCtlListSurfaces(self: *Daemon, idx: usize) void {
+        var hdr: [control.SurfacesReplyPayload.SIZE]u8 = undefined;
+        (control.SurfacesReplyPayload{ .count = self.surfaces.surfaceCount() }).serialize(&hdr);
+        self.sendCtl(idx, .surfaces_reply, &hdr);
+
+        var it = self.surfaces.surfaceIterator();
+        while (it.next()) |entry| {
+            const surface = entry.*;
+            var pl: [control.SurfaceInfoPayload.SIZE]u8 = undefined;
+            (control.SurfaceInfoPayload{
+                .surface_id = surface.id,
+                .owner = surface.owner,
+                .owner_uid = @intCast(surface.owner_uid),
+                .logical_width = surface.current.logical_width,
+                .logical_height = surface.current.logical_height,
+                .pending_serial = if (surface.pending_configure) |cfg| cfg.serial else 0,
+                .acked_serial = surface.acked_serial,
+            }).serialize(&pl);
+            self.sendCtl(idx, .surface_info, &pl);
+        }
+    }
+
     /// D-12 stage 2: send surface_configure to the client that owns
     /// the surface. Best-effort and informational, following the
     /// emitFocusChanged posture: the configure is recorded in the
@@ -2612,9 +2639,10 @@ pub const Daemon = struct {
             .capture_info => self.handleCaptureInfo(idx),
             // D-12 stage 2: the administrative configure front end.
             .configure => self.handleCtlConfigure(idx, payload),
+            .list_surfaces => self.handleCtlListSurfaces(idx),
             // Reply/notification opcodes arriving as requests: a
             // broken peer.
-            .ctl_ack, .ctl_error, .display_state, .capture_reply, .configure_reply => self.sendCtlError(idx, .protocol_error),
+            .ctl_ack, .ctl_error, .display_state, .capture_reply, .configure_reply, .surfaces_reply, .surface_info => self.sendCtlError(idx, .protocol_error),
         }
     }
 

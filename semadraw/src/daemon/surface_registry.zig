@@ -362,6 +362,18 @@ pub const SurfaceRegistry = struct {
         return self.surfaces.get(id);
     }
 
+    /// D-12 stage 2 observability: iterate all surfaces, for the
+    /// administrative list verb. Iteration order is hash order; the
+    /// consumer sorts or does not care.
+    pub fn surfaceIterator(self: *SurfaceRegistry) std.AutoHashMap(protocol.SurfaceId, *Surface).ValueIterator {
+        return self.surfaces.valueIterator();
+    }
+
+    /// Number of live surfaces, for the list reply's count header.
+    pub fn surfaceCount(self: *const SurfaceRegistry) u32 {
+        return @intCast(self.surfaces.count());
+    }
+
     /// D-12 stage 2 (ADR 0022 section 5): assign a new configuration
     /// to the surface, allocating its serial and recording it as the
     /// pending configure. Deliberately policy-independent: callers

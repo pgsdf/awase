@@ -8,12 +8,14 @@
 //
 // Usage: semadraw-ctl [--socket PATH]
 //        status|blank|unblank|watch|capture-info|capture <path>
-//        |configure <surface-id> <width> <height>
+//        |configure <surface-id> <width> <height>|surfaces
 // watch: hold the connection open and print every display_state
 // notification as it arrives (ADR 0021 Section 8; the Section 10
 // notification bench check), until EOF or interrupt.
 // capture-info: print the frame metadata (the sizing probe).
 // capture <path>: write the composited screen to <path> as PPM (P6).
+// surfaces: list every surface with id, owner, uid, current size,
+// pending and acknowledged config serials.
 // configure: the D-12 stage 2 administrative front end: tell the
 // compositor to assign the surface a configuration (ADR 0022
 // section 5); prints the allocated config_serial. The presented
@@ -324,6 +326,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
             verb = .unblank;
         } else if (std.mem.eql(u8, a, "capture-info")) {
             verb = .capture_info;
+        } else if (std.mem.eql(u8, a, "surfaces")) {
+            verb = .list_surfaces;
         } else if (std.mem.eql(u8, a, "configure")) {
             verb = .configure;
             if (i + 3 >= args.len) fail("semadraw-ctl: configure requires <surface-id> <width> <height>", .{}, 1);
@@ -348,7 +352,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
     }
     if (watch and verb != null) fail("semadraw-ctl: watch takes no verb", .{}, 1);
-    if (!watch and verb == null) fail("usage: semadraw-ctl [--socket PATH] status|blank|unblank|watch|capture-info|capture <path>|configure <surface-id> <width> <height>", .{}, 1);
+    if (!watch and verb == null) fail("usage: semadraw-ctl [--socket PATH] status|blank|unblank|watch|capture-info|capture <path>|configure <surface-id> <width> <height>|surfaces", .{}, 1);
 
     const fd = compat.posix.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0) catch
         fail("semadraw-ctl: socket() failed", .{}, 2);
@@ -392,6 +396,33 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     const v = verb.?;
     if (v == .capture) runCapture(gpa, fd, capture_path.?);
+
+    if (v == .list_surfaces) {
+        sendVerb(fd, v);
+        var in: [control.CtlHeader.SIZE + control.MAX_CTL_PAYLOAD]u8 = undefined;
+        const first = readOneReply(fd, &in);
+        if (first.hdr.msg_type == .ctl_error)
+            failCtlError(in[control.CtlHeader.SIZE..][0..first.payload_len]);
+        if (first.hdr.msg_type != .surfaces_reply)
+            fail("semadraw-ctl: unexpected surfaces reply type", .{}, 2);
+        const head = control.SurfacesReplyPayload.deserialize(in[control.CtlHeader.SIZE..][0..first.payload_len]) catch
+            fail("semadraw-ctl: malformed surfaces_reply", .{}, 2);
+        std.debug.print("{d} surface(s)\n", .{head.count});
+        var remaining = head.count;
+        while (remaining > 0) : (remaining -= 1) {
+            const r = readOneReply(fd, &in);
+            if (r.hdr.msg_type != .surface_info)
+                fail("semadraw-ctl: unexpected frame in surface listing", .{}, 2);
+            const info = control.SurfaceInfoPayload.deserialize(in[control.CtlHeader.SIZE..][0..r.payload_len]) catch
+                fail("semadraw-ctl: malformed surface_info", .{}, 2);
+            std.debug.print("  id={d} owner={d} uid={d} size={d:.0}x{d:.0} pending_serial={d} acked_serial={d}\n", .{
+                info.surface_id, info.owner,      info.owner_uid,
+                info.logical_width,               info.logical_height,
+                info.pending_serial,              info.acked_serial,
+            });
+        }
+        std.process.exit(0);
+    }
 
     if (configure_req) |req| {
         var cpl: [control.ConfigurePayload.SIZE]u8 = undefined;
