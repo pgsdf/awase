@@ -1,10 +1,38 @@
 # Screen capture: design
 
-Status: DESIGN AGREED (operator, 2026-07-13). Implemented: commits
-1 through 4 (recvmsg transport, FrameSnapshot API, capture request
-and reply, semadraw-ctl capture writing PPM), with the ADR 0021
-Section 8 amendment in place. Commit 5 (PNG) remains, later and
-optionally, as a change to one function in semadraw-ctl.
+Status: DESIGN AGREED (operator, 2026-07-13). IMPLEMENTED AND
+BENCH-VERIFIED (2026-07-15): commits 1 through 4 (recvmsg transport,
+FrameSnapshot API, capture request and reply, semadraw-ctl capture
+writing PPM), with the ADR 0021 Section 8 amendment in place. Commit
+5 (PNG) remains, later and optionally, as a change to one function
+in semadraw-ctl. Audit item SA-4's framebuffer half closes with
+this; its SDCS-capture half stays open.
+
+## Bench record (pgsd-bare-metal, 2026-07-15)
+
+    $ sudo semadraw-ctl capture-info
+    frame: 3840x2160 stride=15360 format=1
+    $ sudo semadraw-ctl capture /tmp/screen.ppm
+    wrote /tmp/screen.ppm: 3840x2160
+
+The file was byte-exact at 24,883,217 (17-byte P6 header plus
+3840 * 2160 * 3) and opened cleanly in GIMP; the sessiond navy
+palette (#12375c) rendering as navy confirms the BGRX byte order,
+since a swapped conversion turns it muddy brown. stride was exactly
+width * 4 on this panel, so the shear-handling path was not
+exercised by the hardware and rests on the poison-byte unit test in
+semadraw_ctl.zig. Every classed error path except
+capture_no_descriptor and capture_buffer_too_small remains
+unexercised on metal; the daemon-side unit story for those is the
+SM-TEST-1 harness when it lands.
+
+Deploy recipe, correcting commit 4's bench line as first written:
+the s6 run script execs /usr/local/bin/semadrawd, so the rebuilt
+daemon and tool deploy via install.sh (which stops semadrawd to
+replace binaries); the rc.d shim's restart is the s6-svc path under
+AD-20. Building in the checkout alone leaves the supervised daemon
+on the old binary, which would answer the new opcodes by dropping
+the connection.
 
 Recorded because the architectural questions are settled and the
 implementation is not, and the two should not be conflated. The next

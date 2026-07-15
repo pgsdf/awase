@@ -370,7 +370,8 @@ it gets its own decision rather than inheriting ADR 0022's.
 
 ## SA-4: the substrate cannot capture what it presents
 
-Status: OPEN. Recorded 2026-07-12. Disposition: semadraw.
+Status: FRAMEBUFFER CAPTURE CLOSED, 2026-07-15; SDCS capture remains
+open. Recorded 2026-07-12. Disposition: semadraw.
 
 ### Classification
 
@@ -386,14 +387,35 @@ Status: OPEN. Recorded 2026-07-12. Disposition: semadraw.
         Missing abstraction. The pixels exist and are reachable
         in-process; nothing can get them out.
 
-    Implementation status:
-        Backend:  present  (software.zig holds framebuffer: ?[]u8)
+    Implementation status (2026-07-15):
+        Backend:  frameSnapshot vtable op, drawfs implementation
         Registry: n/a
-        Protocol: absent
-        Tooling:  absent  (sdcs_dump inspects a FILE, not the screen)
+        Protocol: capture/capture_info on the control socket,
+                  capture_reply carrying CaptureHeader, classed
+                  ctl_error codes
+        Tooling:  semadraw-ctl capture-info; semadraw-ctl capture
+                  <path> writing PPM
 
     Disposition:
-        Substrate Evolution ADR, after D-12. Not started.
+        Resolved without a new ADR: the design conversation after
+        D-12 concluded capture is an implementation of ADR 0021
+        Section 8 (the control socket carries privileged compositor
+        operations), and that ADR carries the amendment naming
+        CAPTURE. Design record: semadraw/docs/CAPTURE-DESIGN.md.
+        Implemented in four commits and bench-verified on
+        pgsd-bare-metal 2026-07-15: capture-info reported
+        3840x2160 stride=15360 format=1 matching the panel, and
+        capture wrote a byte-exact 24,883,217-byte P6 the operator
+        opened and verified in GIMP, the navy sessiond palette
+        confirming byte order. stride was exactly width * 4 on this
+        panel, so the shear-handling path was not exercised by the
+        hardware; it rests on the poison-byte unit test in
+        semadraw_ctl.zig.
+
+        This closes the FRAMEBUFFER half of this item. SDCS capture
+        (record the command stream a client submitted; NDE DESIGN.md
+        sections 5 and 6) is a different capability, deliberately
+        not conflated below, and remains unbuilt and open.
 
 ### Evidence
 
@@ -454,6 +476,15 @@ The immediate need (looking at the console-layout prototype) is served
 by photographing the bench. Building a capture path to satisfy that
 would be a quick hack answering a design question by accident, which is
 the failure mode this audit exists to prevent. Revisit after D-12.
+
+### Resolution (2026-07-15)
+
+Revisited after D-12 as planned. The design question above resolved
+to the control socket (the second option): capture is an operator
+action, the socket is already privilege-gated, and ADR 0021 Section 8
+now names CAPTURE by amendment. The bench is no longer photographed;
+`semadraw-ctl capture` writes what the compositor presents. The SDCS
+half of the two-capabilities distinction stands open.
 
 ---
 
