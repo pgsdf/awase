@@ -10,10 +10,18 @@
 #   Phase 5  F-SESSION-1 setup (orphans), then, after logout, the
 #            greeter assertions via the `greeter` entry point
 #
-# Usage:
-#   sh tools/bench-multiwindow.sh run       # in the session, two terms up
-#   sh tools/bench-multiwindow.sh greeter   # from the out-of-band shell,
-#                                           # at the login screen, after run
+# Usage (BOTH phases from the out-of-band shell, ssh or a spare vt,
+# never from inside a semadraw-term: phase 3 moves keyboard focus
+# between the terms, and a script running inside one could not read
+# its own prompts the moment focus left it):
+#   sh tools/bench-multiwindow.sh run       # with a session logged in
+#   sh tools/bench-multiwindow.sh greeter   # at the login screen, after run
+#
+# The run phase drives its own setup: when the second terminal is
+# missing it tells the operator exactly what to type in the console
+# term (the launch must come from the session environment, because
+# scale inheritance is itself under test) and polls the surface
+# census until the new surface appears.
 #
 # Commands are executed and asserted automatically; what only eyes and
 # the bench keyboard can verify becomes a recorded [y/n] prompt. Every
@@ -97,6 +105,12 @@ greeter_phase() {
 
 say "bench-multiwindow RUN phase; log: $LOG"
 
+if [ "${SEMADRAW_TERM:-}" = "1" ]; then
+    say "WARNING: running inside a semadraw-term; phase 3 focus switches"
+    say "will take the keyboard away from this script's own prompts."
+    say "Run from ssh or a spare vt instead."
+fi
+
 # ---- Phase 0: deploy sanity + suite -------------------------------
 step "deploy sanity: repository HEAD"
 head=$(cd /usr/local/src/awase && git log --format=%s -1)
@@ -111,7 +125,27 @@ else
 fi
 
 # ---- Phase 1: surfaces + scale inheritance ------------------------
-step "surface census (expect cursor + two terms; second launched as bare 'semadraw-term &')"
+step "surface census, driving setup if the second term is missing"
+clients=$(surfaces | grep '^  id=' | grep -cv 'owner=4294967295')
+if [ "$clients" -lt 1 ]; then
+    bad "no client surfaces at all: is a session logged in?"; report
+fi
+if [ "$clients" -lt 2 ]; then
+    say "   Second terminal not running. In the CONSOLE term, type:"
+    say "       semadraw-term &"
+    say "   (bare, no --scale: the launch from the session environment"
+    say "   IS the scale-inheritance test). Waiting up to 60s..."
+    waited=0
+    while [ "$waited" -lt 60 ]; do
+        clients=$(surfaces | grep '^  id=' | grep -cv 'owner=4294967295')
+        [ "$clients" -ge 2 ] && break
+        sleep 2; waited=$((waited+2))
+    done
+    if [ "$clients" -lt 2 ]; then
+        bad "second terminal surface never appeared within 60s"; report
+    fi
+    say "   second surface appeared after ~${waited}s"
+fi
 out=$(surfaces); say "$out"
 CURSOR=$(printf '%s\n' "$out" | grep 'owner=4294967295' | head -1); CURSOR=$(field "$CURSOR" id)
 T1=$(printf '%s\n' "$out" | grep '^  id=' | grep -v 'owner=4294967295' | sed -n 1p); T1=$(field "$T1" id)
@@ -119,7 +153,7 @@ T2=$(printf '%s\n' "$out" | grep '^  id=' | grep -v 'owner=4294967295' | sed -n 
 if [ -n "$CURSOR" ] && [ -n "$T1" ] && [ -n "$T2" ]; then
     ok "derived ids: cursor=$CURSOR terms=$T1,$T2 (nothing hardcoded)"
 else
-    bad "need cursor + two client surfaces; launch the second term first"; report
+    bad "could not derive three surface ids from the listing"; report
 fi
 
 step "scale inheritance (patch 18)"
