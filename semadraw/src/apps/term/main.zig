@@ -370,6 +370,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const args = args_owned.argv;
 
     var config = Config{};
+    var scale_from_arg = false;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -397,6 +398,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             };
             config.scale = std.fmt.parseInt(u32, s, 10) catch return error.InvalidArgument;
             if (config.scale < 1 or config.scale > 4) return error.InvalidArgument;
+            scale_from_arg = true;
         } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--fullscreen")) {
             // AD-26: fullscreen takes no value; the surface is sized
             // from the active framebuffer's dimensions and the cell
@@ -440,8 +442,31 @@ pub fn main(init: std.process.Init.Minimal) !void {
         }
     }
 
+    // Scale inheritance (2026-07-16): a term launched from inside a
+    // running term without an explicit --scale adopts the parent's
+    // effective scale via SEMADRAW_TERM_SCALE, exported below into
+    // this process's environment so every spawned shell (and thus any
+    // nested semadraw-term) inherits it, the TERM/SEMADRAW_TERM
+    // pattern. An explicit --scale always wins, on the parent and on
+    // the child; the env value is validated like the flag and ignored
+    // when out of range.
+    if (!scale_from_arg) {
+        if (compat.args.getenv("SEMADRAW_TERM_SCALE")) |v| {
+            if (std.fmt.parseInt(u32, v, 10)) |sc| {
+                if (sc >= 1 and sc <= 4) config.scale = sc;
+            } else |_| {}
+        }
+    }
+    var scale_env_buf: [8]u8 = undefined;
+    const scale_env = std.fmt.bufPrintZ(&scale_env_buf, "{d}", .{config.scale}) catch "1";
+    _ = setenv("SEMADRAW_TERM_SCALE", scale_env.ptr, 1);
+
     try run(allocator, config);
 }
+
+// Scale inheritance export; same extern the pty module declares for
+// TERM/LINES/COLUMNS.
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 // ============================================================================
 // run
