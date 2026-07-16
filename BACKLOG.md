@@ -691,9 +691,41 @@ and unenforced in pixels. Needs an operator decision on whether
 render-time clipping to current extent becomes part of the ADR 0022
 contract.
 
-Remaining: stage 4, client-side configure handling and serial echo
-(client library, then semadraw-term reflow with TIOCSWINSZ); then the
-section 10 bench on metal.
+Stage 4 bench record (pgsd-bare-metal, 2026-07-15/16). The positive
+acknowledgement path verified end to end: configure of the live
+semadraw-term surface, grid reflow visible on the glass, acked_serial
+advancing in the listing, TIOCSWINSZ confirmed by stty size reporting
+17 66 (exactly floor(1600/24) by floor(900/48)-1 at glyph 8x16 scale
+3), a full-screen TUI application reflowing correctly under SIGWINCH,
+and the grow path restoring 3840x2160 in place. Section 10
+requirement 6 satisfied on metal.
+
+The shrink bench then surfaced three bugs in three layers, each
+convicted by pixel arithmetic from semadraw-ctl capture and each
+verified fixed by the same tool. F-D12-1: per-surface damage never
+repaints an extent a promotion vacates; fixed by CommitResult
+extent_changed driving a full repaint at promotion. F-D12-2: the
+full-repaint clear rode the first surface render, so an empty-scene
+composite performed no clear while clearAll consumed the request;
+fixed by an up-front clearRegion clear plus retaining unhonoured
+requests. F-D12-3: the term's stage 4 handler resized screens and
+ptys but not the renderer, whose stored height_px placed the status
+bar at the pre-resize bottom row every frame, repainting the band the
+compositor kept correctly clearing; fixed by Renderer.resize. Final
+evidence: a full-resolution sweep of the post-shrink capture found
+ZERO non-black pixels outside the term extent, and the status bar
+reads at y=840 (the shrunk grid's bottom) with the correct tab and
+bar colours.
+
+Remaining: the section 10 bench matrix beyond requirement 6:
+requirement 5 (non-acknowledgment) benched via sessiond and recorded;
+requirement 7 (authority) structural, verifiable by protocol
+inspection; requirement 4 (supersession) drivable with two rapid
+configures and a capture witness; requirements 1 through 3 (mid-draw
+timing cases) pinned by registry unit tests, their metal exercise
+owed to the SM-TEST-1 harness. D-12 closure disposition awaiting
+operator ratification, alongside the render-clipping observation
+above.
 
 Bench (ADR 0022 section 10): the test that matters is requirement 2,
 position change during draw, which proves the general mechanism rather
