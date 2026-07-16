@@ -46,10 +46,16 @@ const log = std.log.scoped(.launch);
 // processes, logged loudly as an F-SESSION-1 property violation, and
 // login proceeds rather than wedging the console forever on them.
 fn reapSessionRemnants() void {
+    // Signal numbers from std.posix rather than the cImport: this
+    // file's cImport deliberately includes few headers (see the
+    // sys/stat.h note above), and the bench's native sys/wait.h does
+    // not expose SIG* the way the cross-compile's bundled headers do,
+    // which is exactly how the first build of this function failed on
+    // metal while passing analysis off it.
     const phases = [_]struct { sig: c_int, grace_ms: u64 }{
-        .{ .sig = c.SIGHUP, .grace_ms = 500 },
-        .{ .sig = c.SIGTERM, .grace_ms = 2000 },
-        .{ .sig = c.SIGKILL, .grace_ms = 5000 },
+        .{ .sig = std.posix.SIG.HUP, .grace_ms = 500 },
+        .{ .sig = std.posix.SIG.TERM, .grace_ms = 2000 },
+        .{ .sig = std.posix.SIG.KILL, .grace_ms = 5000 },
     };
 
     for (phases) |phase| {
