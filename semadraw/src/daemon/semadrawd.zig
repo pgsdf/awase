@@ -3427,6 +3427,23 @@ pub const Daemon = struct {
     }
 
     /// Forward keyboard events to the top visible surface's client
+    /// F-D7-1: the input routing decision, shared by the key and
+    /// mouse forwarders. The focused surface when one is set (D-7;
+    /// visibility deliberately not checked, per the ratified focus
+    /// semantics: a hidden surface may hold focus); the top visible
+    /// surface as the pre-focus fallback (boot, cleared focus, or a
+    /// focused surface that vanished without its lifecycle clear,
+    /// which is logged as the anomaly it would be).
+    fn resolveInputTarget(self: *Daemon) ?protocol.SurfaceId {
+        if (self.focused_surface != input.NO_FOCUS) {
+            if (self.surfaces.getSurface(self.focused_surface) != null) {
+                return self.focused_surface;
+            }
+            log.warn("focused surface {} no longer exists; falling back to top visible (lifecycle clear missed?)", .{self.focused_surface});
+        }
+        return self.surfaces.getTopVisibleSurface();
+    }
+
     fn forwardKeyEvents(self: *Daemon, key_events: []const backend.KeyEvent) void {
         // AD-2a Phase 2.4.5: track modifier state at the daemon
         // level. Done before the focused-surface lookup so modifier
@@ -3438,9 +3455,18 @@ pub const Daemon = struct {
             self.last_modifiers = key_events[key_events.len - 1].modifiers;
         }
 
-        // Get the top visible surface to send keyboard input to
-        const top_surface_id = self.surfaces.getTopVisibleSurface() orelse {
-            log.debug("forwardKeyEvents: no top visible surface", .{});
+        // F-D7-1: route to the FOCUSED surface. This path routed by
+        // getTopVisibleSurface for its whole life, which was correct
+        // by coincidence: until the first two-window session there
+        // was always exactly one client surface, so the top visible
+        // surface WAS the focused one by tautology. The D-7 focus
+        // machinery (region writer, focused_surface, set_focus, the
+        // ctl focus verb) updated state this path never read; the
+        // first contested keyboard exposed it in minutes. Top-visible
+        // remains the fallback for the pre-focus states (boot,
+        // cleared focus), preserving single-client behaviour exactly.
+        const top_surface_id = self.resolveInputTarget() orelse {
+            log.debug("forwardKeyEvents: no input target", .{});
             return;
         };
         const surface = self.surfaces.getSurface(top_surface_id) orelse {
@@ -3508,8 +3534,12 @@ pub const Daemon = struct {
             self.last_modifiers = mouse_events[mouse_events.len - 1].modifiers;
         }
 
-        // Get the top visible surface to send mouse input to
-        const top_surface_id = self.surfaces.getTopVisibleSurface() orelse return;
+        // F-D7-1: same routing as forwardKeyEvents; the comment above
+        // this function always said "focused surface" and the code
+        // said top-visible. Now they agree. Hit-testing pointer
+        // events by position is surface-manager policy, recorded and
+        // deliberately absent (focus-follows semantics until NDE-1).
+        const top_surface_id = self.resolveInputTarget() orelse return;
         const surface = self.surfaces.getSurface(top_surface_id) orelse return;
 
         for (mouse_events) |event| {
