@@ -582,6 +582,21 @@ for NDE-1; serves NDE Milestone 2 and beyond. ADR before code.
 
 ### `[ ]` D-10: compositor-enforced session-lock mode  *(Open 2026-06-09, Large, P1; secure-lock primitive for SM-2/SM-3)*
 
+Requirement added 2026-07-16 (F-SESSION-1, operator-ratified): the
+compositor shall enforce display ownership across session
+transitions, independently of teardown hygiene. In the greeter state,
+only greeter-owned clients may have mapped surfaces; at a session
+transition, clients of the ended session lose presentation and input
+authority. Motivating finding: a background terminal survived logout
+(session-wide teardown gap, fixed sessiond-side via the procctl(2)
+reaper facility), reconnected, and overlaid half the login screen
+while positioned to receive keyboard input. The sessiond fix is
+cleanup correctness; this requirement is display-ownership
+enforcement; the distinction is deliberate and both are required for
+the property "after logout completes, no process or client of the
+previous session retains visible surfaces or input capability in the
+greeter state."
+
 From SM-2 (ADR 0010 D3) and SM-3 (ADR 0009): a secure screen lock needs
 a compositor-enforced lock state, which semadraw lacks. z-order, the
 proposed set-focus (D-7), and grab (D-8) do not substitute; they are

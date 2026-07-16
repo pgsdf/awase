@@ -31,6 +31,59 @@ const pam = @import("pam.zig");
 const user_enum = @import("user_enum.zig");
 const idle = @import("idle.zig");
 const compat = @import("compat");
+const log = std.log.scoped(.launch);
+
+// F-SESSION-1: kill every remaining descendant of the ended session.
+// Escalation ladder HUP, TERM, KILL, with the kernel's reaper facility
+// as the enumeration authority: PROC_REAP_KILL signals the whole
+// descendant subtree in one syscall (no userland snapshot races; a
+// fork between phases is still a descendant and still counted), and
+// PROC_REAP_STATUS.rs_descendants is the terminal-state gate. Zombies
+// reparented to us are drained with waitpid(-1, WNOHANG) so the count
+// can reach zero. The greeter transition does not proceed past this
+// function until the count is zero or the defined failure state is
+// reached: descendants surviving SIGKILL are unkillable kernel-stuck
+// processes, logged loudly as an F-SESSION-1 property violation, and
+// login proceeds rather than wedging the console forever on them.
+fn reapSessionRemnants() void {
+    const phases = [_]struct { sig: c_int, grace_ms: u64 }{
+        .{ .sig = c.SIGHUP, .grace_ms = 500 },
+        .{ .sig = c.SIGTERM, .grace_ms = 2000 },
+        .{ .sig = c.SIGKILL, .grace_ms = 5000 },
+    };
+
+    for (phases) |phase| {
+        var st: c.struct_procctl_reaper_status = undefined;
+        if (c.procctl(c.P_PID, 0, c.PROC_REAP_STATUS, &st) != 0) {
+            log.warn("PROC_REAP_STATUS failed (errno {}); teardown blind, sending {} to subtree anyway", .{ errno(), phase.sig });
+        } else if (st.rs_descendants == 0) {
+            return; // terminal state: nothing survived
+        }
+
+        var rk: c.struct_procctl_reaper_kill = std.mem.zeroes(c.struct_procctl_reaper_kill);
+        rk.rk_sig = phase.sig;
+        rk.rk_flags = 0; // whole descendant subtree
+        _ = c.procctl(c.P_PID, 0, c.PROC_REAP_KILL, &rk);
+
+        // Grace: drain reparented zombies while polling the count.
+        const POLL_MS: u64 = 100;
+        var waited: u64 = 0;
+        while (waited < phase.grace_ms) : (waited += POLL_MS) {
+            var zst: c_int = 0;
+            while (c.waitpid(-1, &zst, c.WNOHANG) > 0) {}
+            var st2: c.struct_procctl_reaper_status = undefined;
+            if (c.procctl(c.P_PID, 0, c.PROC_REAP_STATUS, &st2) == 0 and st2.rs_descendants == 0) {
+                return;
+            }
+            compat.time.sleep(compat.time.Duration.fromNanoseconds(POLL_MS * std.time.ns_per_ms));
+        }
+    }
+
+    var st: c.struct_procctl_reaper_status = undefined;
+    if (c.procctl(c.P_PID, 0, c.PROC_REAP_STATUS, &st) == 0 and st.rs_descendants != 0) {
+        log.err("F-SESSION-1 property violation: {} unkillable session descendants survive SIGKILL; proceeding to greeter", .{st.rs_descendants});
+    }
+}
 
 const c = @cImport({
     @cInclude("sys/types.h");
@@ -38,6 +91,7 @@ const c = @cImport({
     // whose bintime_shift inline trips a Zig 0.16 translate-c bug. Only mkdir
     // and chmod are needed, routed to std.c below.
     @cInclude("sys/wait.h");
+    @cInclude("sys/procctl.h"); // F-SESSION-1: reaper facility
     @cInclude("login_cap.h");
     @cInclude("pwd.h");
     @cInclude("unistd.h");
@@ -309,6 +363,24 @@ pub fn launch(
     defer pam.Pam.freeEnvList(allocator, pam_env);
 
     // 7. Fork. The child path is below; the parent waits.
+    // F-SESSION-1: acquire reaper status (procctl(2) PROC_REAP_ACQUIRE)
+    // before forking, so every descendant of the session, including
+    // double-forked daemons that escape the process-group hierarchy,
+    // reparents to sessiond rather than init when orphaned. This is
+    // what makes session-wide teardown at logout enumerable and
+    // race-free: the kernel owns the descendant set, PROC_REAP_KILL
+    // signals the whole subtree in one call, and PROC_REAP_STATUS
+    // gives an authoritative count to gate the greeter transition on.
+    // Idempotent across sessions (EBUSY when already the reaper).
+    // Failure degrades teardown to leader-only, the pre-F-SESSION-1
+    // behaviour, and is warned loudly because the greeter-exclusivity
+    // property then rests on session processes exiting voluntarily.
+    if (c.procctl(c.P_PID, 0, c.PROC_REAP_ACQUIRE, null) != 0) {
+        if (errno() != c.EBUSY) {
+            log.warn("PROC_REAP_ACQUIRE failed (errno {}); logout teardown degrades to leader-only", .{errno()});
+        }
+    }
+
     const pid = c.fork();
     if (pid < 0) return Error.ForkFailed;
 
@@ -366,6 +438,16 @@ pub fn launch(
         passes +%= 1;
         compat.time.sleep(compat.time.Duration.fromNanoseconds(WAIT_TICK_NS));
     }
+
+    // F-SESSION-1: session-wide teardown, BEFORE pam_close_session so
+    // the PAM close hooks run while the session is still nominally
+    // active (operator-ratified ordering). The security property this
+    // enforces: after logout completes, no process of the previous
+    // session may retain visible surfaces or input capability in the
+    // greeter state. Found on metal: a background terminal survived
+    // logout, reconnected, and overlaid half the login screen while
+    // plausibly holding keyboard focus.
+    reapSessionRemnants();
 
     // Tear down PAM session. The errdefer chain will not fire on the
     // happy path; we do this explicitly so we can fold the
