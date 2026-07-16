@@ -63,7 +63,11 @@ ask() {
 surfaces() { sudo "$CTL" surfaces 2>&1; }
 
 # Field extraction from a surfaces line: id=N ... pos=X,Y ...
-field() { printf '%s' "$1" | sed -n "s/.*$2=\([^ ,]*\).*/\1/p"; }
+# The key is anchored at a field boundary (start of line or a space):
+# the first version used a bare greedy match, and uid=1002 satisfied
+# id=..., which fed uids to every ctl command of the first full run
+# and produced sixteen correct errors to sixteen wrong questions.
+field() { printf '%s' "$1" | sed -n "s/.*[[:space:]]$2=\([^ ,]*\).*/\1/p"; }
 
 report() {
     say ""
@@ -150,36 +154,53 @@ out=$(surfaces); say "$out"
 CURSOR=$(printf '%s\n' "$out" | grep 'owner=4294967295' | head -1); CURSOR=$(field "$CURSOR" id)
 T1=$(printf '%s\n' "$out" | grep '^  id=' | grep -v 'owner=4294967295' | sed -n 1p); T1=$(field "$T1" id)
 T2=$(printf '%s\n' "$out" | grep '^  id=' | grep -v 'owner=4294967295' | sed -n 2p); T2=$(field "$T2" id)
-if [ -n "$CURSOR" ] && [ -n "$T1" ] && [ -n "$T2" ]; then
-    ok "derived ids: cursor=$CURSOR terms=$T1,$T2 (nothing hardcoded)"
+# Self-check the derivation: three DISTINCT ids, each of which the
+# listing actually contains as a surface id. A wrong extraction must
+# abort here, never masquerade as PASS and cascade.
+selfcheck_ok=1
+[ -n "$CURSOR" ] && [ -n "$T1" ] && [ -n "$T2" ] || selfcheck_ok=0
+[ "$T1" != "$T2" ] && [ "$T1" != "$CURSOR" ] && [ "$T2" != "$CURSOR" ] || selfcheck_ok=0
+for i in $CURSOR $T1 $T2; do
+    printf '%s\n' "$out" | grep -q "^  id=$i " || selfcheck_ok=0
+done
+if [ "$selfcheck_ok" -eq 1 ]; then
+    ok "derived ids: cursor=$CURSOR terms=$T1,$T2 (distinct, all present in the listing)"
 else
-    bad "could not derive three surface ids from the listing"; report
+    bad "id derivation failed self-check (cursor=$CURSOR t1=$T1 t2=$T2); aborting before the cascade"; report
 fi
+# The newer term has the higher id (ids are monotonic): it becomes
+# RIGHT, so after placement the operator can identify it by position.
+if [ "$T1" -gt "$T2" ]; then NEW=$T1; OLDT=$T2; else NEW=$T2; OLDT=$T1; fi
+say "   newer term is id=$NEW (will be placed RIGHT)"
 
-step "scale inheritance (patch 18)"
-printf '   In the NEW term, run: stty size   -- enter its output here: '
-read -r stty_out
-say "   operator entered: $stty_out"
-if [ "$stty_out" = "44 160" ]; then
-    ok "44 160: scale 3 inherited with no flag"
-else
-    bad "expected '44 160' (scale-1 fallback would read '134 480'); got '$stty_out'"
-fi
-
-# ---- Phase 2: placement -------------------------------------------
-run_expect "configure $T1 to the left half"  "configure: serial=" sudo "$CTL" configure "$T1" 1920 2160
-run_expect "configure $T2 to the right half" "configure: serial=" sudo "$CTL" configure "$T2" 1920 2160
-run_expect "move $T2 to (1920,0)"            "ok"                 sudo "$CTL" move "$T2" 1920 0
+# ---- Phase 2: placement (before any prompt about "the new term",
+# so the operator can identify it by position: the newer one goes
+# RIGHT; two fullscreen terms overlap exactly and are otherwise
+# indistinguishable on the glass, which is also why "I did not see
+# the second window open" was the census disagreeing with the eye) --
+run_expect "configure $OLDT to the left half"  "configure: serial=" sudo "$CTL" configure "$OLDT" 1920 2160
+run_expect "configure $NEW to the right half"  "configure: serial=" sudo "$CTL" configure "$NEW" 1920 2160
+run_expect "move $NEW to (1920,0)"             "ok"                 sudo "$CTL" move "$NEW" 1920 0
 
 step "placement verified in the listing"
 out=$(surfaces); say "$out"
-l1=$(printf '%s\n' "$out" | grep "id=$T1 "); l2=$(printf '%s\n' "$out" | grep "id=$T2 ")
+l1=$(printf '%s\n' "$out" | grep "id=$OLDT "); l2=$(printf '%s\n' "$out" | grep "id=$NEW ")
 if printf '%s' "$l1" | grep -q 'size=1920x2160 pos=0,0' && printf '%s' "$l2" | grep -q 'size=1920x2160 pos=1920,0'; then
-    ok "T1 at 0,0 and T2 at 1920,0, both 1920x2160 (acked: $(field "$l1" acked_serial)/$(field "$l2" acked_serial))"
+    ok "old term at 0,0 and new term at 1920,0, both 1920x2160 (acked: $(field "$l1" acked_serial)/$(field "$l2" acked_serial))"
 else
     bad "listing does not show the expected placement"
 fi
-LEFT=$T1; RIGHT=$T2
+LEFT=$OLDT; RIGHT=$NEW
+
+step "scale inheritance (patch 18): the RIGHT window is the new term"
+printf '   In the RIGHT window, run: stty size   -- enter the two numbers (e.g. 44 80): '
+read -r stty_out
+say "   operator entered: $stty_out"
+if [ "$stty_out" = "44 80" ]; then
+    ok "44 80: scale 3 inherited with no flag (1920x2160 at 24x48 cells)"
+else
+    bad "expected '44 80'; a scale-1 fallback reads '134 240'; got '$stty_out'"
+fi
 
 # ---- Phase 3: focus routing (F-D7-1) ------------------------------
 run_expect "focus LEFT ($LEFT)" "ok" sudo "$CTL" focus "$LEFT"
