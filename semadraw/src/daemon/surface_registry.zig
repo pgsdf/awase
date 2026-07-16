@@ -1183,3 +1183,27 @@ test "commit reports extent_changed when promotion moves the surface" {
     r = try registry.commit(surface.id, cfg.serial);
     try std.testing.expect(!r.extent_changed);
 }
+
+test "staged positions on two surfaces promote independently" {
+    // Transaction isolation across surfaces (operator-ratified test
+    // list, 2026-07-16): committing one surface promotes only that
+    // surface's staged state.
+    var registry = SurfaceRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    const a = try registry.createSurface(1, 1000, 800, 600);
+    const b = try registry.createSurface(2, 1001, 800, 600);
+
+    try registry.setPosition(a.id, 100, 0);
+    try registry.setPosition(b.id, 200, 0);
+
+    const ra = try registry.commit(a.id, 0);
+    try std.testing.expect(ra.extent_changed);
+    try std.testing.expectEqual(@as(f32, 100), a.current.position_x);
+    // B's staged position is untouched by A's commit.
+    try std.testing.expectEqual(@as(f32, 0), b.current.position_x);
+    try std.testing.expectEqual(@as(f32, 200), b.pending.position_x);
+
+    const rb = try registry.commit(b.id, 0);
+    try std.testing.expect(rb.extent_changed);
+    try std.testing.expectEqual(@as(f32, 200), b.current.position_x);
+}

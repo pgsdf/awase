@@ -2491,9 +2491,78 @@ pub const Daemon = struct {
                 .logical_height = surface.current.logical_height,
                 .pending_serial = if (surface.pending_configure) |cfg| cfg.serial else 0,
                 .acked_serial = surface.acked_serial,
+                .position_x = surface.current.position_x,
+                .position_y = surface.current.position_y,
             }).serialize(&pl);
             self.sendCtl(idx, .surface_info, &pl);
         }
+    }
+
+    /// Operator move (ratified 2026-07-16): the administrative front
+    /// end over the transactional position setter, the configure
+    /// pattern continued. Compositor-global pixels; any finite
+    /// coordinate is legal (rendering clamps at framebuffer edges; a
+    /// fully off-screen surface contributes nothing). The position is
+    /// STAGED: it becomes visible at the client's next commit, per the
+    /// ADR 0022 model, with no timing guarantee beyond that; the
+    /// vacated extent repaints via the promotion's extent_changed
+    /// signal (F-D12-1).
+    fn handleCtlMove(self: *Daemon, idx: usize, payload: []const u8) void {
+        const req = control.MovePayload.deserialize(payload) catch {
+            self.sendCtlError(idx, .protocol_error);
+            return;
+        };
+        if (!std.math.isFinite(req.x) or !std.math.isFinite(req.y)) {
+            self.sendCtlError(idx, .move_invalid_position);
+            return;
+        }
+        const surface = self.surfaces.getSurface(req.surface_id) orelse {
+            self.sendCtlError(idx, .move_unknown_surface);
+            return;
+        };
+        if (surface.owner == protocol.CLIENT_ID_DAEMON) {
+            // The cursor's position is the pointer's (ADR 0005),
+            // never the operator's.
+            self.sendCtlError(idx, .move_not_client_surface);
+            return;
+        }
+        self.surfaces.setPosition(req.surface_id, req.x, req.y) catch {
+            self.sendCtlError(idx, .move_unknown_surface);
+            return;
+        };
+        self.sendCtl(idx, .ctl_ack, &.{});
+    }
+
+    /// Operator focus (ratified 2026-07-16): keyboard routing only,
+    /// through the same publishKeyboardFocus path the privileged
+    /// set_focus client verb uses; the ctl socket itself is the
+    /// privilege. Does not raise, does not touch z-order; visibility
+    /// is orthogonal, so a hidden surface may hold focus
+    /// (raise-on-focus and click-to-focus are surface-manager policy,
+    /// deliberately absent). surface 0 clears to NO_FOCUS, keeping
+    /// the set_focus semantic.
+    fn handleCtlFocus(self: *Daemon, idx: usize, payload: []const u8) void {
+        const req = control.FocusPayload.deserialize(payload) catch {
+            self.sendCtlError(idx, .protocol_error);
+            return;
+        };
+        if (req.surface_id == input.NO_FOCUS) {
+            self.publishKeyboardFocus(input.NO_FOCUS, input.NO_FOCUS);
+            self.sendCtl(idx, .ctl_ack, &.{});
+            return;
+        }
+        const surface = self.surfaces.getSurface(req.surface_id) orelse {
+            self.sendCtlError(idx, .focus_unknown_surface);
+            return;
+        };
+        if (surface.owner == protocol.CLIENT_ID_DAEMON) {
+            // Keys routed to a daemon-owned surface reach nobody;
+            // refused as a footgun.
+            self.sendCtlError(idx, .focus_not_client_surface);
+            return;
+        }
+        self.publishKeyboardFocus(surface.owner, req.surface_id);
+        self.sendCtl(idx, .ctl_ack, &.{});
     }
 
     /// D-12 stage 2: send surface_configure to the client that owns
@@ -2648,6 +2717,8 @@ pub const Daemon = struct {
             // D-12 stage 2: the administrative configure front end.
             .configure => self.handleCtlConfigure(idx, payload),
             .list_surfaces => self.handleCtlListSurfaces(idx),
+            .move => self.handleCtlMove(idx, payload),
+            .focus => self.handleCtlFocus(idx, payload),
             // Reply/notification opcodes arriving as requests: a
             // broken peer.
             .ctl_ack, .ctl_error, .display_state, .capture_reply, .configure_reply, .surfaces_reply, .surface_info => self.sendCtlError(idx, .protocol_error),

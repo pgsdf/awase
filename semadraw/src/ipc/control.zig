@@ -84,6 +84,26 @@ pub const CtlMsgType = enum(u16) {
     // surface_info frame per surface.
     list_surfaces = 0x0031,
 
+    // Operator authority over existing compositor mechanisms, the
+    // configure pattern continued (ratified 2026-07-16): no new
+    // architecture, an administrative front end over the registry and
+    // focus machinery that NDE-1's surface manager will later drive
+    // through the same internal calls.
+    //
+    // move stages a new position through the transactional setter:
+    // compositor-global pixels, any finite coordinate legal (rendering
+    // clamps at framebuffer edges; a fully off-screen surface simply
+    // contributes nothing), visible at the client's NEXT COMMIT, per
+    // the ADR 0022 model. No timing guarantee beyond that.
+    //
+    // focus reassigns keyboard routing only: it does not raise, does
+    // not change z-order, and visibility is orthogonal (a hidden
+    // surface may hold focus; raise-on-focus and click-to-focus are
+    // surface-manager policy, deliberately absent here). surface 0
+    // clears to NO_FOCUS, the set_focus (0x0034) semantic.
+    move = 0x0032,
+    focus = 0x0033,
+
     // Replies and notifications (compositor -> session authority).
     ctl_ack = 0x8001, // request accepted and applied
     ctl_error = 0x8002, // payload: CtlErrorPayload
@@ -126,6 +146,17 @@ pub const CtlError = enum(u16) {
     configure_not_client_surface = 0x0022, // daemon-owned surface (the
     // cursor); cursor state does not inherit surface transaction
     // semantics (ADR 0022; audit SA-2), so it is not configurable
+
+    // Move failures, client/protocol class.
+    move_unknown_surface = 0x0030,
+    move_invalid_position = 0x0031, // non-finite coordinate
+    move_not_client_surface = 0x0032, // the cursor's position is the
+    // pointer's, never the operator's (ADR 0005)
+
+    // Focus failures, client/protocol class.
+    focus_unknown_surface = 0x0040,
+    focus_not_client_surface = 0x0041, // focusing a daemon-owned
+    // surface routes keys to nobody; refused as a footgun
 };
 
 /// ADR 0021 Section 3: the display axis. OFF is reserved for Tier B
@@ -320,8 +351,12 @@ pub const SurfaceInfoPayload = extern struct {
     logical_height: f32,
     pending_serial: u64,
     acked_serial: u64,
+    // Appended for the move verb's observability (2026-07-16): the
+    // CURRENT position, same presented-state rule as the size fields.
+    position_x: f32,
+    position_y: f32,
 
-    pub const SIZE: usize = 36;
+    pub const SIZE: usize = 44;
 
     pub fn serialize(self: SurfaceInfoPayload, buf: []u8) void {
         std.debug.assert(buf.len >= SIZE);
@@ -332,6 +367,8 @@ pub const SurfaceInfoPayload = extern struct {
         @memcpy(buf[16..20], std.mem.asBytes(&self.logical_height));
         std.mem.writeInt(u64, buf[20..28], self.pending_serial, .little);
         std.mem.writeInt(u64, buf[28..36], self.acked_serial, .little);
+        @memcpy(buf[36..40], std.mem.asBytes(&self.position_x));
+        @memcpy(buf[40..44], std.mem.asBytes(&self.position_y));
     }
 
     pub fn deserialize(buf: []const u8) !SurfaceInfoPayload {
@@ -344,7 +381,52 @@ pub const SurfaceInfoPayload = extern struct {
             .logical_height = @bitCast(std.mem.readInt(u32, buf[16..20], .little)),
             .pending_serial = std.mem.readInt(u64, buf[20..28], .little),
             .acked_serial = std.mem.readInt(u64, buf[28..36], .little),
+            .position_x = @bitCast(std.mem.readInt(u32, buf[36..40], .little)),
+            .position_y = @bitCast(std.mem.readInt(u32, buf[40..44], .little)),
         };
+    }
+};
+
+/// Operator move request: compositor-global pixels, staged through
+/// the transactional setter, visible at the client's next commit.
+pub const MovePayload = extern struct {
+    surface_id: u32,
+    x: f32,
+    y: f32,
+
+    pub const SIZE: usize = 12;
+
+    pub fn serialize(self: MovePayload, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+        @memcpy(buf[4..8], std.mem.asBytes(&self.x));
+        @memcpy(buf[8..12], std.mem.asBytes(&self.y));
+    }
+
+    pub fn deserialize(buf: []const u8) !MovePayload {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{
+            .surface_id = std.mem.readInt(u32, buf[0..4], .little),
+            .x = @bitCast(std.mem.readInt(u32, buf[4..8], .little)),
+            .y = @bitCast(std.mem.readInt(u32, buf[8..12], .little)),
+        };
+    }
+};
+
+/// Operator focus request: keyboard routing only; surface 0 clears.
+pub const FocusPayload = extern struct {
+    surface_id: u32,
+
+    pub const SIZE: usize = 4;
+
+    pub fn serialize(self: FocusPayload, buf: []u8) void {
+        std.debug.assert(buf.len >= SIZE);
+        std.mem.writeInt(u32, buf[0..4], self.surface_id, .little);
+    }
+
+    pub fn deserialize(buf: []const u8) !FocusPayload {
+        if (buf.len < SIZE) return error.BufferTooSmall;
+        return .{ .surface_id = std.mem.readInt(u32, buf[0..4], .little) };
     }
 };
 
@@ -368,6 +450,8 @@ test "surface listing payloads roundtrip and fit the payload budget" {
         .logical_height = 600,
         .pending_serial = 4,
         .acked_serial = 2,
+        .position_x = 1920,
+        .position_y = 0,
     }).serialize(&b);
     const back = try SurfaceInfoPayload.deserialize(&b);
     try std.testing.expectEqual(@as(u32, 3), back.surface_id);
@@ -375,9 +459,25 @@ test "surface listing payloads roundtrip and fit the payload budget" {
     try std.testing.expectEqual(@as(f32, 800), back.logical_width);
     try std.testing.expectEqual(@as(u64, 4), back.pending_serial);
     try std.testing.expectEqual(@as(u64, 2), back.acked_serial);
+    try std.testing.expectEqual(@as(f32, 1920), back.position_x);
     var c: [SurfacesReplyPayload.SIZE]u8 = undefined;
     (SurfacesReplyPayload{ .count = 2 }).serialize(&c);
     try std.testing.expectEqual(@as(u32, 2), (try SurfacesReplyPayload.deserialize(&c)).count);
+}
+
+test "move and focus payloads roundtrip and fit the payload budget" {
+    try std.testing.expect(MovePayload.SIZE <= MAX_CTL_PAYLOAD);
+    try std.testing.expect(FocusPayload.SIZE <= MAX_CTL_PAYLOAD);
+    var b: [MovePayload.SIZE]u8 = undefined;
+    (MovePayload{ .surface_id = 4, .x = 1920, .y = -8.5 }).serialize(&b);
+    const back = try MovePayload.deserialize(&b);
+    try std.testing.expectEqual(@as(u32, 4), back.surface_id);
+    try std.testing.expectEqual(@as(f32, 1920), back.x);
+    try std.testing.expectEqual(@as(f32, -8.5), back.y);
+    var c: [FocusPayload.SIZE]u8 = undefined;
+    (FocusPayload{ .surface_id = 7 }).serialize(&c);
+    try std.testing.expectEqual(@as(u32, 7), (try FocusPayload.deserialize(&c)).surface_id);
+    try std.testing.expectError(error.BufferTooSmall, MovePayload.deserialize(b[0 .. MovePayload.SIZE - 1]));
 }
 
 test "configure payloads roundtrip and fit the payload budget" {

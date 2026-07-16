@@ -9,13 +9,16 @@
 // Usage: semadraw-ctl [--socket PATH]
 //        status|blank|unblank|watch|capture-info|capture <path>
 //        |configure <surface-id> <width> <height>|surfaces
+//        |move <surface-id> <x> <y>|focus <surface-id>
 // watch: hold the connection open and print every display_state
 // notification as it arrives (ADR 0021 Section 8; the Section 10
 // notification bench check), until EOF or interrupt.
 // capture-info: print the frame metadata (the sizing probe).
 // capture <path>: write the composited screen to <path> as PPM (P6).
-// surfaces: list every surface with id, owner, uid, current size,
-// pending and acknowledged config serials.
+// surfaces: list every surface with id, owner, uid, current size and
+// position, pending and acknowledged config serials.
+// move: stage a new position (compositor-global pixels); lands at the
+// client's next commit. focus: reassign keyboard routing; 0 clears.
 // configure: the D-12 stage 2 administrative front end: tell the
 // compositor to assign the surface a configuration (ADR 0022
 // section 5); prints the allocated config_serial. The presented
@@ -317,6 +320,8 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var watch = false;
     var capture_path: ?[]const u8 = null;
     var configure_req: ?control.ConfigurePayload = null;
+    var move_req: ?control.MovePayload = null;
+    var focus_req: ?control.FocusPayload = null;
 
     const args_owned = try compat.args.alloc(gpa, init.args);
     defer args_owned.deinit(gpa);
@@ -335,6 +340,26 @@ pub fn main(init: std.process.Init.Minimal) !void {
             verb = .unblank;
         } else if (std.mem.eql(u8, a, "capture-info")) {
             verb = .capture_info;
+        } else if (std.mem.eql(u8, a, "move")) {
+            verb = .move;
+            if (i + 3 >= args.len) fail("semadraw-ctl: move requires <surface-id> <x> <y>", .{}, 1);
+            move_req = .{
+                .surface_id = std.fmt.parseInt(u32, args[i + 1], 10) catch
+                    fail("semadraw-ctl: surface-id must be an unsigned integer", .{}, 1),
+                .x = std.fmt.parseFloat(f32, args[i + 2]) catch
+                    fail("semadraw-ctl: x must be a number", .{}, 1),
+                .y = std.fmt.parseFloat(f32, args[i + 3]) catch
+                    fail("semadraw-ctl: y must be a number", .{}, 1),
+            };
+            i += 3;
+        } else if (std.mem.eql(u8, a, "focus")) {
+            verb = .focus;
+            i += 1;
+            if (i >= args.len) fail("semadraw-ctl: focus requires <surface-id>", .{}, 1);
+            focus_req = .{
+                .surface_id = std.fmt.parseInt(u32, args[i], 10) catch
+                    fail("semadraw-ctl: surface-id must be an unsigned integer", .{}, 1),
+            };
         } else if (std.mem.eql(u8, a, "surfaces")) {
             verb = .list_surfaces;
         } else if (std.mem.eql(u8, a, "configure")) {
@@ -434,9 +459,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 fail("semadraw-ctl: unexpected frame in surface listing", .{}, 2);
             const info = control.SurfaceInfoPayload.deserialize(in[control.CtlHeader.SIZE..][0..r.payload_len]) catch
                 fail("semadraw-ctl: malformed surface_info", .{}, 2);
-            std.debug.print("  id={d} owner={d} uid={d} size={d:.0}x{d:.0} pending_serial={d} acked_serial={d}\n", .{
+            std.debug.print("  id={d} owner={d} uid={d} size={d:.0}x{d:.0} pos={d:.0},{d:.0} pending_serial={d} acked_serial={d}\n", .{
                 info.surface_id, info.owner,      info.owner_uid,
                 info.logical_width,               info.logical_height,
+                info.position_x,                  info.position_y,
                 info.pending_serial,              info.acked_serial,
             });
         }
@@ -447,6 +473,14 @@ pub fn main(init: std.process.Init.Minimal) !void {
         var cpl: [control.ConfigurePayload.SIZE]u8 = undefined;
         req.serialize(&cpl);
         sendFrame(fd, v, &cpl);
+    } else if (move_req) |req| {
+        var mpl: [control.MovePayload.SIZE]u8 = undefined;
+        req.serialize(&mpl);
+        sendFrame(fd, v, &mpl);
+    } else if (focus_req) |req| {
+        var fpl: [control.FocusPayload.SIZE]u8 = undefined;
+        req.serialize(&fpl);
+        sendFrame(fd, v, &fpl);
     } else {
         sendVerb(fd, v);
     }
