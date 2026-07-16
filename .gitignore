@@ -63,3 +63,8 @@ semadraw/tests/out/
 # 3KB and it is a regression baseline.
 !pgsd-loader/src/testdata/*.o
 
+
+# Patch delivery vehicles: applied with git am, never tree contents.
+# (One F7-era patch was accidentally committed and lived in the root
+# for weeks; this line prevents the next fossil.)
+00*.patch
