@@ -192,6 +192,29 @@ else
 fi
 LEFT=$OLDT; RIGHT=$NEW
 
+step "session environment carries the scale (precondition for patch 18)"
+printf '   In the LEFT window, run: echo $SEMADRAW_TERM_SCALE   -- enter the value (blank if empty): '
+read -r env_scale
+say "   operator entered: '$env_scale'"
+if [ "$env_scale" = "3" ]; then
+    ok "session environment exports scale 3"
+elif [ -z "$env_scale" ]; then
+    bad "no SEMADRAW_TERM_SCALE in the session: the session term predates the current binaries."
+    say "   Log out, log back in (fresh session term exports the variable),"
+    say "   relaunch the second term bare, and rerun this script."
+    report
+else
+    bad "unexpected SEMADRAW_TERM_SCALE '$env_scale' (expected 3 from the session Exec line)"
+fi
+
+# Focus RIGHT before asking the operator to type there: without this
+# the prompt is unanswerable, which the first run of this step proved
+# from the operator's chair. This is also, deliberately, the first
+# real exercise of F-D7-1: focus routing has never yet run against a
+# correct surface id on metal.
+run_expect "focus RIGHT ($RIGHT) so the operator can type there" "ok" sudo "$CTL" focus "$RIGHT"
+ask "F-D7-1 first datum" "Can you type in the RIGHT window now?"
+
 step "scale inheritance (patch 18): the RIGHT window is the new term"
 printf '   In the RIGHT window, run: stty size   -- enter the two numbers (e.g. 44 80): '
 read -r stty_out
