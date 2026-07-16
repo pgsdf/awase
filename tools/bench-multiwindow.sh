@@ -182,18 +182,27 @@ run_expect "configure $OLDT to the left half"  "configure: serial=" sudo "$CTL" 
 run_expect "configure $NEW to the right half"  "configure: serial=" sudo "$CTL" configure "$NEW" 1920 2160
 run_expect "move $NEW to (1920,0)"             "ok"                 sudo "$CTL" move "$NEW" 1920 0
 
-step "placement verified in the listing"
-out=$(surfaces); say "$out"
-l1=$(printf '%s\n' "$out" | grep "id=$OLDT "); l2=$(printf '%s\n' "$out" | grep "id=$NEW ")
-if printf '%s' "$l1" | grep -q 'size=1920x2160 pos=0,0' && printf '%s' "$l2" | grep -q 'size=1920x2160 pos=1920,0'; then
-    ok "old term at 0,0 and new term at 1920,0, both 1920x2160 (acked: $(field "$l1" acked_serial)/$(field "$l2" acked_serial))"
+step "placement verified in the listing (poll: move stages, promotion lands at the client's next commit)"
+tries=0; placed=0
+while [ "$tries" -lt 5 ]; do
+    out=$(surfaces)
+    l1=$(printf '%s\n' "$out" | grep "id=$OLDT "); l2=$(printf '%s\n' "$out" | grep "id=$NEW ")
+    if printf '%s' "$l1" | grep -q 'size=1920x2160 pos=0,0' && printf '%s' "$l2" | grep -q 'size=1920x2160 pos=1920,0'; then
+        placed=1; break
+    fi
+    tries=$((tries+1)); sleep 1
+done
+say "$out"
+if [ "$placed" -eq 1 ]; then
+    ok "placement promoted within ${tries}s (acked: $(field "$l1" acked_serial)/$(field "$l2" acked_serial)); the ADR 0022 model owns the latency"
 else
-    bad "listing does not show the expected placement"
+    bad "placement not promoted after 5s"
 fi
 LEFT=$OLDT; RIGHT=$NEW
 
 step "session environment carries the scale (precondition for patch 18)"
-printf '   In the LEFT window, run: echo $SEMADRAW_TERM_SCALE   -- enter the value (blank if empty): '
+printf '   In the LEFT window, run:  echo $SEMADRAW_TERM_SCALE\n'
+printf '   Enter ONLY what it printed (a number like 3, or blank): '
 read -r env_scale
 say "   operator entered: '$env_scale'"
 if [ "$env_scale" = "3" ]; then
