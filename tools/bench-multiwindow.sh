@@ -78,7 +78,15 @@ report() {
 greeter_phase() {
     say "bench-multiwindow GREETER phase; log: $LOG"
     [ -f "$STATE" ] || { say "no state file from the run phase ($STATE); aborting"; exit 1; }
-    . "$STATE"   # provides ORPHAN1 ORPHAN2
+    . "$STATE"   # provides ORPHAN1 ORPHAN2 SESSIOND_PID
+
+    step "sessiond continuity (the reaper that acquired is the one reaping)"
+    now_pid=$(pgrep -x pgsd-sessiond | head -1)
+    if [ -n "${SESSIOND_PID:-}" ] && [ "$now_pid" = "$SESSIOND_PID" ]; then
+        ok "sessiond pid unchanged ($now_pid) across the logout boundary"
+    else
+        bad "sessiond pid changed ('$SESSIOND_PID' -> '$now_pid'): it restarted or crashed during logout; the teardown verdict below is about THAT, not the escalation ladder"
+    fi
 
     step "greeter surface census"
     out=$(surfaces); say "$out"
@@ -109,24 +117,37 @@ greeter_phase() {
 
 say "bench-multiwindow RUN phase; log: $LOG"
 
-if [ "${SEMADRAW_TERM:-}" = "1" ]; then
-    say "WARNING: running inside a semadraw-term; phase 3 focus switches"
-    say "will take the keyboard away from this script's own prompts."
-    say "Run from ssh or a spare vt instead."
+if [ "${SEMADRAW_TERM:-}" = "1" ] && [ "${BENCH_FORCE:-}" != "1" ]; then
+    say "REFUSING to run inside a semadraw-term: phase 3 moves keyboard"
+    say "focus between the terms and would take the keyboard away from"
+    say "this script's own prompts; two contaminated runs proved a"
+    say "warning is not enough. Run from ssh or a spare vt."
+    exit 1
 fi
 
 # ---- Phase 0: deploy sanity + suite -------------------------------
-step "deploy sanity: repository HEAD and installed binary ages"
+step "deploy sanity: binaries must postdate the HEAD commit"
 head=$(cd /usr/local/src/awase && git log --format=%s -1)
+head_ct=$(cd /usr/local/src/awase && git log --format=%ct -1)
 say "   HEAD: $head"
+stale=0
 for b in semadrawd semadraw-term pgsd-sessiond semadraw-ctl; do
-    say "   $(ls -l "/usr/local/bin/$b" 2>/dev/null || echo "/usr/local/bin/$b MISSING")"
+    f="/usr/local/bin/$b"
+    if [ ! -x "$f" ]; then say "   $b: MISSING"; stale=1; continue; fi
+    bm=$(stat -f %m "$f")
+    if [ "$bm" -lt "$head_ct" ]; then
+        say "   $b: installed $(stat -f %Sm "$f") PREDATES the HEAD commit"
+        stale=1
+    else
+        say "   $b: installed $(stat -f %Sm "$f") (fresh)"
+    fi
 done
-say "   (skewed timestamps mean a partial deploy: the mixed-version"
-say "    bench that produced three contradictory scale readings. If"
-say "    these do not all postdate the intended install, stop and run"
-say "    sh install.sh before trusting anything below.)"
-ok "HEAD and binary ages recorded (operator confirms coherence)"
+if [ "$stale" -eq 0 ]; then
+    ok "all four binaries postdate the HEAD commit: coherent deploy, computed"
+else
+    bad "stale or missing binaries: run sh install.sh; nothing below is trustworthy"
+    report
+fi
 
 step "full unit suite on the bench"
 if (cd /usr/local/src/awase/semadraw && ../tools/zig build test >>"$LOG" 2>&1); then
@@ -207,38 +228,44 @@ else
 fi
 LEFT=$OLDT; RIGHT=$NEW
 
-step "session environment carries the scale (precondition for patch 18)"
-printf '   In the LEFT window, run:  echo $SEMADRAW_TERM_SCALE\n'
-printf '   Enter ONLY what it printed (a number like 3, or blank): '
-read -r env_scale
-say "   operator entered: '$env_scale'"
-if [ "$env_scale" = "3" ]; then
-    ok "session environment exports scale 3"
-elif [ -z "$env_scale" ]; then
-    bad "no SEMADRAW_TERM_SCALE in the session: the session term predates the current binaries."
-    say "   Log out, log back in (fresh session term exports the variable),"
-    say "   relaunch the second term bare, and rerun this script."
-    report
+step "scale environment and geometry, read from the processes (no prompts)"
+env_fail=0; geom_note=""
+for pid in $(pgrep -x semadraw-term); do
+    val=$(procstat penv "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^SEMADRAW_TERM_SCALE=//p')
+    shellpid=$(pgrep -P "$pid" | head -1)
+    tty=$(ps -o tty= -p "$shellpid" 2>/dev/null | tr -d ' ')
+    dims=$(sudo stty -f "/dev/$tty" size 2>/dev/null)
+    say "   term pid $pid: SEMADRAW_TERM_SCALE='${val:-<absent>}' shell=$shellpid tty=$tty stty='$dims'"
+    [ "$val" = "3" ] || env_fail=1
+    geom_note="$geom_note $dims;"
+done
+if [ "$env_fail" -eq 0 ]; then
+    ok "every term exports scale 3 (procstat, per pid)"
 else
-    bad "unexpected SEMADRAW_TERM_SCALE '$env_scale' (expected 3 from the session Exec line)"
+    bad "a term lacks SEMADRAW_TERM_SCALE=3: session predates the install (log out/in and rerun) or the patch 18 export is wrong"
 fi
 
-# Focus RIGHT before asking the operator to type there: without this
-# the prompt is unanswerable, which the first run of this step proved
-# from the operator's chair. This is also, deliberately, the first
-# real exercise of F-D7-1: focus routing has never yet run against a
-# correct surface id on metal.
-run_expect "focus RIGHT ($RIGHT) so the operator can type there" "ok" sudo "$CTL" focus "$RIGHT"
-ask "F-D7-1 first datum" "Can you type in the RIGHT window now?"
+step "geometry cross-check: each 1920x2160 half at scale 3 is 44 rows 80 cols"
+case "$geom_note" in
+    *"44 80;"*"44 80;"*) ok "both terms report 44 80 through their own ptys" ;;
+    *"134 240"*) bad "a term reports 134 240: the scale-1 signature (geom:$geom_note)" ;;
+    *) bad "unexpected geometry readings:$geom_note" ;;
+esac
 
-step "scale inheritance (patch 18): the RIGHT window is the new term"
-printf '   In the RIGHT window, run: stty size   -- enter the two numbers (e.g. 44 80): '
-read -r stty_out
-say "   operator entered: $stty_out"
-if [ "$stty_out" = "44 80" ]; then
-    ok "44 80: scale 3 inherited with no flag (1920x2160 at 24x48 cells)"
+step "reaper jurisdiction: this session must be forked by the RUNNING sessiond"
+sessiond_pid=$(pgrep -x pgsd-sessiond | head -1)
+sessiond_age=$(ps -o etimes= -p "$sessiond_pid" | tr -d ' ')
+oldest_term_age=0
+for pid in $(pgrep -x semadraw-term); do
+    a=$(ps -o etimes= -p "$pid" | tr -d ' ')
+    [ "$a" -gt "$oldest_term_age" ] && oldest_term_age=$a
+done
+say "   sessiond pid $sessiond_pid age ${sessiond_age}s; oldest term age ${oldest_term_age}s"
+if [ "$oldest_term_age" -lt "$sessiond_age" ]; then
+    ok "session is younger than sessiond: forked by it, reaper has jurisdiction"
+    printf 'SESSIOND_PID=%s\n' "$sessiond_pid" >> /tmp/bench-multiwindow.jurisdiction
 else
-    bad "expected '44 80'; a scale-1 fallback reads '134 240'; got '$stty_out'"
+    bad "session PREDATES the running sessiond: the reaper never acquired it; log out/in and rerun before trusting the greeter phase"
 fi
 
 # ---- Phase 3: focus routing (F-D7-1) ------------------------------
@@ -276,7 +303,9 @@ sleep 1
 ORPHAN2=$(cat /tmp/bench-orphan2.pid 2>/dev/null); rm -f /tmp/bench-orphan2.pid
 if [ -n "$ORPHAN2" ]; then
     ok "orphans: plain=$ORPHAN1 double-forked=$ORPHAN2"
-    printf 'ORPHAN1=%s\nORPHAN2=%s\n' "$ORPHAN1" "$ORPHAN2" > "$STATE"
+    sess_pid=$(sed -n 's/^SESSIOND_PID=//p' /tmp/bench-multiwindow.jurisdiction 2>/dev/null | tail -1)
+    rm -f /tmp/bench-multiwindow.jurisdiction
+    printf 'ORPHAN1=%s\nORPHAN2=%s\nSESSIOND_PID=%s\n' "$ORPHAN1" "$ORPHAN2" "$sess_pid" > "$STATE"
 else
     bad "double-fork orphan pid not captured"
 fi
