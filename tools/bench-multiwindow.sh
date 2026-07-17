@@ -57,7 +57,9 @@ ask() {
     printf '   %s [y/n] ' "$2"
     read -r ans
     say "   operator answered: $ans  ($2)"
-    case "$ans" in y|Y) ok "$2" ;; *) bad "$2" ;; esac
+    # Accept the words people actually type: the greeter run recorded
+    # a FAIL against the operator answering "yes".
+    case "$ans" in y|Y|yes|Yes|YES) ok "$2" ;; *) bad "$2" ;; esac
 }
 
 surfaces() { sudo "$CTL" surfaces 2>&1; }
