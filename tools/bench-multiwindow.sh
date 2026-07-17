@@ -128,7 +128,11 @@ fi
 # ---- Phase 0: deploy sanity + suite -------------------------------
 step "deploy sanity: binaries must postdate the HEAD commit"
 head=$(cd /usr/local/src/awase && git log --format=%s -1)
-head_ct=$(cd /usr/local/src/awase && git log --format=%ct -1)
+# Newest commit touching binary-affecting paths, not bare HEAD: a
+# tools-only or docs-only commit must not demand a reinstall (the
+# first run of this check failed a perfectly coherent deploy against
+# a script-only HEAD).
+head_ct=$(cd /usr/local/src/awase && git log --format=%ct -1 -- semadraw/src semadraw/build.zig shared pgsd-sessiond/src pgsd-sessiond/build.zig install.sh)
 say "   HEAD: $head"
 stale=0
 for b in semadrawd semadraw-term pgsd-sessiond semadraw-ctl; do
@@ -136,7 +140,7 @@ for b in semadrawd semadraw-term pgsd-sessiond semadraw-ctl; do
     if [ ! -x "$f" ]; then say "   $b: MISSING"; stale=1; continue; fi
     bm=$(stat -f %m "$f")
     if [ "$bm" -lt "$head_ct" ]; then
-        say "   $b: installed $(stat -f %Sm "$f") PREDATES the HEAD commit"
+        say "   $b: installed $(stat -f %Sm "$f") PREDATES the newest binary-affecting commit"
         stale=1
     else
         say "   $b: installed $(stat -f %Sm "$f") (fresh)"
