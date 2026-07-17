@@ -280,7 +280,27 @@ ensure_elevation() {
         exit 1
     fi
 
-    echo "NOTICE: $PRIV cannot elevate yet; opening provisioning guidance." >&2
+    # Operator-ratified (2026-07-17): before falling back to the manual
+    # provisioning dialog, just do it. The two commands that make mdo
+    # work for this run are known and safe to apply; sudo prompts for
+    # the password itself, so the operator types one secret instead of
+    # transcribing a recipe into a root shell. Runtime-only by request:
+    # the module does not persist across reboots, and this same path
+    # re-provisions in one prompt next time. (sysrc kld_list+=mac_do
+    # plus the sysctl.conf line would make it permanent; deliberately
+    # not applied unasked.)
+    if command -v sudo >/dev/null 2>&1; then
+        echo "NOTICE: $PRIV cannot elevate yet; provisioning mac_do via sudo (password prompt follows)." >&2
+        sudo kldload mac_do 2>/dev/null || true  # EEXIST when already loaded is fine
+        sudo sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*' || true
+        if priv_works; then
+            echo "  ok  mac_do provisioned; elevation via $PRIV verified"
+            return 0
+        fi
+        echo "NOTICE: automatic provisioning was not sufficient; opening guidance." >&2
+    else
+        echo "NOTICE: $PRIV cannot elevate yet and sudo is unavailable; opening provisioning guidance." >&2
+    fi
     while ! priv_works; do
         if command -v bsddialog >/dev/null 2>&1; then
             # --cr-wrap so bsddialog honours the real newlines as line breaks.
