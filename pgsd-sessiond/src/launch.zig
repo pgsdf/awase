@@ -52,10 +52,13 @@ fn reapSessionRemnants() void {
     // not expose SIG* the way the cross-compile's bundled headers do,
     // which is exactly how the first build of this function failed on
     // metal while passing analysis off it.
+    // std.posix.SIG is an enum(u32) on native FreeBSD (and a plain
+    // integer namespace elsewhere), so convert explicitly; this is
+    // valid under both representations.
     const phases = [_]struct { sig: c_int, grace_ms: u64 }{
-        .{ .sig = std.posix.SIG.HUP, .grace_ms = 500 },
-        .{ .sig = std.posix.SIG.TERM, .grace_ms = 2000 },
-        .{ .sig = std.posix.SIG.KILL, .grace_ms = 5000 },
+        .{ .sig = @intCast(@intFromEnum(std.posix.SIG.HUP)), .grace_ms = 500 },
+        .{ .sig = @intCast(@intFromEnum(std.posix.SIG.TERM)), .grace_ms = 2000 },
+        .{ .sig = @intCast(@intFromEnum(std.posix.SIG.KILL)), .grace_ms = 5000 },
     };
 
     for (phases) |phase| {
