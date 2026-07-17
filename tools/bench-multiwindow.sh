@@ -116,10 +116,17 @@ if [ "${SEMADRAW_TERM:-}" = "1" ]; then
 fi
 
 # ---- Phase 0: deploy sanity + suite -------------------------------
-step "deploy sanity: repository HEAD"
+step "deploy sanity: repository HEAD and installed binary ages"
 head=$(cd /usr/local/src/awase && git log --format=%s -1)
 say "   HEAD: $head"
-ok "HEAD recorded (operator confirms it is the intended deploy)"
+for b in semadrawd semadraw-term pgsd-sessiond semadraw-ctl; do
+    say "   $(ls -l "/usr/local/bin/$b" 2>/dev/null || echo "/usr/local/bin/$b MISSING")"
+done
+say "   (skewed timestamps mean a partial deploy: the mixed-version"
+say "    bench that produced three contradictory scale readings. If"
+say "    these do not all postdate the intended install, stop and run"
+say "    sh install.sh before trusting anything below.)"
+ok "HEAD and binary ages recorded (operator confirms coherence)"
 
 step "full unit suite on the bench"
 if (cd /usr/local/src/awase/semadraw && ../tools/zig build test >>"$LOG" 2>&1); then
