@@ -233,20 +233,34 @@ fi
 LEFT=$OLDT; RIGHT=$NEW
 
 step "scale environment and geometry, read from the processes (no prompts)"
-env_fail=0; geom_note=""
+# procstat penv reads the environment AS EXEC'D; runtime setenv is
+# invisible to it. So the sessiond-launched root term correctly shows
+# <absent> (it receives --scale 3 as an argument and exports at
+# startup where procstat cannot see), and a CHILD term showing 3 in
+# its exec-time environment is the proof the export chain works: the
+# variable can only be there because the parent term put it in the
+# shells the child was launched from. The first run of this check
+# failed the architecture for behaving correctly.
+inherited=0; wrong=0; geom_note=""
 for pid in $(pgrep -x semadraw-term); do
     val=$(procstat penv "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^SEMADRAW_TERM_SCALE=//p')
     shellpid=$(pgrep -P "$pid" | head -1)
     tty=$(ps -o tty= -p "$shellpid" 2>/dev/null | tr -d ' ')
     dims=$(sudo stty -f "/dev/$tty" size 2>/dev/null)
-    say "   term pid $pid: SEMADRAW_TERM_SCALE='${val:-<absent>}' shell=$shellpid tty=$tty stty='$dims'"
-    [ "$val" = "3" ] || env_fail=1
+    say "   term pid $pid: exec-env SCALE='${val:-<absent>}' shell=$shellpid tty=$tty stty='$dims'"
+    case "$val" in
+        3) inherited=$((inherited+1)) ;;
+        "") ;; # the sessiond-launched root: absent at exec, by design
+        *) wrong=$((wrong+1)) ;;
+    esac
     geom_note="$geom_note $dims;"
 done
-if [ "$env_fail" -eq 0 ]; then
-    ok "every term exports scale 3 (procstat, per pid)"
+if [ "$wrong" -gt 0 ]; then
+    bad "a term was exec'd with a wrong SEMADRAW_TERM_SCALE (not 3)"
+elif [ "$inherited" -ge 1 ]; then
+    ok "$inherited term(s) exec'd with inherited scale 3: the export chain works"
 else
-    bad "a term lacks SEMADRAW_TERM_SCALE=3: session predates the install (log out/in and rerun) or the patch 18 export is wrong"
+    bad "no term carries the inherited scale in its exec environment: launch the second term from inside the session and rerun, or the patch 18 export is broken"
 fi
 
 step "geometry cross-check: each 1920x2160 half at scale 3 is 44 rows 80 cols"
