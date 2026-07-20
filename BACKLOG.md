@@ -620,7 +620,7 @@ semadrawd LOCKED state machine, inputfs precedence, bench.
 
 ## Deferred
 
-### `[ ]` D-12: transactional surface state and commit semantics  *(Open 2026-07-12, Large, P1; ADR 0022 Accepted 2026-07-12; first Substrate Evolution item, from audit SA-1)*
+### `[x]` D-12: transactional surface state and commit semantics  *(Open 2026-07-12, CLOSED 2026-07-17 with stated debt, Large, P1; ADR 0022 Accepted 2026-07-12; first Substrate Evolution item, from audit SA-1)*
 
 Implement ADR 0022. A frame becomes the pair (surface state snapshot,
 command stream), promoted atomically by `commit`.
@@ -694,8 +694,9 @@ observable in the listing as acked_serial pinned at 0. Also fixed on
 metal: semadraw-ctl frame reads are now bounded to the current frame
 (F-CTL-1), found by the listing's coalesced multi-frame reply.
 
-Observation recorded while chasing F-D12-3 (candidate audit finding,
-not yet an SA number): the compositor does not clip a surface's SDCS
+Observation recorded while chasing F-D12-3, now audit finding SA-6
+(recorded 2026-07-17; the clipping REMEDY is deliberately not decided
+by that finding): the compositor does not clip a surface's SDCS
 execution to the surface's current logical extent. The shrunk term's
 renderer bug painted at y=2112 of a surface whose logical size was
 1600x900, and the pixels landed on the framebuffer. On a
@@ -738,9 +739,46 @@ requirement 7 (authority) structural, verifiable by protocol
 inspection; requirement 4 (supersession) drivable with two rapid
 configures and a capture witness; requirements 1 through 3 (mid-draw
 timing cases) pinned by registry unit tests, their metal exercise
-owed to the SM-TEST-1 harness. D-12 closure disposition awaiting
-operator ratification, alongside the render-clipping observation
-above.
+owed to the SM-TEST-1 harness.
+
+CLOSED 2026-07-17, operator-ratified, with the residual debt stated
+rather than elided. What is proven: the mechanism itself, by the
+registry unit tests that drive the pending/current transaction
+directly, including the position-change-during-draw case that is the
+ADR's central claim and the four-case acknowledgement matrix; and,
+on pgsd-bare-metal, section 10 requirements 4 through 7 (supersession
+observable as pending_serial advancing without acked_serial moving;
+non-acknowledgement, benched with a live pgsd-sessiond that presents
+correctly forever at serial 0; resize end to end with the grid
+reflowing, acked_serial catching up, stty size reporting 17 66 and a
+TUI reflowing under SIGWINCH; authority, structural and verifiable by
+protocol inspection, since no client-protocol opcode assigns
+geometry).
+
+The debt: requirements 1 through 3 are mid-draw TIMING cases, and
+nothing in the current bench can deterministically place a compositor
+action inside a client's draw window. Their metal exercise is owed to
+the SM-TEST-1 harness and is recorded there. This is a gap in
+ADVERSARIAL TIMING COVERAGE, not doubt about the behaviour: the
+transaction is a single assignment of one struct under a
+single-threaded loop, the unit tests drive exactly the interleavings
+in question, and the metal runs behaved as the model predicts in
+every observed case. The entry closes rather than waiting on a
+harness that does not exist, because an item held open indefinitely
+stops carrying information.
+
+Also closed with it, on metal: the F-D12-1 through F-D12-3 chain, and
+the multi-window work D-12 made possible (operator move and focus,
+scale inheritance, F-D7-1 input routing by focus), all verified by
+tools/bench-multiwindow.sh on 2026-07-17, 29 of 29 in the run phase.
+
+Deferred deliberately, recorded here so it is not rediscovered as a
+bug: the `focus 0` fallback routes to the top visible surface in
+registry order, which is INDETERMINATE between two equal-z surfaces.
+The bench records the observed target without judging it. Preferring
+the last-focused surface, or any other heuristic, is focus POLICY and
+belongs to NDE-1's surface manager; inventing one before that layer
+exists is the pattern this audit exists to prevent.
 
 Bench (ADR 0022 section 10): the test that matters is requirement 2,
 position change during draw, which proves the general mechanism rather

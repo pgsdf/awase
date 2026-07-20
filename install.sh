@@ -247,7 +247,7 @@ $PRIV cannot elevate to root yet. Provision mac_do once, as root.
 In a root shell (su -, or the system console), run:
 
 kldload mac_do
-sysrc -f /boot/loader.conf mac_do_load=YES
+sysrc kld_list+="mac_do"
 sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*'
 echo 'security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*' >> /etc/sysctl.conf
 
@@ -284,15 +284,28 @@ ensure_elevation() {
     # provisioning dialog, just do it. The two commands that make mdo
     # work for this run are known and safe to apply; sudo prompts for
     # the password itself, so the operator types one secret instead of
-    # transcribing a recipe into a root shell. Runtime-only by request:
-    # the module does not persist across reboots, and this same path
-    # re-provisions in one prompt next time. (sysrc kld_list+=mac_do
-    # plus the sysctl.conf line would make it permanent; deliberately
-    # not applied unasked.)
+    # transcribing a recipe into a root shell. Persistent as of
+    # 2026-07-17 (operator-ratified): the module joins kld_list and
+    # the rule joins sysctl.conf, so a reboot does not cost another
+    # prompt. Runtime semantics are unchanged.
     if command -v sudo >/dev/null 2>&1; then
         echo "NOTICE: $PRIV cannot elevate yet; provisioning mac_do via sudo (password prompt follows)." >&2
         sudo kldload mac_do 2>/dev/null || true  # EEXIST when already loaded is fine
         sudo sysctl security.mac.do.rules='gid=0>uid=0,gid=*,+gid=*' || true
+        # Persist (operator-ratified 2026-07-17), so a reboot does not
+        # cost another prompt. kld_list, NOT loader.conf: pgsd-loader
+        # does not process loader.conf module autoloads, so the stock
+        # recipe silently fails on this bench. rc.d/kld loads the
+        # module regardless of loader, and sysctl_lastload re-applies
+        # sysctl.conf entries whose OIDs only exist after module load.
+        # Both writes are idempotent: sysrc replaces the kld_list
+        # value it parses, and the sysctl.conf line is appended only
+        # when absent.
+        sudo sysrc kld_list+="mac_do" >/dev/null 2>&1 || true
+        if ! grep -q '^security\.mac\.do\.rules=' /etc/sysctl.conf 2>/dev/null; then
+            printf "security.mac.do.rules=gid=0>uid=0,gid=*,+gid=*\n" \
+                | sudo tee -a /etc/sysctl.conf >/dev/null 2>&1 || true
+        fi
         if priv_works; then
             echo "  ok  mac_do provisioned; elevation via $PRIV verified"
             return 0

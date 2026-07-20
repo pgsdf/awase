@@ -597,3 +597,70 @@ until the substrate owns layout. Building it in pgsd-sessiond would
 mean semadraw-term needs its own, and NDE needs its own, and they would
 disagree: precisely the pattern this audit exists to prevent, and the
 one already visible in the two hardcoded tables above.
+
+## SA-6: a surface's logical extent does not bound its pixels
+
+Status: OPEN. Recorded 2026-07-17. Disposition: semadraw.
+
+### Classification
+
+    Consumers affected:
+        Every client, and every future compositor policy that assumes
+        a surface's assigned geometry means something in the
+        framebuffer. Not one client's need.
+
+    Layer:
+        Compositor render path, and possibly the ADR 0022 contract.
+        Deliberately undecided; see "What is NOT decided here".
+
+### Evidence
+
+Found while chasing F-D12-3 (2026-07-16). A configure had shrunk
+`semadraw-term` to 1600x900, the registry held that as the surface's
+current logical size, and the term's renderer, not yet told about the
+resize, kept drawing its status bar at y=2112 of the OLD geometry.
+Those pixels reached the framebuffer. Three capture sweeps found them
+at full intensity, 3840 * 48 = 184320 pixels, outside the extent the
+compositor itself had assigned.
+
+The client bug is fixed. The substrate behaviour it revealed is not a
+bug, because nothing ever promised otherwise, and that is the finding:
+
+    ADR 0022 invariant I1 says the compositor is the single authority
+    for surface geometry. That authority is enforced in STATE (a
+    client cannot request or assign its own size; there is no
+    client-protocol opcode that does) and is unenforced in PIXELS (a
+    client's command stream is executed against the framebuffer
+    without being bounded by the extent it was assigned).
+
+The characteristic audit signature is present: the capability evolved
+independently on one side of the boundary. drawfs HAS a clip
+mechanism, `renderImpl` sets a clip for its own reasons and
+`noteDamage` intersects with it, so the mechanism for bounding a
+surface's output exists and is simply not applied per-surface at
+composite time.
+
+### Why it matters, and why it is not urgent
+
+On a single-operator system this is rendering hygiene: a buggy client
+paints where it should not, and the only victim is the operator who
+wrote the bug. It becomes load-bearing in three places already on the
+board:
+
+- D-10 wants the greeter to own the display exclusively. A surface
+  whose pixels are not bounded by its extent is a hole in any such
+  property that is expressed in terms of extents.
+- NDE-1's surface manager will assign geometry as POLICY. Policy that
+  the render path can ignore is not policy.
+- Multi-window composition (2026-07-16) means one client's overrun
+  lands on another client's area rather than on empty framebuffer.
+
+### What is NOT decided here
+
+Whether render-time clipping to the current extent becomes part of the
+ADR 0022 contract is a separate decision, deliberately left open by
+operator ratification (2026-07-17). This entry records what was
+learned; the remedy, its cost (a per-surface clip set and cleared
+around every surface's command execution), and whether the contract
+should say "a surface's output is clipped to its current extent" are
+the disposition's business, not the finding's.
